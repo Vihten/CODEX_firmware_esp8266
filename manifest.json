@@ -1,7 +1,7 @@
 {
-  "version": 1790085688334,
+  "version": 1790086800944,
   "board": "nodemcuv2",
   "firmwareUrl": "https://raw.githubusercontent.com/Vihten/CODEX_firmware_esp8266/main/firmware.bin",
-  "publishedAt": "2026-09-22T14:01:37.055279Z",
+  "publishedAt": "2026-09-22T14:20:09.555756Z",
   "accountCredentialsIncluded": false
 }

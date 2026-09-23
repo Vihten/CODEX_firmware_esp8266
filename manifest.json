@@ -1,10 +1,12 @@
 {
-  "version": 1790165631502,
+  "version": 1790172245918,
   "board": "nodemcuv2",
   "firmwareUrl": "https://raw.githubusercontent.com/Vihten/CODEX_firmware_esp8266/main/firmware.bin",
-  "publishedAt": "2026-09-23T12:13:51.502Z",
-  "sha256": "50c8d2c54e08ee5192da2331986f3d53ca89330d0318ca4f6e07ea574741f7dc",
+  "publishedAt": "2026-09-23T14:04:05.918Z",
+  "sha256": "76e90a8220da9ca989775633491ddab273cebbf7cae9b825d9fdb00d8d96c341",
   "embeddedArtwork": true,
   "activityLevels": 5,
+  "perAgentMeteors": true,
+  "maximumMeteors": 12,
   "accountCredentialsIncluded": false
 }

@@ -12,4 +12,10 @@ does not require LED Forge, USB, or a PC. The MD5 value is verified by the
 ESP8266 updater before the new image is activated; SHA-256 is provided for
 independent release verification. USB remains available for recovery.
 
+The controller downloads the compressed image from the GitHub API in verified
+byte ranges, resuming an interrupted transfer before activating the image.
+The current ESP8266 client does not validate GitHub's TLS certificate; manifest
+checksums detect corruption but do not authenticate an update against a
+network attacker. Keep repository publishing access restricted.
+
 ChatGPT/Codex passwords and OAuth tokens are never included. Authentication remains in the local Codex app-server on the paired PC.

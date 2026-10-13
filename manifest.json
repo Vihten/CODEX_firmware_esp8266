@@ -1,12 +1,12 @@
 {
-  "version": 1791887417065,
+  "version": 1791890858189,
   "board": "nodemcuv2",
   "firmwareUrl": "https://api.github.com/repos/Vihten/CODEX_firmware_esp8266/contents/firmware.bin.gz?ref=main",
-  "publishedAt": "2026-10-13T11:22:29.357305Z",
-  "md5": "450876a579a5a3c32c5825bc00e80480",
-  "sha256": "ebef831480798364a3809b929e27feb2ee54d8461a489726eefbfd71ba577143",
-  "size": 426012,
-  "rawSha256": "a1978e9be170ab23ff892e19a670c8600a3fdc7861c5ce0cb8828142bac54ca9",
+  "publishedAt": "2026-10-13T11:31:08.813181Z",
+  "md5": "083067ad7f09a028c1e4e0c8ef170da5",
+  "sha256": "b3b30b1a795e1224780680bb1829da01312346d5957ced242e835e496e6668a9",
+  "size": 426120,
+  "rawSha256": "f32e27ee73eb9ec2cebafe7027f39a44a89917e129932cf3f32570f954eb0f4f",
   "compression": "gzip",
   "embeddedArtwork": true,
   "activityLevels": 5,
@@ -21,5 +21,6 @@
   "httpContentLength": true,
   "boundedHttpAckDrain": true,
   "otaMemoryPreflight": true,
-  "manualControllerRestart": true
+  "manualControllerRestart": true,
+  "otaLedBlackout": true
 }

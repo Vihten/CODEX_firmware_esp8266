@@ -1,12 +1,12 @@
 {
-  "version": 1791809772841,
+  "version": 1791885372945,
   "board": "nodemcuv2",
   "firmwareUrl": "https://api.github.com/repos/Vihten/CODEX_firmware_esp8266/contents/firmware.bin.gz?ref=main",
-  "publishedAt": "2026-10-12T13:00:00Z",
-  "md5": "be02d8399b7f38e6fccad025706a825f",
-  "sha256": "9533940b822a14b600ca38fd543d1be05a06473752d2953717eb4b933e0ea7ed",
-  "size": 424416,
-  "rawSha256": "3c7b3374141ac74799bd53dd54e810c8297b2c7650d1f263cd3395941ced97dc",
+  "publishedAt": "2026-10-13T10:02:44.901034Z",
+  "md5": "9c6ecd8780cc34049b4ead33854a0b95",
+  "sha256": "efe1f5d22d1ea6ffd0c1aec6ff0fbe2af9668009b823f37e211c879b81695a90",
+  "size": 424392,
+  "rawSha256": "9b63d257c247edd4d67e572517a2d0fa71f633e3cf6358cb14e5cab6367a6cca",
   "compression": "gzip",
   "embeddedArtwork": true,
   "activityLevels": 5,
@@ -14,5 +14,10 @@
   "maximumMeteors": 12,
   "perAgentColorPicker": true,
   "weeklyLeaderboard": false,
-  "accountCredentialsIncluded": false
+  "accountCredentialsIncluded": false,
+  "ledDataPin": 2,
+  "ledTransport": "async-uart1",
+  "targetFps": 30,
+  "httpContentLength": true,
+  "boundedHttpAckDrain": true
 }

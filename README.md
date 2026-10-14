@@ -34,7 +34,10 @@ reconnected and settings preserved. Twelve status requests over about 35 seconds
 had no failures (maximum latency 278 ms), with 29.37 measured FPS at a target of
 30. Six page requests all returned HTTP 200 (60 ms to 1.60 s). No LED errors,
 Wi-Fi disconnects or restarts were observed. The current follow-up removes an
-irrelevant new-agent notice from Settings; its installation is verified below.
+irrelevant new-agent notice from Settings. It also completed Wi-Fi OTA: the S3
+reported version `1791971169630`, both agents online, working matrix, 175,968
+bytes free heap and `Up to date` after its post-boot check. The corrected Settings
+page was checked at mobile width with no horizontal overflow or stray notice.
 These are short observations, not a long-duration acceptance test.
 
 ## Previous Release

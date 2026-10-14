@@ -1,6 +1,7 @@
 // Export template: prepare_esp32s3.dart inserts the authoritative legacy scene.
 #include "runtime.hpp"
 #include "led_output.hpp"
+#include "subpixel.hpp"
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
 #include "esp_log.h"
@@ -32,6 +33,10 @@ uint32_t millis() { return uptimeMs(); }
 LedOutput strip;
 ControlFrame control;
 RenderStatus status;
+uint16_t effectSubTick = 0;
+uint32_t sceneFrameMilli = 0;
+uint32_t quotaFrameMilli = 0, skySampleAt = 0;
+bool skySampleReady = false;
 
 enum SeekMode { SeekSet };
 class FrameReader {
@@ -639,6 +644,146 @@ uint8_t ipGlyphIndex(char value) {
 
 
 
+uint32_t updateSkySample(uint16_t target, bool frozen) {
+  const uint32_t now = millis();
+  const uint32_t delta = min(uint32_t(250), uint32_t(now - skySampleAt));
+  skySampleAt = now;
+  const uint32_t wanted = uint32_t(target) * 1000;
+  if (!skySampleReady || sceneProgress < 4600) {
+    skySampleReady = true; quotaFrameMilli = wanted;
+  } else if (!frozen) {
+    const uint32_t distance = quotaFrameMilli > wanted ? quotaFrameMilli - wanted : wanted - quotaFrameMilli;
+    const uint32_t step = min(distance, delta * 4);
+    quotaFrameMilli = quotaFrameMilli > wanted ? quotaFrameMilli - step : quotaFrameMilli + step;
+  }
+  return quotaFrameMilli;
+}
+
+int16_t smoothSkyWave(uint16_t period, uint16_t phase) {
+  const uint64_t time = (uint64_t(effectTick) + phase) * 256 + effectSubTick;
+  const uint32_t position = (time % (uint32_t(period) * 256)) * 256 / period;
+  const uint8_t index = position >> 8, fraction = position & 255;
+  return (int32_t(sineAt(index)) * (256 - fraction) + int32_t(sineAt(uint8_t(index + 1))) * fraction) / 256;
+}
+
+void modulateSky(uint8_t *rgb, uint8_t type, uint8_t x, uint8_t y) {
+  int scale = 255;
+  if (type == 1) {
+    const uint16_t seed = x * 37 + y * 101 + 17;
+    const uint8_t periods[] = {51, 63, 81, 99};
+    const uint8_t period = periods[seed % 4];
+    scale = 180 + 75 * smoothSkyWave(period, (seed * 7) % period) / 127;
+  } else if (type == 3) scale = 218 + 37 * smoothSkyWave(210, x * 5 + y * 3) / 127;
+  else if (type >= 64) scale = 220 + 35 * smoothSkyWave(144, type - 64) / 127;
+  for (unsigned channel = 0; channel < 3; ++channel) rgb[channel] = (uint16_t(rgb[channel]) * scale + 127) / 255;
+}
+
+subpixel::Pixel meteorLayer[NUM_LEDS];
+uint16_t meteorTouched[128];
+uint16_t meteorTouchedCount = 0;
+
+void smoothMeteorPixel(float x, float y, const uint8_t *normal, const uint8_t *dark,
+                       uint8_t opacity = 100, bool wake = false) {
+  const auto sample = subpixel::footprint(x, y);
+  for (unsigned tap = 0; tap < 4; ++tap) {
+    const int16_t px = sample.x + (tap & 1), py = sample.y + (tap >> 1);
+    if (px < 0 || px >= MATRIX_WIDTH || py < 0 || py >= MATRIX_HEIGHT) continue;
+    const uint16_t coverage = (sample.weight[tap] * opacity + 50) / 100;
+    if (!coverage || (wake && isLightObject(px, py))) continue;
+    const uint16_t index = py * MATRIX_WIDTH + px;
+    auto &pixel = meteorLayer[index];
+    if (!pixel.alpha) {
+      if (meteorTouchedCount == 128) continue;
+      meteorTouched[meteorTouchedCount++] = index;
+    }
+    const uint8_t *rgb = isLightObject(px, py) ? dark : normal;
+    pixel.add(rgb[0], rgb[1], rgb[2], coverage);
+  }
+}
+
+void composeMeteorLayer(bool additive = false) {
+  uint8_t *pixels = strip.getPixels();
+  for (unsigned touched = 0; touched < meteorTouchedCount; ++touched) {
+    const uint16_t index = meteorTouched[touched];
+    const auto &sample = meteorLayer[index];
+    if (pixels) {
+      uint8_t *rgb = pixels + physicalIndex(index % MATRIX_WIDTH, index / MATRIX_WIDTH) * 3;
+      rgb[0] = subpixel::composite(rgb[0], sample.green, sample.alpha, strip.getBrightness(), additive);
+      rgb[1] = subpixel::composite(rgb[1], sample.red, sample.alpha, strip.getBrightness(), additive);
+      rgb[2] = subpixel::composite(rgb[2], sample.blue, sample.alpha, strip.getBrightness(), additive);
+    }
+    meteorLayer[index] = {};
+  }
+  meteorTouchedCount = 0;
+}
+
+float smoothMeteorAge(const MeteorState &meteor) {
+  return uint32_t(effectTick - meteor.spawnFrame) + effectSubTick / 256.0f;
+}
+
+void drawSmoothMeteorWake(const MeteorState &meteor) {
+  const float age = smoothMeteorAge(meteor);
+  const unsigned tick = uint32_t(effectTick - meteor.spawnFrame);
+  const unsigned tail = 1 + ((meteor.tailLength - 1) & ~1);
+  const uint16_t total = MATRIX_WIDTH + meteor.tailLength + 3;
+  uint8_t normal[3], dark[3];
+  meteorGlowPalette(meteor.rgb, 100, 0, normal, dark);
+  for (unsigned offset = 0; offset < 18 && offset <= tick; ++offset) {
+    const unsigned born = tick - offset;
+    if (born < tail + 2 || born > MATRIX_WIDTH + tail + 1 || (born + meteor.sequence * 3) % 4) continue;
+    const float elapsed = age - born;
+    const float remaining = max(0.0f, 18.0f - elapsed);
+    const uint8_t opacity = (remaining * remaining * 8 + 162) / 324;
+    const int step = int(born) - tail - 2;
+    const uint32_t seed = eventHash(meteor.sequence * 257UL + born * 17UL + 9000UL);
+    const float drift = elapsed < 9 ? 0 : (elapsed - 9) / 9 * ((seed & 1) ? 1 : -1);
+    smoothMeteorPixel(MATRIX_WIDTH - step, subpixel::trajectory(step, total, meteor.sequence, meteor.attributed) + drift,
+                      normal, dark, opacity, true);
+  }
+  composeMeteorLayer(true);
+}
+
+void drawSmoothMeteor(const MeteorState &meteor) {
+  const float age = smoothMeteorAge(meteor);
+  const unsigned tick = uint32_t(effectTick - meteor.spawnFrame);
+  const uint16_t total = MATRIX_WIDTH + meteor.tailLength + 3;
+  const int span = max(1, (meteor.tailLength - 1) & ~1);
+  for (int tail = meteor.tailLength - 1; tail >= -1; --tail) {
+    if (tail >= 0 && !meteorTailPixelVisible(tail, meteor.tailLength)) continue;
+    const bool tip = tail == span;
+    const uint8_t brightness = tail < 0 ? 100 : meteorTailBrightness(tail, meteor.tailLength, tick, meteor.sequence);
+    if (!brightness) continue;
+    uint8_t normal[3], dark[3];
+    meteorGlowPalette(meteor.rgb, tip ? 18 : brightness, tail < 0 ? 100 : (span - tail) * 70 / span, normal, dark);
+    const float step = age - (1 + tail);
+    smoothMeteorPixel(MATRIX_WIDTH - step, subpixel::trajectory(step, total, meteor.sequence, meteor.attributed),
+                      normal, dark, tip ? (brightness * 100 + 9) / 18 : 100);
+  }
+  const unsigned cadence = meteor.level == LOAD_LOW ? 7 : meteor.level == LOAD_MEDIUM ? 6 : meteor.level == LOAD_HIGH ? 5 : 4;
+  unsigned drawn = 0;
+  for (unsigned offset = 0; offset < 12 && offset <= tick && drawn < (meteor.level == LOAD_LOW ? 2U : 3U); ++offset) {
+    const unsigned born = tick - offset;
+    if (born < meteor.tailLength + 2U || born > MATRIX_WIDTH + meteor.tailLength + 1U || (born + meteor.sequence * 3) % cadence) continue;
+    const uint32_t seed = eventHash(meteor.sequence * 257UL + born * 17UL);
+    const unsigned lifetime = 9 + seed % 4;
+    const float elapsed = age - born;
+    if (elapsed >= lifetime) continue;
+    const float step = int(born) - (1 + meteorSparkTailIndex(meteor.tailLength, seed));
+    const float x = MATRIX_WIDTH - step - elapsed * (((seed >> 5) % 2) + 1) / 3;
+    const float y = subpixel::trajectory(step, total, meteor.sequence, meteor.attributed)
+        + (((seed >> 7) & 1) ? 1 : -1) * (1 + elapsed / 4);
+    const float distance = x - (MATRIX_WIDTH - age);
+    if (distance >= 1 && distance < meteor.tailLength + 1 &&
+        !meteorTailPixelVisible(int(distance) - 1, meteor.tailLength) &&
+        std::fabs(y - subpixel::trajectory(MATRIX_WIDTH - x, total, meteor.sequence, meteor.attributed)) < .75f) continue;
+    const float remaining = lifetime - elapsed;
+    uint8_t normal[3], dark[3]; meteorGlowPalette(meteor.rgb, 100, 30, normal, dark);
+    smoothMeteorPixel(x, y, normal, dark, (remaining * remaining * 72 + lifetime * lifetime / 2) / (lifetime * lifetime));
+    ++drawn;
+  }
+  composeMeteorLayer();
+}
+
 bool matrixRequestsLight() { return control.on; }
 bool otaCheckPending() { return control.maintenance != Maintenance::None; }
 void drawEventEffects() {
@@ -646,8 +791,8 @@ void drawEventEffects() {
   lastMeteorMaintenanceAt = millis();
   meteorMaintenancePending = false;
   updateMeteorScheduler(sceneProgress == 4600UL && matrixRequestsLight() && !otaCheckPending());
-  for (const auto &meteor : meteors) if (meteor.active) drawMeteorWake(meteor);
-  for (const auto &meteor : meteors) if (meteor.active) drawMeteor(meteor);
+  for (const auto &meteor : meteors) if (meteor.active) drawSmoothMeteorWake(meteor);
+  for (const auto &meteor : meteors) if (meteor.active) drawSmoothMeteor(meteor);
 }
 
 void applyControlAgents() {
@@ -730,6 +875,8 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
 #if EVENT_MODE
   entranceMirror = false;
   if (!finishingMeteorFlight || sceneEntranceActive()) frame = 100 - remainingPercent;
+  sceneFrameMilli = updateSkySample(frame, finishingMeteorFlight);
+  frame = sceneFrameMilli / 1000;
   const uint32_t entranceElapsed = sceneProgress;
   if (entranceElapsed < 4600UL) {
     const uint32_t phaseTime = entranceElapsed * 30;
@@ -739,9 +886,14 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
     int32_t position = (frame * 1000L + startPhase + (endPhase - startPhase) * (int32_t)(phaseTime % 1000) / 1000) % 200000L;
     entranceMirror = FRAME_COUNT != 201 && position > 100000L;
     if (entranceMirror) position = 200000L - position;
-    frame = (position + 500) / 1000;
+    sceneFrameMilli = position;
+    frame = sceneFrameMilli / 1000;
   }
 #endif
+  const uint16_t sceneFraction = sceneFrameMilli % 1000;
+  const uint16_t nextFrame = frame + 1 < FRAME_COUNT ? frame + 1 : frame;
+  const uint32_t nextOffset = uint32_t(nextFrame) * FRAME_BYTES;
+  const uint32_t nextMaskOffset = uint32_t(nextFrame) * EFFECT_BYTES;
   const uint32_t frameOffset = (uint32_t)frame * FRAME_BYTES;
   animationFile.seek(frameOffset, SeekSet);
 #if EVENT_MODE
@@ -769,26 +921,15 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
       const uint8_t effectType = effectRow[x];
       const uint16_t pixelIndex = y * MATRIX_WIDTH + x;
       effectMask[pixelIndex] = effectType;
-      if (effectType == 1 || effectType >= 64 || effectType == 3) {
-        uint8_t scale = 255;
-        if (effectType == 1) {
-          const uint16_t seed = x * 37 + y * 101 + 17;
-          const uint8_t periods[4] = {51, 63, 81, 99};
-          const uint8_t period = periods[seed % 4];
-          const uint8_t phaseFrame = (seed * 7) % period;
-          const uint8_t lutIndex = (((effectTick + phaseFrame) % period) * 256UL + period / 2) / period;
-          scale = 180 + (int16_t)75 * sineAt(lutIndex) / 127;
-        } else if (effectType == 3) {
-          const uint8_t phase = ((effectTick + x * 5 + y * 3) % 210) * 256UL / 210;
-          scale = 218 + (int16_t)37 * sineAt(phase) / 127;
-        } else {
-          const uint8_t phaseFrame = effectType - 64;
-          const uint8_t lutIndex = (((effectTick + phaseFrame) % 144) * 256UL + 72) / 144;
-          scale = 220 + (int16_t)35 * sineAt(lutIndex) / 127;
-        }
-        rgb[0] = ((uint16_t)rgb[0] * scale + 127) / 255;
-        rgb[1] = ((uint16_t)rgb[1] * scale + 127) / 255;
-        rgb[2] = ((uint16_t)rgb[2] * scale + 127) / 255;
+      modulateSky(rgb, effectType, x, y);
+      if (sceneFraction) {
+        const uint8_t nextType = assets.effects[nextMaskOffset + pixelIndex];
+        uint8_t nextRgb[3];
+        memcpy(nextRgb, assets.animation + nextOffset + pixelIndex * 3, 3);
+        modulateSky(nextRgb, nextType, x, y);
+        for (unsigned channel = 0; channel < 3; ++channel)
+          rgb[channel] = subpixel::mix(rgb[channel], nextRgb[channel], sceneFraction);
+        effectMask[pixelIndex] = subpixel::mask(effectType, nextType, sceneFraction);
       }
 #endif
       #if EVENT_MODE
@@ -892,7 +1033,7 @@ void renderTask(void *) {
     if (control.maintenance == Maintenance::None && parked) {
       parked = false;
       sceneTimelineAt = millis();
-      effectOrigin = started - int64_t(effectTick) * 1000000 / EVENT_FPS;
+      effectOrigin = started - (int64_t(effectTick) * 256 + effectSubTick) * 1000000 / (EVENT_FPS * 256);
     }
     if (parked) {
       // Keep the original ACK alive until core 0 releases the request. No PSRAM,
@@ -903,6 +1044,7 @@ void renderTask(void *) {
       if (fresh) applyControlAgents();
       const uint32_t previousTick = effectTick;
       effectTick = uint64_t(started - effectOrigin) * EVENT_FPS / 1000000;
+      effectSubTick = (uint64_t(started - effectOrigin) * EVENT_FPS % 1000000) * 256 / 1000000;
       effectFrameTicks = effectTick - previousTick;
       const bool maintenance = control.maintenance != Maintenance::None;
       const bool flying = meteorFlightInProgress();

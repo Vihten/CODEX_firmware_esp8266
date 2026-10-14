@@ -39,8 +39,13 @@ installed into its OTA slot and booted successfully on 2026-10-14. HTTP returned
 the new version; both real agents reconnected, Wi-Fi settings survived and the
 post-boot check reported Up to date. No USB flashing was used for this update.
 The current application suite passed 316 tests (three optional tests skipped),
-including native subpixel math and actual renderer checks. Final OTA observation
-of the current release is recorded after deployment; do not infer it from a build.
+including native subpixel math and actual renderer checks. This subpixel release
+then completed Wi-Fi OTA on 2026-10-14 and reconnected both real agents. A short
+31-second profile measured 29.28 actual FPS against the 30 FPS target, with a
+maximum sampled frame time of 33379 us, no sampled LED errors, no restarts and
+no Wi-Fi disconnects. Lowest sampled free heap was 131920 bytes during the
+post-boot HTTPS manifest check; after it completed, heap returned to about 177 KB.
+This short observation is not a long-duration or eight-agent acceptance test.
 This is not a completed one-hour PSU/matrix or eight-agent load test, and the
 rollback failure path has not been deliberately exercised. Publishing does not
 force an update when the controller already has the same version.

@@ -59,6 +59,10 @@ The current subpixel release passed 316 application tests, with three optional
 tests skipped, plus a native integration pass on the actual generated renderer.
 It preserves 30 FPS, agent schedules, colors and hardware mapping. Fractional
 coverage reduces stepping; it does not double the physical frame rate.
+The subpixel release itself completed Wi-Fi OTA and reconnected both agents.
+A short 31-second runtime profile measured 29.28 FPS, with maximum sampled
+frame time 33379 us and zero sampled LED/Wi-Fi errors or restarts. The target
+remains 30 FPS; this measurement is not an eight-agent or long-duration test.
 Long-duration PSU/matrix stability, eight simultaneous agents and a deliberately
 failed OTA/rollback still require hardware acceptance testing. Do not
 treat these build checks as a guarantee of wall-mounted operational stability.

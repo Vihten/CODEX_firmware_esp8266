@@ -757,7 +757,7 @@ esp_err_t page(httpd_req_t *request) {
   if (view.dirty) html.text("<p class='notice' role='status'>Зберігаємо налаштування.</p>");
   if (view.restarting) html.text("<p class='notice' role='status'>Заплановано перезапуск контролера.</p>");
   if (!view.render.assetsReady || view.render.ledError) html.text("<p class='notice danger' role='alert'>Матриця недоступна. Перевірте діагностику LED-драйвера.</p>");
-  html.text("<p class='notice' data-new-agents hidden>З’явилися нові агенти. <a href='/agents'>Оновити список</a></p>");
+  if (!settingsPage) html.text("<p class='notice' data-new-agents hidden>З’явилися нові агенти. <a href='/agents'>Оновити список</a></p>");
   if (agentsPage) { html.text("<section class='section'>"); writeAgents(html, view); html.text("</section>"); }
   else if (settingsPage) writeSettings(html, view);
   else writeOverview(html, view);

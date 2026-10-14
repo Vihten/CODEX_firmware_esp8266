@@ -20,7 +20,7 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
-Version `1791970668113` introduces a Ukrainian controller portal with Overview,
+Version `1791971169630` introduces a Ukrainian controller portal with Overview,
 Agents and Settings tabs. It adds visible-only live status with bounded polling,
 agent filters, brightness/day presets and downloadable diagnostics. Existing
 power, schedule, color, Wi-Fi, restart and GitHub OTA commands remain native POST
@@ -29,7 +29,13 @@ the 30 FPS target and subpixel motion; static RAM remains 63,120 bytes.
 Validation: 317 tests passed (three optional tests skipped), eight portal-script
 tests passed, static analysis and the S3 PlatformIO build passed. Desktop/mobile
 layout was checked, including escaped agent names and 12-agent HTML fixtures.
-Installation and live-device observations are recorded after OTA verification.
+The initial portal version `1791970668113` completed Wi-Fi OTA with both agents
+reconnected and settings preserved. Twelve status requests over about 35 seconds
+had no failures (maximum latency 278 ms), with 29.37 measured FPS at a target of
+30. Six page requests all returned HTTP 200 (60 ms to 1.60 s). No LED errors,
+Wi-Fi disconnects or restarts were observed. The current follow-up removes an
+irrelevant new-agent notice from Settings; its installation is verified below.
+These are short observations, not a long-duration acceptance test.
 
 ## Previous Release
 

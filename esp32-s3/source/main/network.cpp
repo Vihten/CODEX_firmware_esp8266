@@ -1,4 +1,5 @@
 #include "runtime.hpp"
+#include "web_assets.hpp"
 
 #include <algorithm>
 #include <array>
@@ -548,36 +549,41 @@ public:
 };
 void writeAgentControls(Html &html, const char *name, uint32_t id, uint32_t rgb,
                         bool online, unsigned activity, int remaining, bool custom) {
-  html.text("<section class='agent'><header class='agent-heading'><h3><span class='swatch' aria-hidden='true' style='background:#");
+  html.format("<section class='agent' data-agent='%08lX'><header class='agent-heading'><h3>", (unsigned long)id);
+  html.text("<span class='swatch' data-agent-color aria-hidden='true' style='background:#");
   html.format("%06lX", (unsigned long)rgb);
   html.text("'></span>"); html.escaped(name); html.text("</h3>");
-  html.format("<span class='agent-status%s'><span aria-hidden='true'></span>%s</span></header>",
-              online ? " online" : "", online ? "Connected" : "Offline");
-  html.format("<p class='agent-meta'>ID <code>%08lX</code><span>%s color</span></p>",
-              (unsigned long)id, custom ? "Custom" : "Automatic");
-  html.format("<dl class='agent-metrics'><div><dt>Activity</dt><dd>%u<span>%%</span>"
-              "<meter min='0' max='100' value='%u' aria-label='Agent activity'>%u%%</meter></dd></div>",
+  html.format("<span class='agent-status%s' data-agent-state>%s</span></header>",
+              online ? " online" : "", online ? "На зв’язку" : "Не на зв’язку");
+  html.format("<p class='agent-meta'>ID <code>%08lX</code><span>%s</span></p>",
+              (unsigned long)id, custom ? "Власний колір" : "Автоматичний колір");
+  html.format("<dl class='agent-metrics'><div><dt>Активність</dt><dd><span data-agent-activity>%u%%</span>"
+              "<meter data-agent-bar min='0' max='100' value='%u' aria-label='Активність агента'>%u%%</meter></dd></div>",
               online ? activity : 0, online ? activity : 0, online ? activity : 0);
-  html.text("<div><dt>Account remaining</dt><dd>");
-  if (online && remaining >= 0) html.format("%d<span>%%</span>", remaining);
-  else html.text("<span>Unavailable</span>");
+  html.text("<div><dt>Залишок ліміту</dt><dd data-agent-remaining>");
+  if (online && remaining >= 0) html.format("%d%%", remaining);
+  else html.text("<span>Немає даних</span>");
   html.text("</dd></div></dl>");
   html.text("<form class='agent-color' method='post' action='/agent-color'>");
   html.format("<input type='hidden' name='client' value='%08lX'>", (unsigned long)id);
-  html.format("<div class='color-field'><label for='color-%08lX'>Meteor color</label>"
-              "<div class='color-value'><input id='color-%08lX' type='color' name='color' aria-label='Meteor color for ",
+  html.format("<div class='color-field'><label for='color-%08lX'>Колір метеорів</label>"
+              "<div class='color-value'><input id='color-%08lX' type='color' name='color' aria-label='Колір метеорів агента ",
               (unsigned long)id, (unsigned long)id);
   html.escaped(name);
   html.format("' value='#%06lX' oninput='this.form.querySelector(&quot;output&quot;).textContent=this.value.toUpperCase()'>"
               "<output>#%06lX</output></div></div>", (unsigned long)rgb, (unsigned long)rgb);
-  html.text("<button type='submit' name='mode' value='manual'>Save color</button>"
-            "<button class='secondary' type='submit' name='mode' value='auto' title='Restore automatic meteor color'>Automatic</button></form></section>");
+  html.text("<button type='submit' name='mode' value='manual'>Зберегти</button>"
+            "<button class='secondary' type='submit' name='mode' value='auto' title='Відновити автоматичний колір'>Автоматично</button></form></section>");
 }
 
 void writeAgents(Html &html, const View &view) {
   unsigned connected = 0;
   for (const auto &agent : view.control.agents) connected += agent.present;
-  html.format("<h2>Agents</h2><p>Connected: %u / %u</p>", connected, unsigned(kAgentCapacity));
+  html.format("<div class='section-head'><h2>Підключення</h2><span class='muted' data-live='agents'>%u / %u на зв’язку</span></div>", connected, unsigned(kAgentCapacity));
+  html.text("<div class='filter toolbar' aria-label='Фільтр агентів' data-js hidden>"
+            "<button type='button' data-filter='all' aria-pressed='true'>Усі</button>"
+            "<button type='button' data-filter='online' aria-pressed='false'>На зв’язку</button>"
+            "<button type='button' data-filter='active' aria-pressed='false'>Активні</button></div>");
   unsigned known = 0;
   for (size_t i = 0; i < kAgentCapacity; ++i) {
     const auto &agent = view.control.agents[i];
@@ -592,88 +598,217 @@ void writeAgents(Html &html, const View &view) {
     for (const auto &agent : view.control.agents)
       if ((agent.present || agent.name[0]) && agent.clientId == entry.clientId) listed = true;
     if (listed) continue;
-    char name[24]; std::snprintf(name, sizeof(name), "Agent %08lX", (unsigned long)entry.clientId);
+    char name[24]; std::snprintf(name, sizeof(name), "Агент %08lX", (unsigned long)entry.clientId);
     ++known;
     writeAgentControls(html, name, entry.clientId, entry.rgb, false, 0, -1, true);
   }
-  if (!known) html.text("<p role='status'>Waiting for agent heartbeat.</p>");
-  html.text("<p><a href='/agents'>Refresh agents</a></p>");
+  if (!known) html.text("<p class='notice'>Очікуємо підключення агентів.</p>");
+  html.text("<p class='filter-empty muted' hidden>Немає агентів за цим фільтром.</p>"
+            "<p><a href='/agents'>Оновити список</a></p>");
 }
 
+unsigned portalAgentCount(const View &view) {
+  unsigned count = 0;
+  for (const auto &agent : view.control.agents) count += agent.present;
+  return count;
+}
+const char *portalMatrixState(const View &view) {
+  if (!view.render.assetsReady || view.render.ledError) return "Помилка відмальовування";
+  if (!view.control.on) return view.render.sceneVisible && view.render.sceneProgress ? "Вимикається" : "Вимкнено";
+  if (!view.render.sceneVisible) return "Показ IP-адреси";
+  return view.render.sceneProgress < 4600 ? "Запускається" : "Увімкнено";
+}
+const char *portalOtaLabel(const char *value) {
+  if (!std::strcmp(value, "Up to date")) return "Встановлено актуальну версію";
+  if (!std::strcmp(value, "Not checked")) return "Перевірку ще не виконано";
+  if (!std::strcmp(value, "Checking S3 firmware manifest")) return "Перевіряємо GitHub";
+  if (!std::strcmp(value, "New firmware verified; waiting for LEDs")) return "Підготовка до встановлення";
+  if (!std::strcmp(value, "Firmware verified; restarting")) return "Оновлення перевірено, перезапуск";
+  if (!std::strcmp(value, "Update check queued")) return "Перевірку заплановано";
+  if (!std::strcmp(value, "Manifest HTTPS request failed")) return "GitHub тимчасово недоступний";
+  if (!std::strcmp(value, "Firmware HTTPS request failed")) return "Не вдалося завантажити прошивку";
+  if (!std::strcmp(value, "Firmware transfer or raw SHA-256 verification failed")) return "Помилка передачі або контрольної суми";
+  return value;
+}
+void writePortalStats(Html &html, const View &view) {
+  html.text("<div class='statusbar'><dl class='stats'><div><dt>Доступний ліміт</dt><dd data-live='remaining'>");
+  if (view.control.accountLinked) html.format("%u%%", view.control.remainingPercent); else html.text("Немає даних");
+  html.format("</dd></div><div><dt>Активність</dt><dd data-live='activity'>%u%%</dd></div>", view.control.activityPercent);
+  html.format("<div><dt>Агенти на зв’язку</dt><dd data-live='agents'>%u / %u</dd></div>", portalAgentCount(view), unsigned(kAgentCapacity));
+  html.text("<div><dt>Wi-Fi</dt><dd data-live='wifi'>"); html.text(view.control.connected ? "Підключено" : "Точка доступу");
+  html.text("</dd></div></dl></div>");
+}
+void writeSchedule(Html &html, const View &view) {
+  html.text("<section class='section'><div class='section-head'><h2>Розклад</h2></div><p class='muted'>Київ: <span data-live='clock'>");
+  const time_t timestamp = std::time(nullptr);
+  if (timestamp < 1700000000) html.text("очікуємо NTP");
+  else {
+    tm local{}; localtime_r(&timestamp, &local);
+    char clock[32]; std::strftime(clock, sizeof(clock), "%d.%m.%Y %H:%M", &local); html.text(clock);
+  }
+  html.text("</span></p><form method='post' action='/schedule'>");
+  html.format("<label class='checkbox-label'><input type='checkbox' name='enabled' value='1'%s> Розклад увімкнено</label>", view.scheduleEnabled ? " checked" : "");
+  html.text("<div class='form-grid'><label>Початок<input type='time' name='start' required value='");
+  html.format("%02u:%02u", view.start / 60, view.start % 60);
+  html.text("'></label><label>Завершення<input type='time' name='end' required value='");
+  html.format("%02u:%02u", view.end / 60, view.end % 60);
+  html.text("'></label></div><fieldset class='days'><legend>Дні роботи</legend>");
+  static constexpr const char *days[] = {"Нд", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"};
+  for (unsigned day = 1; day <= 7; ++day) {
+    const unsigned index = day % 7;
+    html.format("<label><input type='checkbox' name='d%u' value='1'%s><span>%s</span></label>",
+                index, view.days & (1U << index) ? " checked" : "", days[index]);
+  }
+  html.text("</fieldset><div class='quickbuttons' data-js hidden><button type='button' class='secondary' data-days='62'>Будні</button>"
+            "<button type='button' class='secondary' data-days='65'>Вихідні</button><button type='button' class='secondary' data-days='127'>Щодня</button></div>");
+  if (view.power != 0) html.text("<p class='notice'>Діє ручний режим живлення.</p>");
+  html.text("<div class='actions'><button type='submit'>Зберегти розклад</button></div></form></section>");
+}
+void writeAgentSummary(Html &html, const View &view) {
+  html.text("<section class='section'><div class='section-head'><h2>Активність агентів</h2><a href='/agents'>Керувати</a></div>");
+  unsigned known = 0;
+  for (const auto &agent : view.control.agents) {
+    if (!agent.present && !agent.name[0]) continue;
+    ++known;
+    html.format("<div class='agent-summary' data-agent='%08lX'><span class='agent-name'><span class='swatch' data-agent-color style='background:#%06lX' aria-hidden='true'></span><strong>",
+                (unsigned long)agent.clientId, (unsigned long)agent.rgb);
+    html.escaped(agent.name);
+    html.text("</strong></span><span class='agent-status");
+    if (agent.present) html.text(" online");
+    html.text("' data-agent-state>"); html.text(agent.present ? "На зв’язку" : "Не на зв’язку");
+    html.format("</span><strong data-agent-activity>%u%%</strong><meter data-agent-bar min='0' max='100' value='%u' aria-label='Активність агента'>%u%%</meter></div>",
+                agent.present ? agent.activity : 0, agent.present ? agent.activity : 0, agent.present ? agent.activity : 0);
+  }
+  if (!known) html.text("<p class='muted'>Очікуємо підключення агентів.</p>");
+  html.text("</section>");
+}
+void writeOverview(Html &html, const View &view) {
+  writePortalStats(html, view);
+  html.text("<div class='workspace'><div class='column'><section class='section'><div class='section-head'><h2>Матриця</h2><span class='muted' data-live='matrix'>");
+  html.text(portalMatrixState(view)); html.text("</span></div><h3>Живлення</h3>");
+  html.text("<form class='power' method='post' action='/power' aria-label='Живлення матриці'>");
+  for (unsigned mode = 0; mode < 3; ++mode)
+    html.format("<button type='submit' name='mode' value='%s' aria-pressed='%s'%s>%s</button>",
+                mode == 0 ? "auto" : mode == 1 ? "on" : "off", view.power == mode ? "true" : "false",
+                view.restarting || view.control.maintenance == Maintenance::Ota ? " disabled" : "",
+                mode == 0 ? "Авто" : mode == 1 ? "Увімкнути" : "Вимкнути");
+  html.text("</form><form method='post' action='/brightness'><div class='label-row'><label for='brightness'>Яскравість</label>");
+  html.format("<output id='brightnessValue' for='brightness'>%u%%</output></div>", (unsigned(view.control.brightness) * 100 + 127) / 255);
+  html.format("<input id='brightness' type='range' name='value' min='1' max='255' value='%u' oninput='brightnessValue.value=Math.round(this.value*100/255)+String.fromCharCode(37)'>", view.control.brightness);
+  html.text("<div class='quickbuttons' data-js hidden><button type='button' class='secondary' data-brightness='26'>10%</button>"
+            "<button type='button' class='secondary' data-brightness='64'>25%</button><button type='button' class='secondary' data-brightness='128'>50%</button>"
+            "<button type='button' class='secondary' data-brightness='255'>100%</button></div><div class='actions'><button type='submit'>Застосувати</button></div></form></section>");
+  writeAgentSummary(html, view);
+  html.text("</div><div class='column'>"); writeSchedule(html, view); html.text("</div></div>");
+}
+void writeSettings(Html &html, const View &view) {
+  html.text("<div class='workspace'><div class='column'><section class='section'><div class='section-head'><h2>Мережа Wi-Fi</h2><span class='muted' data-live='wifi'>");
+  html.text(view.control.connected ? "Підключено" : "Точка доступу"); html.text("</span></div>");
+  html.format("<p class='muted'>IP <code>%s</code></p>", view.control.ip);
+  html.text("<form method='post' action='/save'><label>Назва мережі<input name='ssid' maxlength='32' required value='");
+  html.escaped(view.ssid);
+  html.text("'></label><label>Новий пароль<input id='wifi-password' type='password' name='password' maxlength='63' autocomplete='new-password'></label>");
+  html.text("<label class='checkbox-label' data-js hidden><input type='checkbox' id='show-password'> Показати пароль</label>"
+            "<p class='muted'>Порожнє поле зберігає пароль поточної мережі.</p><div class='actions'><button type='submit'>Зберегти мережу</button></div></form></section>");
+  html.text("<section class='section'><div class='section-head'><h2>Оновлення прошивки</h2></div><p data-live='ota'>");
+  html.escaped(portalOtaLabel(view.ota));
+  html.text("</p><progress id='ota-progress' max='100' aria-label='Завантаження прошивки'");
+  if (!view.otaTotal) html.text(" hidden");
+  html.format(" value='%u'></progress>", view.otaTotal ? unsigned(uint64_t(view.otaDone) * 100 / view.otaTotal) : 0);
+  html.format("<p class='muted'>Версія <code>%llu</code></p>", (unsigned long long)PROJECT_FIRMWARE_VERSION);
+  html.text("<form method='post' action='/update'><button type='submit' class='secondary'>Перевірити GitHub</button></form></section></div><div class='column'>");
+  html.text("<section class='section'><div class='section-head'><h2>Система</h2></div><dl class='system-list'>");
+  html.format("<div><dt>Контролер</dt><dd>ESP32-S3 N16R8</dd></div><div><dt>ID</dt><dd><code>%06lX</code></dd></div>", (unsigned long)view.deviceId);
+  html.text("<div><dt>Час роботи</dt><dd data-live='uptime'>");
+  const uint32_t seconds = uptimeMs() / 1000;
+  html.format("%lu д %02lu:%02lu:%02lu", (unsigned long)(seconds / 86400), (unsigned long)(seconds / 3600 % 24), (unsigned long)(seconds / 60 % 60), (unsigned long)(seconds % 60));
+  html.text("</dd></div><div><dt>Вільна RAM</dt><dd data-live='heap'>");
+  html.format("%u КБ", unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024));
+  html.format("</dd></div><div><dt>Сигнал Wi-Fi</dt><dd data-live='rssi'>%d dBm</dd></div>", view.rssi);
+  html.format("<div><dt>Кадрів за секунду</dt><dd data-live='fps'>Немає виміру</dd></div><div><dt>Цільова частота</dt><dd>%u FPS</dd></div>", unsigned(PROJECT_FPS));
+  html.format("<div><dt>Сигнал матриці</dt><dd>GPIO%u · RMT DMA</dd></div></dl>", unsigned(PROJECT_DATA_PIN));
+  html.text("<div class='actions'><a class='button secondary' href='/health' download='led-forge-health.txt'>Завантажити діагностику</a></div></section>");
+  html.text("<section class='section'><div class='section-head'><h2>Обслуговування</h2></div>"
+            "<form method='post' action='/restart' onsubmit='return confirm(&quot;Перезапустити контролер?&quot;)'><button type='submit' class='danger'");
+  if (view.restarting) html.text(" disabled");
+  html.text(">Перезапустити контролер</button></form></section></div></div>");
+}
 esp_err_t page(httpd_req_t *request) {
   HandlerScope scope; View view;
   if (!snapshot(view)) return error(request, "503 Service Unavailable", "Controller busy; retry.");
   httpd_resp_set_type(request, "text/html; charset=utf-8"); httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-  Html html(request);
-  html.text("<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>LED Forge Controller</title><style>"
-            "body{font:16px sans-serif;max-width:32rem;margin:2rem auto;padding:0 1rem;background:#111;color:#eee}"
-            "h1{font-size:1.65rem}h2{font-size:1.2rem;margin-top:2rem}input,button,select{box-sizing:border-box;width:100%;padding:.8rem;margin:.4rem 0;background:#222;color:#fff;border:1px solid #555;border-radius:4px;font:inherit}"
-            "button{background:#20a36a;color:#061c12;border:0;font-weight:600}button:disabled{opacity:.5}input[type=checkbox]{width:auto}input[type=color]{height:3rem}input[type=range]{padding:.5rem 0;accent-color:#20a36a}"
-            "a{color:#4bd8e0}small{color:#bbb}p,label{overflow-wrap:anywhere}label{display:block}fieldset{border:1px solid #555;margin-top:1rem}fieldset label{display:inline-block;margin-right:.7rem}"
-            "nav{display:flex;gap:1.5rem;flex-wrap:wrap;margin:1rem 0 2rem}nav a[aria-current=page]{color:#fff;text-decoration-thickness:2px;text-underline-offset:5px}"
-            ".power{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.5rem}.power button{margin:0;min-height:44px;min-width:0;padding:.8rem .4rem;background:#222;color:#eee;border:1px solid #555}"
-            ".power button[aria-pressed=true]{background:#20a36a;color:#061c12;border-color:#20a36a}.secondary{background:#222;color:#eee;border:1px solid #555}"
-            ".agent{padding:1.5rem 0;border-bottom:1px solid #333}.agent-heading{display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap}.agent h3{display:flex;align-items:center;gap:.65rem;min-width:0;margin:0;font-size:1.125rem;overflow-wrap:anywhere}"
-            ".swatch{flex:none;display:inline-block;width:1.125rem;height:1.125rem;border-radius:4px;border:1px solid #aaa}.agent-status{display:inline-flex;align-items:center;gap:.4rem;color:#bbb;font-size:.875rem}.agent-status span{width:6px;height:6px;border-radius:50%;background:#888}.agent-status.online{color:#75dfaf}.agent-status.online span{background:#75dfaf}"
-            ".agent-meta{display:flex;gap:1rem;flex-wrap:wrap;margin:.65rem 0 1.25rem;color:#aaa;font-size:.75rem}.agent-meta code{color:#bbb}.agent-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem;margin:0 0 1.5rem}.agent-metrics dt{color:#bbb;font-size:.8125rem}.agent-metrics dd{margin:.35rem 0 0;font-size:1.375rem;font-variant-numeric:tabular-nums}.agent-metrics dd span{font-size:.875rem;color:#bbb;margin-left:.15rem}"
-            ".agent-metrics meter{display:block;width:100%;height:5px;margin-top:.65rem;border:0;border-radius:2px;background:#303030;appearance:none}.agent-metrics meter::-webkit-meter-bar{height:5px;background:#303030;border:0;border-radius:2px}.agent-metrics meter::-webkit-meter-optimum-value{background:#20a36a;border-radius:2px}.agent-metrics meter::-moz-meter-bar{background:#20a36a}"
-            ".agent-color{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:end;gap:.65rem}.color-field label{font-size:.8125rem;color:#bbb;margin-bottom:.5rem}.color-value{display:flex;align-items:center;gap:.65rem;min-width:0}.color-value output{font: .8125rem monospace;color:#ddd}.agent-color input[type=color]{appearance:none;width:44px;height:44px;flex:none;padding:4px;margin:0;border:1px solid #666;border-radius:6px;cursor:pointer}"
-            ".agent-color input[type=color]::-webkit-color-swatch-wrapper{padding:0}.agent-color input[type=color]::-webkit-color-swatch{border:0;border-radius:3px}.agent-color input[type=color]::-moz-color-swatch{border:0;border-radius:3px}.agent-color button{width:auto;min-height:44px;margin:0;padding:.6rem .85rem;font-size:.875rem}"
-            "@media(max-width:440px){.agent-color{grid-template-columns:repeat(2,minmax(0,1fr))}.color-field{grid-column:1/-1;margin-bottom:.3rem}.agent-color button{width:100%}.agent-metrics{gap:1rem}}"
-            "@media(hover:hover) and (pointer:fine){.agent-color button:hover{filter:brightness(1.12)}.agent-color input[type=color]:hover{border-color:#aaa}}"
-            ":focus-visible{outline:2px solid #4bd8e0;outline-offset:3px}::selection{background:#4bd8e0;color:#111}"
-            "</style></head><body><h1>LED Forge Controller</h1>");
   const bool agentsPage = !std::strcmp(request->uri, "/agents");
-  html.format("<nav aria-label='Controller sections'><a href='/'%s>Controller</a><a href='/agents'%s>Agents</a></nav>",
-              agentsPage ? "" : " aria-current='page'", agentsPage ? " aria-current='page'" : "");
-  if (view.message[0]) { html.text("<p role='status'>"); html.escaped(view.message); html.text("</p>"); }
-  if (agentsPage) {
-    html.format("<p>Controller ID: %06lX</p>", (unsigned long)view.deviceId);
-    writeAgents(html, view);
-    html.text("</body></html>");
-    return html.end();
-  }
-  if (!view.render.assetsReady || view.render.ledError) html.text("<p role='alert'>LED renderer unavailable. Check firmware artwork and RMT diagnostics.</p>");
-  html.format("<p><strong>Controller:</strong> %06lX<br><strong>Wi-Fi:</strong> %s<br><strong>IP:</strong> %s<br><strong>Remaining:</strong> %u%%<br><strong>Activity:</strong> %u%%</p>",
-              (unsigned long)view.deviceId, view.control.connected ? "connected" : "access point", view.control.ip,
-              view.control.remainingPercent, view.control.activityPercent);
-  html.text("<p><strong>OTA:</strong> "); html.escaped(view.ota); html.text("</p>");
-  if (view.dirty) html.text("<p role='status'>Settings awaiting safe persistence.</p>");
-  html.text("<h2>Matrix power</h2><form class='power' method='post' action='/power' aria-label='Matrix power'>");
-  for (unsigned mode = 0; mode < 3; ++mode) html.format("<button type='submit' name='mode' value='%s' aria-pressed='%s'%s>%s</button>",
-      mode == 0 ? "auto" : mode == 1 ? "on" : "off", view.power == mode ? "true" : "false",
-      view.restarting || view.control.maintenance == Maintenance::Ota ? " disabled" : "", mode == 0 ? "Auto" : mode == 1 ? "On" : "Off");
-  const char *matrixState = !view.render.assetsReady || view.render.ledError ? "unavailable"
-      : !view.control.on ? (view.render.sceneVisible && view.render.sceneProgress ? "turning off" : "off")
-      : !view.render.sceneVisible ? "IP address" : view.render.sceneProgress < 4600 ? "turning on" : "on";
-  html.format("</form><p>Matrix: %s</p><h2>Matrix brightness</h2><form method='post' action='/brightness'>", matrixState);
-  html.format("<label for='brightness'>Brightness <output id='brightnessValue' for='brightness'>%u%%</output></label>", (unsigned(view.control.brightness) * 100 + 127) / 255);
-  html.format("<input id='brightness' type='range' name='value' min='1' max='255' value='%u' oninput='brightnessValue.value=Math.round(this.value*100/255)+String.fromCharCode(37)'>", view.control.brightness);
-  html.text("<button type='submit'>Apply brightness</button></form>");
-  unsigned connected = 0; for (const auto &agent : view.control.agents) connected += agent.present;
-  html.format("<h2>Agents</h2><p>Connected: %u / %u</p><p><a href='/agents'>Agent settings and meteor colors</a></p>", connected, unsigned(kAgentCapacity));
-  html.text("<h2>Schedule</h2><p>Kyiv time: ");
-  const time_t timestamp = std::time(nullptr);
-  if (timestamp < 1700000000) html.text("waiting for NTP");
-  else {
-    tm local{}; localtime_r(&timestamp, &local);
-    char clock[32]; std::strftime(clock, sizeof(clock), "%Y-%m-%d %H:%M:%S", &local); html.text(clock);
-  }
-  html.text("</p>");
-  html.text("<form method='post' action='/schedule'>");
-  html.format("<label><input type='checkbox' name='enabled' value='1'%s> Enabled</label><label>Start<input type='time' name='start' required value='%02u:%02u'></label><label>End<input type='time' name='end' required value='%02u:%02u'></label><fieldset><legend>Days</legend>",
-              view.scheduleEnabled ? " checked" : "", view.start / 60, view.start % 60, view.end / 60, view.end % 60);
-  static constexpr const char *days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-  for (unsigned day = 1; day <= 7; ++day) { const unsigned index = day % 7; html.format("<label><input type='checkbox' name='d%u' value='1'%s> %s</label>", index, view.days & (1U << index) ? " checked" : "", days[index]); }
-  html.text("</fieldset><p><small>Time zone: Europe/Kyiv. Overnight hours belong to the start day. Equal start and end covers selected days.</small></p><button type='submit'>Save schedule</button></form>");
-  html.text("<h2>Wi-Fi</h2><form method='post' action='/save'><label>Wi-Fi name<input name='ssid' maxlength='32' required value='");
-  html.escaped(view.ssid); html.text("'></label><label>Password<input type='password' name='password' maxlength='63' autocomplete='new-password'></label><p><small>Leave blank to keep the saved password when the Wi-Fi name is unchanged.</small></p><button type='submit'>Save and connect</button></form>");
-  html.text("<h2>Controller</h2><form method='post' action='/update'><button type='submit'>Check for firmware update</button></form><form method='post' action='/restart' onsubmit='return confirm(&quot;Restart controller?&quot;)'><button type='submit'");
-  if (view.restarting) html.text(" disabled");
-  html.text(">Restart controller</button></form>");
-  if (view.restarting) html.text("<p role='status'>Restart queued.</p>");
-  html.text("<p><a href='/health'>Controller diagnostics</a></p></body></html>");
+  const bool settingsPage = !std::strcmp(request->uri, "/settings");
+  Html html(request);
+  html.text("<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>LED Forge Controller</title><style>");
+  html.text(kPortalCss);
+  html.text("</style></head><body><div class='shell'><header class='topbar'><div><div class='brand'>LED Forge <span class='muted'>S3</span></div>");
+  html.format("<p class='device-meta'>Матриця 50 × 20 <span>·</span> <code>%06lX</code> <span>·</span> <code>%s</code></p>", (unsigned long)view.deviceId, view.control.ip);
+  html.text("</div><div class='header-status'><span data-live='connection' role='status'>Статичний перегляд</span>"
+            "<label class='checkbox-label' data-js hidden><input id='live-poll' type='checkbox' data-poll-toggle checked> Наживо</label>"
+            "<button type='button' class='secondary' data-refresh data-js hidden>Оновити</button></div></header>");
+  html.text("<nav class='tabs' aria-label='Розділи контролера'>");
+  html.format("<a href='/'%s>Огляд</a><a href='/agents'%s>Агенти</a><a href='/settings'%s>Налаштування</a></nav>",
+              !agentsPage && !settingsPage ? " aria-current='page'" : "", agentsPage ? " aria-current='page'" : "", settingsPage ? " aria-current='page'" : "");
+  html.text("<main><div class='section-head'><h1>");
+  html.text(agentsPage ? "Агенти" : settingsPage ? "Налаштування" : "Огляд");
+  html.text("</h1><span class='muted' data-live='updated'></span></div>");
+  if (view.message[0]) { html.text("<p class='notice' role='status'>"); html.escaped(view.message); html.text("</p>"); }
+  if (view.dirty) html.text("<p class='notice' role='status'>Зберігаємо налаштування.</p>");
+  if (view.restarting) html.text("<p class='notice' role='status'>Заплановано перезапуск контролера.</p>");
+  if (!view.render.assetsReady || view.render.ledError) html.text("<p class='notice danger' role='alert'>Матриця недоступна. Перевірте діагностику LED-драйвера.</p>");
+  html.text("<p class='notice' data-new-agents hidden>З’явилися нові агенти. <a href='/agents'>Оновити список</a></p>");
+  if (agentsPage) { html.text("<section class='section'>"); writeAgents(html, view); html.text("</section>"); }
+  else if (settingsPage) writeSettings(html, view);
+  else writeOverview(html, view);
+  html.text("</main><footer class='footer'><span>LED Forge · ESP32-S3</span><a href='/health'>Діагностика</a></footer></div><script>");
+  html.text(kPortalScript); html.text("</script></body></html>");
   return html.end();
+}
+esp_err_t portalStatus(httpd_req_t *request) {
+  HandlerScope scope; View view;
+  if (!snapshot(view)) return error(request, "503 Service Unavailable", "Controller busy; retry.");
+  cJSON *root = cJSON_CreateObject();
+  if (!root) return error(request, "503 Service Unavailable", "Not enough memory.");
+  bool okay = true;
+  const auto number = [&](cJSON *object, const char *key, double value) { if (!cJSON_AddNumberToObject(object, key, value)) okay = false; };
+  const auto string = [&](cJSON *object, const char *key, const char *value) { if (!cJSON_AddStringToObject(object, key, value)) okay = false; };
+  const auto boolean = [&](cJSON *object, const char *key, bool value) { if (!cJSON_AddBoolToObject(object, key, value)) okay = false; };
+  number(root, "uptime_ms", uptimeMs()); number(root, "frames", view.render.frames);
+  number(root, "heap", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  number(root, "rssi", view.rssi); number(root, "activity", view.control.activityPercent);
+  number(root, "agents_count", portalAgentCount(view)); number(root, "brightness", view.control.brightness);
+  number(root, "ota_done", view.otaDone); number(root, "ota_total", view.otaTotal);
+  const time_t epoch = std::time(nullptr); number(root, "time_epoch", epoch >= 1700000000 ? double(epoch) : 0);
+  if (view.control.accountLinked) number(root, "remaining", view.control.remainingPercent);
+  else if (!cJSON_AddNullToObject(root, "remaining")) okay = false;
+  boolean(root, "wifi", view.control.connected); boolean(root, "on", view.control.on);
+  boolean(root, "maintenance", view.restarting || view.control.maintenance == Maintenance::Ota || view.control.maintenance == Maintenance::Restart);
+  string(root, "matrix", portalMatrixState(view)); string(root, "ota", view.ota); string(root, "ota_label", portalOtaLabel(view.ota));
+  string(root, "power", view.power == 0 ? "auto" : view.power == 1 ? "on" : "off");
+  char id[16], version[24]; std::snprintf(id, sizeof(id), "%06lX", (unsigned long)view.deviceId);
+  std::snprintf(version, sizeof(version), "%llu", (unsigned long long)PROJECT_FIRMWARE_VERSION);
+  string(root, "device_id", id); string(root, "version", version);
+  cJSON *agents = cJSON_AddArrayToObject(root, "agents");
+  if (!agents) okay = false;
+  else for (const auto &agent : view.control.agents) {
+    if (!agent.present && !agent.name[0]) continue;
+    cJSON *item = cJSON_CreateObject();
+    if (!item) { okay = false; break; }
+    if (!cJSON_AddItemToArray(agents, item)) { cJSON_Delete(item); okay = false; break; }
+    char client[16], color[8]; std::snprintf(client, sizeof(client), "%08lX", (unsigned long)agent.clientId);
+    std::snprintf(color, sizeof(color), "#%06lX", (unsigned long)agent.rgb);
+    string(item, "id", client); string(item, "name", agent.name); string(item, "color", color);
+    boolean(item, "online", agent.present); number(item, "activity", agent.present ? agent.activity : 0);
+    number(item, "remaining", agent.present ? agent.remaining : -1);
+  }
+  char body[4096];
+  const bool printed = okay && cJSON_PrintPreallocated(root, body, sizeof(body), false);
+  cJSON_Delete(root);
+  if (!printed) return error(request, "503 Service Unavailable", "Status unavailable; retry.");
+  httpd_resp_set_type(request, "application/json; charset=utf-8");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  return httpd_resp_send(request, body, HTTPD_RESP_USE_STRLEN);
 }
 esp_err_t health(httpd_req_t *request) {
   HandlerScope scope; View view;
@@ -814,13 +949,14 @@ esp_err_t commandPost(httpd_req_t *request) {
   xSemaphoreGive(viewMutex);
   if (!queued) return error(request, "503 Service Unavailable", unavailable ? "Controller maintenance; retry." : "Command queue full; retry.");
   httpd_resp_set_status(request, "303 See Other");
-  httpd_resp_set_hdr(request, "Location", command.kind == CommandKind::Color ? "/agents" : "/");
+  httpd_resp_set_hdr(request, "Location", command.kind == CommandKind::Color ? "/agents" :
+      command.kind == CommandKind::Wifi || command.kind == CommandKind::Update || command.kind == CommandKind::Restart ? "/settings" : "/");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store"); httpd_resp_set_hdr(request, "Connection", "close");
   return httpd_resp_send(request, nullptr, 0);
 }
 bool initializeHttp() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG(); config.core_id = 0; config.stack_size = 10240;
-  config.max_uri_handlers = 12; config.max_open_sockets = 4; config.lru_purge_enable = true;
+  config.max_uri_handlers = 16; config.max_open_sockets = 4; config.lru_purge_enable = true;
   config.recv_wait_timeout = 2; config.send_wait_timeout = 2;
   if (httpd_start(&model.http, &config) != ESP_OK) return false;
   const auto failed = []() { httpd_stop(model.http); model.http = nullptr; return false; };
@@ -829,6 +965,7 @@ bool initializeHttp() {
     return httpd_register_uri_handler(model.http, &route) == ESP_OK;
   };
   if (!registerRoute("/", HTTP_GET, page) || !registerRoute("/agents", HTTP_GET, page) ||
+      !registerRoute("/settings", HTTP_GET, page) || !registerRoute("/status", HTTP_GET, portalStatus) ||
       !registerRoute("/health", HTTP_GET, health) || !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
   for (const char *uri : {"/save", "/power", "/brightness", "/schedule", "/agent-color", "/restart", "/update"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();

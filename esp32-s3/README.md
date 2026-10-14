@@ -52,7 +52,10 @@ color overrides are not transferred: select them on the new `/agents` page.
 
 The image built successfully; its agent-page HTML and offline color controls passed
 14 native network contract tests. The page was checked at desktop and mobile widths.
-The preceding version was USB-installed and served both portal pages with real agents.
-Long-duration PSU/matrix stability, eight simultaneous agents and an end-to-end
-S3 OTA installation/rollback still require hardware acceptance testing. Do not
+The current release completed a real GitHub-to-S3 Wi-Fi OTA installation on
+2026-10-14, rebooted into version 1791961274325 and reconnected both real agents.
+Wi-Fi settings persisted and the post-boot update check reported Up to date.
+The full application suite passed 305 tests, with three optional tests skipped.
+Long-duration PSU/matrix stability, eight simultaneous agents and a deliberately
+failed OTA/rollback still require hardware acceptance testing. Do not
 treat these build checks as a guarantee of wall-mounted operational stability.

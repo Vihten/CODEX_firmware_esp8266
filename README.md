@@ -32,10 +32,14 @@ explicit LED-driver dependency, avoiding unused LCD components. A fresh build
 passed. The previous release was installed over USB; local
 rebuilds can differ in SDK linkage/build metadata and are not byte-identical.
 
-The app and agent were tested; the installed image served HTTP with one real
-agent. This is not a completed one-hour PSU/matrix or eight-agent load test, nor
-an end-to-end S3 OTA/rollback test. Publishing does not force an update when the
-controller already has the same version.
+This version was downloaded by S3 directly from GitHub over Wi-Fi, hash-verified,
+installed into its OTA slot and booted successfully on 2026-10-14. HTTP returned
+the new version; both real agents reconnected, Wi-Fi settings survived and the
+post-boot check reported Up to date. No USB flashing was used for this update.
+The application suite passed 305 tests (three optional tests skipped).
+This is not a completed one-hour PSU/matrix or eight-agent load test, and the
+rollback failure path has not been deliberately exercised. Publishing does not
+force an update when the controller already has the same version.
 
 No Codex login token, account password or Wi-Fi station credentials are shipped.
 The account fingerprint is only a non-secret telemetry routing identifier.

@@ -1,0 +1,5 @@
+/.pio/
+/managed_components/
+/sdkconfig
+/sdkconfig.*
+!/sdkconfig.defaults

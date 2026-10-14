@@ -1,7 +1,7 @@
 # ESP32-S3 N16R8 Firmware
 
 - Module: ESP32-S3-WROOM-1-N16R8, 16 MiB flash, 8 MiB octal PSRAM.
-- Version: `1791958778913`.
+- Version: `1791961274325`.
 - LED data: GPIO18, 50 x 20 WS2812 GRB, target 30 FPS.
 - Render task: core 1. Network/configuration owner and HTTP: core 0.
 - Telemetry capacity: 12 agents. LAN telemetry is not authenticated.
@@ -50,8 +50,9 @@ color overrides are not transferred: select them on the new `/agents` page.
 
 ## Verification Limits
 
-The image built successfully, was USB-installed, and served both portal pages with
-one real agent. Application tests passed (304 passed, three optional skipped).
+The image built successfully; its agent-page HTML and offline color controls passed
+14 native network contract tests. The page was checked at desktop and mobile widths.
+The preceding version was USB-installed and served both portal pages with real agents.
 Long-duration PSU/matrix stability, eight simultaneous agents and an end-to-end
 S3 OTA installation/rollback still require hardware acceptance testing. Do not
 treat these build checks as a guarantee of wall-mounted operational stability.

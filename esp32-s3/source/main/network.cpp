@@ -548,20 +548,30 @@ public:
 };
 void writeAgentControls(Html &html, const char *name, uint32_t id, uint32_t rgb,
                         bool online, unsigned activity, int remaining, bool custom) {
-  html.text("<section class='agent'><h3><span class='swatch' aria-hidden='true' style='background:#");
+  html.text("<section class='agent'><header class='agent-heading'><h3><span class='swatch' aria-hidden='true' style='background:#");
   html.format("%06lX", (unsigned long)rgb);
   html.text("'></span>"); html.escaped(name); html.text("</h3>");
-  html.format("<p>%s | Activity %u%%", online ? "Connected" : "Offline", online ? activity : 0);
-  if (online && remaining >= 0) html.format(" | Remaining %d%%", remaining);
-  html.format("</p><p class='muted'>Agent ID: %08lX | %s color</p>",
+  html.format("<span class='agent-status%s'><span aria-hidden='true'></span>%s</span></header>",
+              online ? " online" : "", online ? "Connected" : "Offline");
+  html.format("<p class='agent-meta'>ID <code>%08lX</code><span>%s color</span></p>",
               (unsigned long)id, custom ? "Custom" : "Automatic");
+  html.format("<dl class='agent-metrics'><div><dt>Activity</dt><dd>%u<span>%%</span>"
+              "<meter min='0' max='100' value='%u' aria-label='Agent activity'>%u%%</meter></dd></div>",
+              online ? activity : 0, online ? activity : 0, online ? activity : 0);
+  html.text("<div><dt>Account remaining</dt><dd>");
+  if (online && remaining >= 0) html.format("%d<span>%%</span>", remaining);
+  else html.text("<span>Unavailable</span>");
+  html.text("</dd></div></dl>");
   html.text("<form class='agent-color' method='post' action='/agent-color'>");
   html.format("<input type='hidden' name='client' value='%08lX'>", (unsigned long)id);
-  html.text("<label>Meteor color<input type='color' name='color' aria-label='Meteor color for ");
+  html.format("<div class='color-field'><label for='color-%08lX'>Meteor color</label>"
+              "<div class='color-value'><input id='color-%08lX' type='color' name='color' aria-label='Meteor color for ",
+              (unsigned long)id, (unsigned long)id);
   html.escaped(name);
-  html.format("' value='#%06lX'></label>", (unsigned long)rgb);
+  html.format("' value='#%06lX' oninput='this.form.querySelector(&quot;output&quot;).textContent=this.value.toUpperCase()'>"
+              "<output>#%06lX</output></div></div>", (unsigned long)rgb, (unsigned long)rgb);
   html.text("<button type='submit' name='mode' value='manual'>Save color</button>"
-            "<button class='secondary' type='submit' name='mode' value='auto'>Automatic</button></form></section>");
+            "<button class='secondary' type='submit' name='mode' value='auto' title='Restore automatic meteor color'>Automatic</button></form></section>");
 }
 
 void writeAgents(Html &html, const View &view) {
@@ -595,7 +605,7 @@ esp_err_t page(httpd_req_t *request) {
   if (!snapshot(view)) return error(request, "503 Service Unavailable", "Controller busy; retry.");
   httpd_resp_set_type(request, "text/html; charset=utf-8"); httpd_resp_set_hdr(request, "Cache-Control", "no-store");
   Html html(request);
-  html.text("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>LED Forge Controller</title><style>"
+  html.text("<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>LED Forge Controller</title><style>"
             "body{font:16px sans-serif;max-width:32rem;margin:2rem auto;padding:0 1rem;background:#111;color:#eee}"
             "h1{font-size:1.65rem}h2{font-size:1.2rem;margin-top:2rem}input,button,select{box-sizing:border-box;width:100%;padding:.8rem;margin:.4rem 0;background:#222;color:#fff;border:1px solid #555;border-radius:4px;font:inherit}"
             "button{background:#20a36a;color:#061c12;border:0;font-weight:600}button:disabled{opacity:.5}input[type=checkbox]{width:auto}input[type=color]{height:3rem}input[type=range]{padding:.5rem 0;accent-color:#20a36a}"
@@ -603,8 +613,14 @@ esp_err_t page(httpd_req_t *request) {
             "nav{display:flex;gap:1.5rem;flex-wrap:wrap;margin:1rem 0 2rem}nav a[aria-current=page]{color:#fff;text-decoration-thickness:2px;text-underline-offset:5px}"
             ".power{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.5rem}.power button{margin:0;min-height:44px;min-width:0;padding:.8rem .4rem;background:#222;color:#eee;border:1px solid #555}"
             ".power button[aria-pressed=true]{background:#20a36a;color:#061c12;border-color:#20a36a}.secondary{background:#222;color:#eee;border:1px solid #555}"
-            ".agent{padding:1rem 0;border-bottom:1px solid #444}.agent h3{margin:.2rem 0}.muted{font-size:.875rem;color:#bbb}.swatch{display:inline-block;width:.85rem;height:.85rem;margin-right:.5rem;border:1px solid #aaa}"
-            ".agent-color{display:flex;align-items:end;gap:.5rem;flex-wrap:wrap}.agent-color label{flex:1 0 100%}.agent-color input[type=color]{max-width:8rem}.agent-color button{flex:1;min-width:7rem}"
+            ".agent{padding:1.5rem 0;border-bottom:1px solid #333}.agent-heading{display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap}.agent h3{display:flex;align-items:center;gap:.65rem;min-width:0;margin:0;font-size:1.125rem;overflow-wrap:anywhere}"
+            ".swatch{flex:none;display:inline-block;width:1.125rem;height:1.125rem;border-radius:4px;border:1px solid #aaa}.agent-status{display:inline-flex;align-items:center;gap:.4rem;color:#bbb;font-size:.875rem}.agent-status span{width:6px;height:6px;border-radius:50%;background:#888}.agent-status.online{color:#75dfaf}.agent-status.online span{background:#75dfaf}"
+            ".agent-meta{display:flex;gap:1rem;flex-wrap:wrap;margin:.65rem 0 1.25rem;color:#aaa;font-size:.75rem}.agent-meta code{color:#bbb}.agent-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem;margin:0 0 1.5rem}.agent-metrics dt{color:#bbb;font-size:.8125rem}.agent-metrics dd{margin:.35rem 0 0;font-size:1.375rem;font-variant-numeric:tabular-nums}.agent-metrics dd span{font-size:.875rem;color:#bbb;margin-left:.15rem}"
+            ".agent-metrics meter{display:block;width:100%;height:5px;margin-top:.65rem;border:0;border-radius:2px;background:#303030;appearance:none}.agent-metrics meter::-webkit-meter-bar{height:5px;background:#303030;border:0;border-radius:2px}.agent-metrics meter::-webkit-meter-optimum-value{background:#20a36a;border-radius:2px}.agent-metrics meter::-moz-meter-bar{background:#20a36a}"
+            ".agent-color{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:end;gap:.65rem}.color-field label{font-size:.8125rem;color:#bbb;margin-bottom:.5rem}.color-value{display:flex;align-items:center;gap:.65rem;min-width:0}.color-value output{font: .8125rem monospace;color:#ddd}.agent-color input[type=color]{appearance:none;width:44px;height:44px;flex:none;padding:4px;margin:0;border:1px solid #666;border-radius:6px;cursor:pointer}"
+            ".agent-color input[type=color]::-webkit-color-swatch-wrapper{padding:0}.agent-color input[type=color]::-webkit-color-swatch{border:0;border-radius:3px}.agent-color input[type=color]::-moz-color-swatch{border:0;border-radius:3px}.agent-color button{width:auto;min-height:44px;margin:0;padding:.6rem .85rem;font-size:.875rem}"
+            "@media(max-width:440px){.agent-color{grid-template-columns:repeat(2,minmax(0,1fr))}.color-field{grid-column:1/-1;margin-bottom:.3rem}.agent-color button{width:100%}.agent-metrics{gap:1rem}}"
+            "@media(hover:hover) and (pointer:fine){.agent-color button:hover{filter:brightness(1.12)}.agent-color input[type=color]:hover{border-color:#aaa}}"
             ":focus-visible{outline:2px solid #4bd8e0;outline-offset:3px}::selection{background:#4bd8e0;color:#111}"
             "</style></head><body><h1>LED Forge Controller</h1>");
   const bool agentsPage = !std::strcmp(request->uri, "/agents");

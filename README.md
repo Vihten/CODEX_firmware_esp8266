@@ -20,14 +20,16 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
-Version `1791958778913` is the image already installed over USB. It uses RMT DMA,
+Version `1791961274325` refines the agents page with clear status, separate activity
+and allowance readings, a compact native color swatch, live HEX readout and
+responsive controls. It uses RMT DMA,
 render ownership on core 1 and networking on core 0. The portal includes per-agent
 activity and meteor colors, one schedule form, brightness, restart and three
 Matrix power buttons. Capacity is 12 agent slots, including the requested eight.
 
 The standalone source build uses ESP-IDF's minimal dependency graph with an
 explicit LED-driver dependency, avoiding unused LCD components. A fresh build
-passed. The published binary remains the previously USB-installed image; local
+passed. The previous release was installed over USB; local
 rebuilds can differ in SDK linkage/build metadata and are not byte-identical.
 
 The app and agent were tested; the installed image served HTTP with one real

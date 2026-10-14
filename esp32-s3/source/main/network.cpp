@@ -689,8 +689,10 @@ void writeOverview(Html &html, const View &view) {
   html.text("<section class='section preview-section'><details id='matrix-preview'><summary>Живий перегляд матриці</summary>"
             "<div class='preview-toolbar'><span id='preview-state' role='status'>Перегляд вимкнено</span>"
             "<label class='checkbox-label'><input type='checkbox' id='preview-normalize' checked>Підсилити видимість</label></div>"
-            "<canvas id='matrix-canvas' width='700' height='470' role='img' aria-label='Живий перегляд світлодіодної матриці'>"
-            "Живий перегляд недоступний у цьому браузері.</canvas><noscript>Для перегляду потрібен JavaScript.</noscript></details></section>");
+            "<div class='device-visual'><img src='/device.png' width='956' height='570' alt='Корпус CodexLimiterNewFinal'>"
+            "<div class='device-display'><canvas id='matrix-canvas' width='696' height='466' role='img' aria-label='Живий перегляд світлодіодної матриці'>"
+            "Живий перегляд недоступний у цьому браузері.</canvas></div></div>"
+            "<noscript>Живий перегляд недоступний без JavaScript.</noscript></details></section>");
   html.text("<div class='workspace'><div class='column'><section class='section'><div class='section-head'><h2>Матриця</h2><span class='muted' data-live='matrix'>");
   html.text(portalMatrixState(view)); html.text("</span></div><h3>Живлення</h3>");
   html.text("<form class='power' method='post' action='/power' aria-label='Живлення матриці'>");
@@ -774,6 +776,15 @@ esp_err_t page(httpd_req_t *request) {
   if (!agentsPage && !settingsPage) html.text(kPreviewScript);
   html.text("</script></body></html>");
   return html.end();
+}
+esp_err_t deviceImage(httpd_req_t *request) {
+  HandlerScope scope;
+  extern const uint8_t start[] asm("_binary_device_front_png_start");
+  extern const uint8_t end[] asm("_binary_device_front_png_end");
+  httpd_resp_set_type(request, "image/png");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+  return httpd_resp_send(request, reinterpret_cast<const char *>(start), end - start);
 }
 esp_err_t frameGet(httpd_req_t *request) {
   HandlerScope scope; View view;
@@ -999,6 +1010,7 @@ bool initializeHttp() {
   if (!registerRoute("/", HTTP_GET, page) || !registerRoute("/agents", HTTP_GET, page) ||
       !registerRoute("/settings", HTTP_GET, page) || !registerRoute("/status", HTTP_GET, portalStatus) ||
       !registerRoute("/frame", HTTP_GET, frameGet) ||
+      !registerRoute("/device.png", HTTP_GET, deviceImage) ||
       !registerRoute("/health", HTTP_GET, health) || !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
   for (const char *uri : {"/save", "/power", "/brightness", "/schedule", "/agent-color", "/restart", "/update"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();

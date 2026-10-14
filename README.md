@@ -20,6 +20,24 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1791984176328` places the live screen inside an actual orthographic
+render of `CodexLimiterNewFinal`, embedded as a 24,976-byte PNG in flash. Only
+the rendered picture is included, not the original SolidWorks CAD file. No live
+3D library or external asset server is needed. The square pixels and physical
+vertical spacing retain their aspect ratio inside the case window.
+
+Preview colors now convert linear LED PWM into browser sRGB after optional
+global-brightness compensation. Previously those linear values were displayed
+directly, making sky and midtones too dark. Paused frames also retain their
+colors rather than being artificially dimmed. Physical LED colors, brightness,
+frame rate, scene data and the binary snapshot protocol are unchanged.
+Validation: 342 tests passed (three optional tests skipped), 14 preview-script
+tests passed, existing portal-script tests and analyzer passed. Desktop and mobile
+layout were checked with real recorded matrix bytes. PlatformIO build succeeded;
+static RAM remains 66,256 bytes. Live OTA verification follows below.
+
+## Previous Preview Release
+
 Version `1791981464774` adds an opt-in live matrix canvas on Overview. It reads
 actual successful LED frames through the bounded `/frame` endpoint, including
 meteors and transitions. Logical mapping, 5 mm square pixels and the 7 mm clear

@@ -80,6 +80,16 @@ Overview also contains an opt-in live matrix canvas. `/frame` sends a bounded
 LED frames. It uses the renderer's actual physical mapping and brightness, not
 a separate browser scene. The optional visibility boost only affects the canvas.
 The square 5 mm pixels use 7 mm horizontal pitch and 12 mm vertical pitch.
+The screen sits inside a static, front-facing PNG rendered read-only from the
+user's `CodexLimiterNewFinal.SLDPRT`, not an invented case or a browser 3D viewer.
+The 25 KB image is embedded in flash and served by `/device.png`; no SD card,
+external image service or original CAD file is needed on the controller.
+
+Preview colors convert linear LED PWM back to sRGB before drawing. The optional
+visibility boost first reverses global strip brightness; both modes perform
+display encoding. This preserves RGB ordering and does not change physical LED
+output, scene grading or per-agent colors. Low-brightness quantization remains
+irreversible. Pausing retains the last frame without artificially dimming it.
 
 The renderer captures at most 10 frames/second into a static 3,024-byte buffer
 while a browser lease is active, skipping immediately if its mutex is busy.

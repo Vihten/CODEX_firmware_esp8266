@@ -7,7 +7,9 @@ inline constexpr char kPreviewCss[] = R"PREVIEWCSS(
 #preview-state[data-state=live]{color:var(--accent)}
 #preview-state[data-state=error]{color:var(--warning)}
 #matrix-canvas{display:block;width:100%;height:auto;aspect-ratio:348/233;background:#080a09;image-rendering:pixelated}
-#matrix-canvas[data-paused=true]{opacity:.55}
+.device-visual{position:relative;width:100%;max-width:956px;margin-inline:auto;aspect-ratio:956/570}
+.device-visual>img{display:block;width:100%;height:auto;aspect-ratio:956/570;pointer-events:none}
+.device-display{position:absolute;left:17.468619%;top:16.140351%;width:64.853556%;height:77.54386%;display:flex;align-items:center;justify-content:center;background:#080a09;overflow:hidden}
 )PREVIEWCSS";
 
 inline constexpr char kPreviewScript[] = R"PREVIEWJS(
@@ -48,7 +50,13 @@ inline constexpr char kPreviewScript[] = R"PREVIEWJS(
       const left = (canvas.width - widthMm * scale) / 2;
       const top = (canvas.height - heightMm * scale) / 2;
       const gain = normalize.checked && frame.brightness < 255 ? 256 / (frame.brightness + 1) : 1;
-      const channel = value => Math.min(255, Math.round(value * gain));
+      const channel = value => {
+        const linear = Math.max(0, Math.min(1, value * gain / 255));
+        const srgb = linear <= 0.0031308
+          ? 12.92 * linear
+          : 1.055 * Math.pow(linear, 1 / 2.4) - 0.055;
+        return Math.max(0, Math.min(255, Math.round(srgb * 255)));
+      };
       for (let y = 0; y < frame.height; ++y) {
         for (let x = 0; x < frame.width; ++x) {
           const offset = (y * frame.width + x) * 3;

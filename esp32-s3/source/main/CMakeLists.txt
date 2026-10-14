@@ -1,5 +1,5 @@
 idf_component_register(
-  SRCS "main.cpp" "runtime.cpp" "renderer.cpp" "network.cpp" "led_output.cpp"
+  SRCS "main.cpp" "runtime.cpp" "renderer.cpp" "network.cpp" "led_output.cpp" "preview.cpp"
   INCLUDE_DIRS "."
   EMBED_FILES "animation.bin" "effects.bin"
   REQUIRES esp_wifi esp_event esp_netif esp_http_server esp_http_client app_update

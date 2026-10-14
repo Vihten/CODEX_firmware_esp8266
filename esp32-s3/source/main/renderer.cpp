@@ -2,6 +2,7 @@
 #include "runtime.hpp"
 #include "led_output.hpp"
 #include "subpixel.hpp"
+#include "preview.hpp"
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
 #include "esp_log.h"
@@ -975,7 +976,11 @@ void publishStatus() {
 bool showFrame() {
   const bool completed = strip.show();
   status.ledError = strip.lastError();
-  if (completed) ++status.frames;
+  if (completed) {
+    ++status.frames;
+    if (control.maintenance == Maintenance::None)
+      capturePreview(strip.getPixels(), strip.getBrightness(), status.frames, millis(), physicalIndex);
+  }
   return completed;
 }
 void feedWatchdog() {

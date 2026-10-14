@@ -75,6 +75,21 @@ edit the form until its save button is pressed. FPS is measured from consecutive
 frame/uptime counters, not copied from the configured target. Diagnostics can be
 downloaded from `/health`; credentials are not included in `/status`.
 
+Overview also contains an opt-in live matrix canvas. `/frame` sends a bounded
+24-byte `LFP1` header followed by row-major RGB bytes from successfully transmitted
+LED frames. It uses the renderer's actual physical mapping and brightness, not
+a separate browser scene. The optional visibility boost only affects the canvas.
+The square 5 mm pixels use 7 mm horizontal pitch and 12 mm vertical pitch.
+
+The renderer captures at most 10 frames/second into a static 3,024-byte buffer
+while a browser lease is active, skipping immediately if its mutex is busy.
+HTTP copies a complete snapshot, releases the mutex, then sends it. No network
+operation blocks the renderer. The client has one in-flight request, pauses when
+collapsed, hidden or off-screen, and backs off on maintenance/errors. Capture
+leases expire after 1.5 seconds without requests; stale frames are not served.
+The physical matrix retains its 30 FPS target. The preview is not a camera and
+cannot report failed LEDs or electrical signal corruption after transmission.
+
 ## Build and Export
 
 From the LED Forge repository root:

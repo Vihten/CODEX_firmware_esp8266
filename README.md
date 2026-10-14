@@ -20,6 +20,19 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1791980999999` adds an opt-in live matrix canvas on Overview. It reads
+actual successful LED frames through the bounded `/frame` endpoint, including
+meteors and transitions. Logical mapping, 5 mm square pixels and the 7 mm clear
+vertical gap are preserved. Optional canvas brightness compensation does not
+change the physical matrix. Preview requests target 10 FPS without overlap and
+pause when closed, off-screen or hidden; maintenance/errors use bounded retries.
+The renderer never waits on networking and keeps its 30 FPS target. Snapshot
+storage is static; total static RAM is 66,256 bytes. Validation: 340 tests passed
+(three optional tests skipped), 11 preview-script tests and eight portal-script
+tests passed, analyzer clean, PlatformIO build successful.
+
+## Previous Portal Release
+
 Version `1791971169630` introduces a Ukrainian controller portal with Overview,
 Agents and Settings tabs. It adds visible-only live status with bounded polling,
 agent filters, brightness/day presets and downloadable diagnostics. Existing

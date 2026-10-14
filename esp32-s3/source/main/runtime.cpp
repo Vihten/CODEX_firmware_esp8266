@@ -1,4 +1,5 @@
 #include "runtime.hpp"
+#include "preview.hpp"
 #include <cstring>
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -24,7 +25,7 @@ bool initializeRuntime() {
   controlQueue = xQueueCreateStatic(1, sizeof(ControlFrame), controlBytes, &controlStorage);
   renderStatusQueue = xQueueCreateStatic(1, sizeof(RenderStatus), statusBytes, &statusStorage);
   commandQueue = xQueueCreateStatic(8, sizeof(NetworkCommand), commandBytes, &commandStorage);
-  return controlQueue && renderStatusQueue && commandQueue;
+  return controlQueue && renderStatusQueue && commandQueue && initializePreview();
 }
 
 bool loadAssets() {

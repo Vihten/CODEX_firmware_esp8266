@@ -1,5 +1,7 @@
 #include "runtime.hpp"
 #include "web_assets.hpp"
+#include "preview_assets.hpp"
+#include "preview.hpp"
 
 #include <algorithm>
 #include <array>
@@ -684,6 +686,11 @@ void writeAgentSummary(Html &html, const View &view) {
 }
 void writeOverview(Html &html, const View &view) {
   writePortalStats(html, view);
+  html.text("<section class='section preview-section'><details id='matrix-preview'><summary>Живий перегляд матриці</summary>"
+            "<div class='preview-toolbar'><span id='preview-state' role='status'>Перегляд вимкнено</span>"
+            "<label class='checkbox-label'><input type='checkbox' id='preview-normalize' checked>Підсилити видимість</label></div>"
+            "<canvas id='matrix-canvas' width='700' height='470' role='img' aria-label='Живий перегляд світлодіодної матриці'>"
+            "Живий перегляд недоступний у цьому браузері.</canvas><noscript>Для перегляду потрібен JavaScript.</noscript></details></section>");
   html.text("<div class='workspace'><div class='column'><section class='section'><div class='section-head'><h2>Матриця</h2><span class='muted' data-live='matrix'>");
   html.text(portalMatrixState(view)); html.text("</span></div><h3>Живлення</h3>");
   html.text("<form class='power' method='post' action='/power' aria-label='Живлення матриці'>");
@@ -742,6 +749,7 @@ esp_err_t page(httpd_req_t *request) {
   Html html(request);
   html.text("<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>LED Forge Controller</title><style>");
   html.text(kPortalCss);
+  html.text(kPreviewCss);
   html.text("</style></head><body><div class='shell'><header class='topbar'><div><div class='brand'>LED Forge <span class='muted'>S3</span></div>");
   html.format("<p class='device-meta'>Матриця 50 × 20 <span>·</span> <code>%06lX</code> <span>·</span> <code>%s</code></p>", (unsigned long)view.deviceId, view.control.ip);
   html.text("</div><div class='header-status'><span data-live='connection' role='status'>Статичний перегляд</span>"
@@ -762,8 +770,25 @@ esp_err_t page(httpd_req_t *request) {
   else if (settingsPage) writeSettings(html, view);
   else writeOverview(html, view);
   html.text("</main><footer class='footer'><span>LED Forge · ESP32-S3</span><a href='/health'>Діагностика</a></footer></div><script>");
-  html.text(kPortalScript); html.text("</script></body></html>");
+  html.text(kPortalScript);
+  if (!agentsPage && !settingsPage) html.text(kPreviewScript);
+  html.text("</script></body></html>");
   return html.end();
+}
+esp_err_t frameGet(httpd_req_t *request) {
+  HandlerScope scope; View view;
+  if (!snapshot(view) || view.restarting || view.control.maintenance != Maintenance::None ||
+      !view.render.assetsReady || view.render.ledError)
+    return error(request, "503 Service Unavailable", "Preview unavailable during maintenance.");
+  uint8_t bytes[kPreviewFrameBytes];
+  if (!copyPreview(bytes, sizeof(bytes), uptimeMs())) {
+    httpd_resp_set_hdr(request, "Retry-After", "1");
+    return error(request, "503 Service Unavailable", "Waiting for an LED frame.");
+  }
+  httpd_resp_set_type(request, "application/octet-stream");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+  return httpd_resp_send(request, reinterpret_cast<const char *>(bytes), sizeof(bytes));
 }
 esp_err_t portalStatus(httpd_req_t *request) {
   HandlerScope scope; View view;
@@ -966,6 +991,7 @@ bool initializeHttp() {
   };
   if (!registerRoute("/", HTTP_GET, page) || !registerRoute("/agents", HTTP_GET, page) ||
       !registerRoute("/settings", HTTP_GET, page) || !registerRoute("/status", HTTP_GET, portalStatus) ||
+      !registerRoute("/frame", HTTP_GET, frameGet) ||
       !registerRoute("/health", HTTP_GET, health) || !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
   for (const char *uri : {"/save", "/power", "/brightness", "/schedule", "/agent-color", "/restart", "/update"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();

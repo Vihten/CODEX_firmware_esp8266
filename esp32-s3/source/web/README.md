@@ -12,6 +12,9 @@ from this tree; separate static page copies are not needed.
 - `assets/css/{portal,preview}.css`: stylesheets.
 - `assets/js/{portal,preview}.js`: progressive enhancement and live preview.
 - `images/device.png`: controller image exposed at `/device.png`.
+- `images/device-layout.json`: measured angled CAD aperture and physical pixel plane.
+  `preview.css` maps the live canvas into this plane with an affine transform;
+  the physical 348 x 233 mm matrix stays centered in the 348 x 248 mm aperture.
 
 ## Rendering Contract
 

@@ -20,6 +20,21 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1791988635014` uses a matte-gray angled render of the actual device.
+The live colored LED canvas is mapped into the CAD aperture with a measured
+affine transform. Physical pixel spacing, centered letterboxing and color encoding
+are unchanged. The transparent PNG is 768 x 550 pixels and 16,982 bytes; no 3D
+engine, external asset service or original CAD file is included. The original CAD
+file was opened read-only and its SHA-256 remained unchanged.
+
+Validation: PlatformIO and analysis passed, 344 Flutter tests passed (three
+optional tests skipped), 24 script tests and 34 bundle tests passed. The new
+projection regression checks all four aperture corners at 320, 390, 768 and
+956px widths. Desktop/mobile live preview was visually checked before publication.
+Target output remains 30 FPS with the same renderer and GPIO18 RMT DMA driver.
+
+## Filesystem Portal Release
+
 Version `1791985824771` serves the controller portal from LittleFS: actual HTML
 templates, CSS, JavaScript and the rendered device PNG. The editable tree is
 `esp32-s3/source/web/`. Its verified seed is included in the normal application

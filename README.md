@@ -27,7 +27,7 @@ vertical gap are preserved. Optional canvas brightness compensation does not
 change the physical matrix. Preview requests target 10 FPS without overlap and
 pause when closed, off-screen or hidden; maintenance/errors use bounded retries.
 The renderer never waits on networking and keeps its 30 FPS target. Snapshot
-storage is static; total static RAM is 66,256 bytes. Validation: 340 tests passed
+storage is static; total static RAM is 66,256 bytes. Validation: 341 tests passed
 (three optional tests skipped), 11 preview-script tests and eight portal-script
 tests passed, analyzer clean, PlatformIO build successful.
 Cold frame requests yield for at most 60 ms without holding a mutex, so retry
@@ -35,6 +35,15 @@ backoff cannot continually outlast the short capture lease. The preceding previe
 build was checked on desktop and mobile, with actual changing meteor frames,
 correct square-pixel spacing and no horizontal overflow. Forty consecutive binary
 frame requests returned complete, advancing 3,024-byte snapshots.
+
+The final version completed Wi-Fi OTA and its post-boot check reported Up to
+date. A roughly 32-second streaming check received 109 frames with 107 distinct
+images and one request timeout; subsequent requests recovered. The physical
+matrix measured 29.23 FPS, with no LED errors, Wi-Fi disconnects or resets in
+that check; free heap was 173,328 bytes afterward. Three cold requests separated
+by three-second pauses all returned HTTP 200 / 3,024 bytes in 156-219 ms.
+Preview cadence is a 10 FPS ceiling, not a guarantee over a variable LAN link.
+This short check does not replace a long-duration powered-matrix soak test.
 
 ## Previous Portal Release
 

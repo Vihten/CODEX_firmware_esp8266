@@ -33,6 +33,13 @@ projection regression checks all four aperture corners at 320, 390, 768 and
 956px widths. Desktop/mobile live preview was visually checked before publication.
 Target output remains 30 FPS with the same renderer and GPIO18 RMT DMA driver.
 
+Wi-Fi OTA completed on 2026-10-14: the device reported `1791988635014`, the
+expected web digest `0a3d315109d813618751af36e0fbe43d0faef7dfdf9f133858305d80c4a11bd1`,
+and `Up to date` after boot. Its PNG matched the published asset byte-for-byte.
+The actual live page showed the aligned gray case and colored matrix. Two real
+agents reconnected; brightness and schedule were preserved. No LED error or Wi-Fi
+disconnect was reported in this short post-update check. This is not a soak test.
+
 ## Filesystem Portal Release
 
 Version `1791985824771` serves the controller portal from LittleFS: actual HTML

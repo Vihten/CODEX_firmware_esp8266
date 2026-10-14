@@ -23,6 +23,53 @@ and has no peripheral attached before connecting.
 
 ## Runtime
 
+### Filesystem Web Project
+
+The portal is served from a real LittleFS directory tree, not inline C++ HTML,
+CSS or JavaScript strings. Editable source lives in `web/`:
+
+```
+web/
+  assets/css/portal.css
+  assets/css/preview.css
+  assets/js/portal.js
+  assets/js/preview.js
+  images/device.png
+  templates/                 HTML layout and reusable server-rendered fragments
+    shell/
+    overview/
+    agent/
+    agents/
+    schedule/
+    settings/
+    stats/
+    summary/
+```
+
+The existing `storage` partition at `0xC30000` is mounted at `/www`.
+The active application's files are `/www/ota_0/...` or `/www/ota_1/...`;
+the other directory is retained for application rollback. Partition offsets,
+Wi-Fi credentials, configuration and agent colors in NVS do not change.
+
+CMake builds `main/web_bundle.bin` from `web/` using `build_web_bundle.py`.
+This SHA-256-checked seed travels inside the application OTA image. Before
+the renderer receives its first control snapshot, boot verifies the on-disk
+files and installs the matching tree if needed. After installation the filesystem
+is remounted read-only. HTTP streams these actual files through bounded buffers;
+templates insert escaped controller data and preserve native HTML forms.
+
+Only completely erased storage may be initially formatted. Unknown/corrupt
+nonblank storage is not automatically erased; an OTA image unable to prepare
+its web tree is rejected in favor of the previous application. An interrupted
+initial format can require explicit recovery. Ordinary partial file installation
+is retried on the next boot. The tree has no account tokens or Wi-Fi passwords.
+No public filesystem editor, upload route or arbitrary path endpoint is exposed.
+`/status` reports `web_filesystem` and the verified `web_version` digest.
+
+Edit the source files, rebuild and publish the usual firmware OTA image; no
+separate filesystem flashing step or USB connection is needed. Never run a
+separate filesystem upload against the live controller while its renderer runs.
+
 Moving meteor bodies, tails, sparks and dissipating wakes use fractional coordinates
 and a four-LED coverage filter. Premultiplied color is accumulated in a bounded
 renderer-owned 8 KiB layer and composed once against the original stored GRB bytes.

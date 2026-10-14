@@ -1,18 +1,4 @@
-#pragma once
 
-inline constexpr char kPreviewCss[] = R"PREVIEWCSS(
-.preview-section>details{border-top:0;margin-top:0;padding-top:0}
-.preview-toolbar{display:flex;align-items:center;justify-content:space-between;gap:.5rem 1.25rem;flex-wrap:wrap;margin-bottom:.75rem;font-size:.875rem}
-#preview-state{color:var(--muted);overflow-wrap:anywhere}
-#preview-state[data-state=live]{color:var(--accent)}
-#preview-state[data-state=error]{color:var(--warning)}
-#matrix-canvas{display:block;width:100%;height:auto;aspect-ratio:348/233;background:#080a09;image-rendering:pixelated}
-.device-visual{position:relative;width:100%;max-width:956px;margin-inline:auto;aspect-ratio:956/570}
-.device-visual>img{display:block;width:100%;height:auto;aspect-ratio:956/570;pointer-events:none}
-.device-display{position:absolute;left:17.468619%;top:16.140351%;width:64.853556%;height:77.54386%;display:flex;align-items:center;justify-content:center;background:#080a09;overflow:hidden}
-)PREVIEWCSS";
-
-inline constexpr char kPreviewScript[] = R"PREVIEWJS(
 (() => {
   'use strict';
   const start = () => {
@@ -147,4 +133,3 @@ inline constexpr char kPreviewScript[] = R"PREVIEWJS(
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, {once: true});
   else start();
 })();
-)PREVIEWJS";

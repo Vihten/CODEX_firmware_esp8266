@@ -20,6 +20,22 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1791985824771` serves the controller portal from LittleFS: actual HTML
+templates, CSS, JavaScript and the rendered device PNG. The editable tree is
+`esp32-s3/source/web/`. Its verified seed is included in the normal application
+OTA image; boot installs it before starting matrix output, then remounts storage
+read-only. The two app slots retain separate web directories for rollback.
+Existing partition offsets and NVS settings are unchanged. Unknown nonblank
+storage is never automatically formatted. No separate filesystem upload is needed.
+
+Validation: PlatformIO build and static analysis passed; 344 Flutter tests passed
+(three optional tests skipped), plus 23 browser-script and 34 web-bundle tests.
+Native HTML tests include missing and malformed templates. Bundle tests cover
+case-sensitive path order on Windows, SHA-256, traversal and size limits.
+Power-loss and filesystem-corruption recovery have not been hardware fault-tested.
+
+## Previous Device Preview Release
+
 Version `1791984176328` places the live screen inside an actual orthographic
 render of `CodexLimiterNewFinal`, embedded as a 24,976-byte PNG in flash. Only
 the rendered picture is included, not the original SolidWorks CAD file. No live

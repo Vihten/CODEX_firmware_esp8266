@@ -1,6 +1,5 @@
 #include "runtime.hpp"
-#include "web_assets.hpp"
-#include "preview_assets.hpp"
+#include "web_files.hpp"
 #include "preview.hpp"
 
 #include <algorithm>
@@ -547,45 +546,118 @@ public:
       default: { char character[2] = {*value, 0}; text(character); }
     }
   }
+  void file(const char *relativePath) {
+    if (result_ != ESP_OK) return;
+    FILE *input = openWebFile(relativePath);
+    if (!input) { result_ = ESP_FAIL; return; }
+    char chunk[256];
+    size_t count;
+    while (result_ == ESP_OK && (count = std::fread(chunk, 1, sizeof(chunk), input)) != 0) {
+      for (size_t i = 0; i < count && result_ == ESP_OK; ++i) {
+        if (size_ == sizeof(buffer_)) flush();
+        if (result_ == ESP_OK) buffer_[size_++] = chunk[i];
+      }
+    }
+    if (std::ferror(input)) result_ = ESP_FAIL;
+    std::fclose(input);
+  }
+  template <typename Writer> void render(const char *relativePath, Writer writeToken) {
+    if (result_ != ESP_OK) return;
+    FILE *input = openWebFile(relativePath);
+    if (!input) { result_ = ESP_FAIL; return; }
+    // Values stream directly and are never reparsed as templates.
+    int character;
+    while (result_ == ESP_OK && (character = std::fgetc(input)) != EOF) {
+      if (character == '{') {
+        if (std::fgetc(input) != '{') { result_ = ESP_FAIL; break; }
+        unsigned token = 0, digits = 0;
+        while ((character = std::fgetc(input)) >= '0' && character <= '9') {
+          if (++digits > 3) { result_ = ESP_FAIL; break; }
+          token = token * 10 + unsigned(character - '0');
+        }
+        if (result_ != ESP_OK) break;
+        if (!digits || character != '}' || std::fgetc(input) != '}') { result_ = ESP_FAIL; break; }
+        writeToken(token);
+      } else {
+        if (size_ == sizeof(buffer_)) flush();
+        if (result_ == ESP_OK) buffer_[size_++] = char(character);
+      }
+    }
+    if (std::ferror(input)) result_ = ESP_FAIL;
+    std::fclose(input);
+  }
+  void attribute(const char *value) {
+    if (!std::strcmp(value, "@current")) file("templates/current.html");
+    else if (!std::strcmp(value, "@checked")) file("templates/checked.html");
+    else if (!std::strcmp(value, "@disabled")) file("templates/disabled.html");
+  }
   esp_err_t end() { flush(); if (result_ == ESP_OK) result_ = httpd_resp_send_chunk(request_, nullptr, 0); return result_; }
 };
 void writeAgentControls(Html &html, const char *name, uint32_t id, uint32_t rgb,
                         bool online, unsigned activity, int remaining, bool custom) {
-  html.format("<section class='agent' data-agent='%08lX'><header class='agent-heading'><h3>", (unsigned long)id);
-  html.text("<span class='swatch' data-agent-color aria-hidden='true' style='background:#");
+  html.render("templates/agent/heading-open.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%08lX", (unsigned long)id); break;
+    }
+  });
+  html.file("templates/agent/swatch-open.html");
   html.format("%06lX", (unsigned long)rgb);
-  html.text("'></span>"); html.escaped(name); html.text("</h3>");
-  html.format("<span class='agent-status%s' data-agent-state>%s</span></header>",
-              online ? " online" : "", online ? "На зв’язку" : "Не на зв’язку");
-  html.format("<p class='agent-meta'>ID <code>%08lX</code><span>%s</span></p>",
-              (unsigned long)id, custom ? "Власний колір" : "Автоматичний колір");
-  html.format("<dl class='agent-metrics'><div><dt>Активність</dt><dd><span data-agent-activity>%u%%</span>"
-              "<meter data-agent-bar min='0' max='100' value='%u' aria-label='Активність агента'>%u%%</meter></dd></div>",
-              online ? activity : 0, online ? activity : 0, online ? activity : 0);
-  html.text("<div><dt>Залишок ліміту</dt><dd data-agent-remaining>");
+  html.file("templates/agent/swatch-close.html"); html.escaped(name); html.file("templates/agent/heading-close.html");
+  html.render("templates/agent/status.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%s", online ? " online" : ""); break;
+      case 1: html.format("%s", online ? "На зв’язку" : "Не на зв’язку"); break;
+    }
+  });
+  html.render("templates/agent/metadata.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%08lX", (unsigned long)id); break;
+      case 1: html.format("%s", custom ? "Власний колір" : "Автоматичний колір"); break;
+    }
+  });
+  html.render("templates/agent/activity.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%u", online ? activity : 0); break;
+      case 1: html.format("%u", online ? activity : 0); break;
+      case 2: html.format("%u", online ? activity : 0); break;
+    }
+  });
+  html.file("templates/agent/remaining-open.html");
   if (online && remaining >= 0) html.format("%d%%", remaining);
-  else html.text("<span>Немає даних</span>");
-  html.text("</dd></div></dl>");
-  html.text("<form class='agent-color' method='post' action='/agent-color'>");
-  html.format("<input type='hidden' name='client' value='%08lX'>", (unsigned long)id);
-  html.format("<div class='color-field'><label for='color-%08lX'>Колір метеорів</label>"
-              "<div class='color-value'><input id='color-%08lX' type='color' name='color' aria-label='Колір метеорів агента ",
-              (unsigned long)id, (unsigned long)id);
+  else html.file("templates/agent/missing-value.html");
+  html.file("templates/agent/metrics-close.html");
+  html.file("templates/agent/color-form-open.html");
+  html.render("templates/agent/client-input.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%08lX", (unsigned long)id); break;
+    }
+  });
+  html.render("templates/agent/color-input-open.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%08lX", (unsigned long)id); break;
+      case 1: html.format("%08lX", (unsigned long)id); break;
+    }
+  });
   html.escaped(name);
-  html.format("' value='#%06lX' oninput='this.form.querySelector(&quot;output&quot;).textContent=this.value.toUpperCase()'>"
-              "<output>#%06lX</output></div></div>", (unsigned long)rgb, (unsigned long)rgb);
-  html.text("<button type='submit' name='mode' value='manual'>Зберегти</button>"
-            "<button class='secondary' type='submit' name='mode' value='auto' title='Відновити автоматичний колір'>Автоматично</button></form></section>");
+  html.render("templates/agent/color-input-value.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%06lX", (unsigned long)rgb); break;
+      case 1: html.format("%06lX", (unsigned long)rgb); break;
+    }
+  });
+  html.file("templates/agent/controls-close.html");
 }
 
 void writeAgents(Html &html, const View &view) {
   unsigned connected = 0;
   for (const auto &agent : view.control.agents) connected += agent.present;
-  html.format("<div class='section-head'><h2>Підключення</h2><span class='muted' data-live='agents'>%u / %u на зв’язку</span></div>", connected, unsigned(kAgentCapacity));
-  html.text("<div class='filter toolbar' aria-label='Фільтр агентів' data-js hidden>"
-            "<button type='button' data-filter='all' aria-pressed='true'>Усі</button>"
-            "<button type='button' data-filter='online' aria-pressed='false'>На зв’язку</button>"
-            "<button type='button' data-filter='active' aria-pressed='false'>Активні</button></div>");
+  html.render("templates/agents/heading.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%u", connected); break;
+      case 1: html.format("%u", unsigned(kAgentCapacity)); break;
+    }
+  });
+  html.file("templates/agents/filters.html");
   unsigned known = 0;
   for (size_t i = 0; i < kAgentCapacity; ++i) {
     const auto &agent = view.control.agents[i];
@@ -604,9 +676,8 @@ void writeAgents(Html &html, const View &view) {
     ++known;
     writeAgentControls(html, name, entry.clientId, entry.rgb, false, 0, -1, true);
   }
-  if (!known) html.text("<p class='notice'>Очікуємо підключення агентів.</p>");
-  html.text("<p class='filter-empty muted' hidden>Немає агентів за цим фільтром.</p>"
-            "<p><a href='/agents'>Оновити список</a></p>");
+  if (!known) html.file("templates/agents/empty.html");
+  html.file("templates/agents/filter-footer.html");
 }
 
 unsigned portalAgentCount(const View &view) {
@@ -633,114 +704,170 @@ const char *portalOtaLabel(const char *value) {
   return value;
 }
 void writePortalStats(Html &html, const View &view) {
-  html.text("<div class='statusbar'><dl class='stats'><div><dt>Доступний ліміт</dt><dd data-live='remaining'>");
+  html.file("templates/stats/remaining-open.html");
   if (view.control.accountLinked) html.format("%u%%", view.control.remainingPercent); else html.text("Немає даних");
-  html.format("</dd></div><div><dt>Активність</dt><dd data-live='activity'>%u%%</dd></div>", view.control.activityPercent);
-  html.format("<div><dt>Агенти на зв’язку</dt><dd data-live='agents'>%u / %u</dd></div>", portalAgentCount(view), unsigned(kAgentCapacity));
-  html.text("<div><dt>Wi-Fi</dt><dd data-live='wifi'>"); html.text(view.control.connected ? "Підключено" : "Точка доступу");
-  html.text("</dd></div></dl></div>");
+  html.render("templates/stats/activity.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%u", view.control.activityPercent); break;
+    }
+  });
+  html.render("templates/stats/agents.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%u", portalAgentCount(view)); break;
+      case 1: html.format("%u", unsigned(kAgentCapacity)); break;
+    }
+  });
+  html.file("templates/stats/wifi-open.html"); html.text(view.control.connected ? "Підключено" : "Точка доступу");
+  html.file("templates/stats/stats-close.html");
 }
 void writeSchedule(Html &html, const View &view) {
-  html.text("<section class='section'><div class='section-head'><h2>Розклад</h2></div><p class='muted'>Київ: <span data-live='clock'>");
+  html.file("templates/schedule/section-open.html");
   const time_t timestamp = std::time(nullptr);
   if (timestamp < 1700000000) html.text("очікуємо NTP");
   else {
     tm local{}; localtime_r(&timestamp, &local);
     char clock[32]; std::strftime(clock, sizeof(clock), "%d.%m.%Y %H:%M", &local); html.text(clock);
   }
-  html.text("</span></p><form method='post' action='/schedule'>");
-  html.format("<label class='checkbox-label'><input type='checkbox' name='enabled' value='1'%s> Розклад увімкнено</label>", view.scheduleEnabled ? " checked" : "");
-  html.text("<div class='form-grid'><label>Початок<input type='time' name='start' required value='");
+  html.file("templates/schedule/form-open.html");
+  html.render("templates/schedule/enabled.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.attribute(view.scheduleEnabled ? "@checked" : ""); break;
+    }
+  });
+  html.file("templates/schedule/start-input-open.html");
   html.format("%02u:%02u", view.start / 60, view.start % 60);
-  html.text("'></label><label>Завершення<input type='time' name='end' required value='");
+  html.file("templates/schedule/end-input-open.html");
   html.format("%02u:%02u", view.end / 60, view.end % 60);
-  html.text("'></label></div><fieldset class='days'><legend>Дні роботи</legend>");
+  html.file("templates/schedule/days-open.html");
   static constexpr const char *days[] = {"Нд", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"};
   for (unsigned day = 1; day <= 7; ++day) {
     const unsigned index = day % 7;
-    html.format("<label><input type='checkbox' name='d%u' value='1'%s><span>%s</span></label>",
-                index, view.days & (1U << index) ? " checked" : "", days[index]);
+    html.render("templates/schedule/day-checkbox.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%u", index); break;
+      case 1: html.attribute(view.days & (1U << index) ? "@checked" : ""); break;
+      case 2: html.format("%s", days[index]); break;
+    }
+  });
   }
-  html.text("</fieldset><div class='quickbuttons' data-js hidden><button type='button' class='secondary' data-days='62'>Будні</button>"
-            "<button type='button' class='secondary' data-days='65'>Вихідні</button><button type='button' class='secondary' data-days='127'>Щодня</button></div>");
-  if (view.power != 0) html.text("<p class='notice'>Діє ручний режим живлення.</p>");
-  html.text("<div class='actions'><button type='submit'>Зберегти розклад</button></div></form></section>");
+  html.file("templates/schedule/presets.html");
+  if (view.power != 0) html.file("templates/schedule/manual-notice.html");
+  html.file("templates/schedule/form-close.html");
 }
 void writeAgentSummary(Html &html, const View &view) {
-  html.text("<section class='section'><div class='section-head'><h2>Активність агентів</h2><a href='/agents'>Керувати</a></div>");
+  html.file("templates/summary/section-open.html");
   unsigned known = 0;
   for (const auto &agent : view.control.agents) {
     if (!agent.present && !agent.name[0]) continue;
     ++known;
-    html.format("<div class='agent-summary' data-agent='%08lX'><span class='agent-name'><span class='swatch' data-agent-color style='background:#%06lX' aria-hidden='true'></span><strong>",
-                (unsigned long)agent.clientId, (unsigned long)agent.rgb);
+    html.render("templates/summary/agent-open.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%08lX", (unsigned long)agent.clientId); break;
+      case 1: html.format("%06lX", (unsigned long)agent.rgb); break;
+    }
+  });
     html.escaped(agent.name);
-    html.text("</strong></span><span class='agent-status");
+    html.file("templates/summary/status-open.html");
     if (agent.present) html.text(" online");
-    html.text("' data-agent-state>"); html.text(agent.present ? "На зв’язку" : "Не на зв’язку");
-    html.format("</span><strong data-agent-activity>%u%%</strong><meter data-agent-bar min='0' max='100' value='%u' aria-label='Активність агента'>%u%%</meter></div>",
-                agent.present ? agent.activity : 0, agent.present ? agent.activity : 0, agent.present ? agent.activity : 0);
+    html.file("templates/summary/status-value-open.html"); html.text(agent.present ? "На зв’язку" : "Не на зв’язку");
+    html.render("templates/summary/activity-close.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%u", agent.present ? agent.activity : 0); break;
+      case 1: html.format("%u", agent.present ? agent.activity : 0); break;
+      case 2: html.format("%u", agent.present ? agent.activity : 0); break;
+    }
+  });
   }
-  if (!known) html.text("<p class='muted'>Очікуємо підключення агентів.</p>");
-  html.text("</section>");
+  if (!known) html.file("templates/summary/empty.html");
+  html.file("templates/summary/section-close.html");
 }
 void writeOverview(Html &html, const View &view) {
   writePortalStats(html, view);
-  html.text("<section class='section preview-section'><details id='matrix-preview'><summary>Живий перегляд матриці</summary>"
-            "<div class='preview-toolbar'><span id='preview-state' role='status'>Перегляд вимкнено</span>"
-            "<label class='checkbox-label'><input type='checkbox' id='preview-normalize' checked>Підсилити видимість</label></div>"
-            "<div class='device-visual'><img src='/device.png' width='956' height='570' alt='Корпус CodexLimiterNewFinal'>"
-            "<div class='device-display'><canvas id='matrix-canvas' width='696' height='466' role='img' aria-label='Живий перегляд світлодіодної матриці'>"
-            "Живий перегляд недоступний у цьому браузері.</canvas></div></div>"
-            "<noscript>Живий перегляд недоступний без JavaScript.</noscript></details></section>");
-  html.text("<div class='workspace'><div class='column'><section class='section'><div class='section-head'><h2>Матриця</h2><span class='muted' data-live='matrix'>");
-  html.text(portalMatrixState(view)); html.text("</span></div><h3>Живлення</h3>");
-  html.text("<form class='power' method='post' action='/power' aria-label='Живлення матриці'>");
+  html.file("templates/overview/matrix-preview.html");
+  html.file("templates/overview/workspace-open.html");
+  html.text(portalMatrixState(view)); html.file("templates/overview/power-heading.html");
+  html.file("templates/overview/power-form-open.html");
   for (unsigned mode = 0; mode < 3; ++mode)
-    html.format("<button type='submit' name='mode' value='%s' aria-pressed='%s'%s>%s</button>",
-                mode == 0 ? "auto" : mode == 1 ? "on" : "off", view.power == mode ? "true" : "false",
-                view.restarting || view.control.maintenance == Maintenance::Ota ? " disabled" : "",
-                mode == 0 ? "Авто" : mode == 1 ? "Увімкнути" : "Вимкнути");
-  html.text("</form><form method='post' action='/brightness'><div class='label-row'><label for='brightness'>Яскравість</label>");
-  html.format("<output id='brightnessValue' for='brightness'>%u%%</output></div>", (unsigned(view.control.brightness) * 100 + 127) / 255);
-  html.format("<input id='brightness' type='range' name='value' min='1' max='255' value='%u' oninput='brightnessValue.value=Math.round(this.value*100/255)+String.fromCharCode(37)'>", view.control.brightness);
-  html.text("<div class='quickbuttons' data-js hidden><button type='button' class='secondary' data-brightness='26'>10%</button>"
-            "<button type='button' class='secondary' data-brightness='64'>25%</button><button type='button' class='secondary' data-brightness='128'>50%</button>"
-            "<button type='button' class='secondary' data-brightness='255'>100%</button></div><div class='actions'><button type='submit'>Застосувати</button></div></form></section>");
+    html.render("templates/overview/power-button.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%s", mode == 0 ? "auto" : mode == 1 ? "on" : "off"); break;
+      case 1: html.format("%s", view.power == mode ? "true" : "false"); break;
+      case 2: html.attribute(view.restarting || view.control.maintenance == Maintenance::Ota ? "@disabled" : ""); break;
+      case 3: html.format("%s", mode == 0 ? "Авто" : mode == 1 ? "Увімкнути" : "Вимкнути"); break;
+    }
+  });
+  html.file("templates/overview/brightness-form-open.html");
+  html.render("templates/overview/brightness-output.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%u", (unsigned(view.control.brightness) * 100 + 127) / 255); break;
+    }
+  });
+  html.render("templates/overview/brightness-input.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%u", view.control.brightness); break;
+    }
+  });
+  html.file("templates/overview/brightness-actions.html");
   writeAgentSummary(html, view);
-  html.text("</div><div class='column'>"); writeSchedule(html, view); html.text("</div></div>");
+  html.file("templates/overview/column-next.html"); writeSchedule(html, view); html.file("templates/overview/workspace-close.html");
 }
 void writeSettings(Html &html, const View &view) {
-  html.text("<div class='workspace'><div class='column'><section class='section'><div class='section-head'><h2>Мережа Wi-Fi</h2><span class='muted' data-live='wifi'>");
-  html.text(view.control.connected ? "Підключено" : "Точка доступу"); html.text("</span></div>");
-  html.format("<p class='muted'>IP <code>%s</code></p>", view.control.ip);
-  html.text("<form method='post' action='/save'><label>Назва мережі<input name='ssid' maxlength='32' required value='");
+  html.file("templates/settings/workspace-open.html");
+  html.text(view.control.connected ? "Підключено" : "Точка доступу"); html.file("templates/settings/wifi-heading-close.html");
+  html.render("templates/settings/ip.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%s", view.control.ip); break;
+    }
+  });
+  html.file("templates/settings/wifi-form-open.html");
   html.escaped(view.ssid);
-  html.text("'></label><label>Новий пароль<input id='wifi-password' type='password' name='password' maxlength='63' autocomplete='new-password'></label>");
-  html.text("<label class='checkbox-label' data-js hidden><input type='checkbox' id='show-password'> Показати пароль</label>"
-            "<p class='muted'>Порожнє поле зберігає пароль поточної мережі.</p><div class='actions'><button type='submit'>Зберегти мережу</button></div></form></section>");
-  html.text("<section class='section'><div class='section-head'><h2>Оновлення прошивки</h2></div><p data-live='ota'>");
+  html.file("templates/settings/password-input.html");
+  html.file("templates/settings/wifi-actions.html");
+  html.file("templates/settings/ota-open.html");
   html.escaped(portalOtaLabel(view.ota));
-  html.text("</p><progress id='ota-progress' max='100' aria-label='Завантаження прошивки'");
-  if (!view.otaTotal) html.text(" hidden");
-  html.format(" value='%u'></progress>", view.otaTotal ? unsigned(uint64_t(view.otaDone) * 100 / view.otaTotal) : 0);
-  html.format("<p class='muted'>Версія <code>%llu</code></p>", (unsigned long long)PROJECT_FIRMWARE_VERSION);
-  html.text("<form method='post' action='/update'><button type='submit' class='secondary'>Перевірити GitHub</button></form></section></div><div class='column'>");
-  html.text("<section class='section'><div class='section-head'><h2>Система</h2></div><dl class='system-list'>");
-  html.format("<div><dt>Контролер</dt><dd>ESP32-S3 N16R8</dd></div><div><dt>ID</dt><dd><code>%06lX</code></dd></div>", (unsigned long)view.deviceId);
-  html.text("<div><dt>Час роботи</dt><dd data-live='uptime'>");
+  html.file("templates/settings/ota-progress-open.html");
+  if (!view.otaTotal) html.file("templates/hidden.html");
+  html.render("templates/settings/ota-progress-value.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%u", view.otaTotal ? unsigned(uint64_t(view.otaDone) * 100 / view.otaTotal) : 0); break;
+    }
+  });
+  html.render("templates/settings/firmware-version.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%llu", (unsigned long long)PROJECT_FIRMWARE_VERSION); break;
+    }
+  });
+  html.file("templates/settings/ota-actions.html");
+  html.file("templates/settings/system-open.html");
+  html.render("templates/settings/device-id.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%06lX", (unsigned long)view.deviceId); break;
+    }
+  });
+  html.file("templates/settings/uptime-open.html");
   const uint32_t seconds = uptimeMs() / 1000;
   html.format("%lu д %02lu:%02lu:%02lu", (unsigned long)(seconds / 86400), (unsigned long)(seconds / 3600 % 24), (unsigned long)(seconds / 60 % 60), (unsigned long)(seconds % 60));
-  html.text("</dd></div><div><dt>Вільна RAM</dt><dd data-live='heap'>");
+  html.file("templates/settings/heap-open.html");
   html.format("%u КБ", unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024));
-  html.format("</dd></div><div><dt>Сигнал Wi-Fi</dt><dd data-live='rssi'>%d dBm</dd></div>", view.rssi);
-  html.format("<div><dt>Кадрів за секунду</dt><dd data-live='fps'>Немає виміру</dd></div><div><dt>Цільова частота</dt><dd>%u FPS</dd></div>", unsigned(PROJECT_FPS));
-  html.format("<div><dt>Сигнал матриці</dt><dd>GPIO%u · RMT DMA</dd></div></dl>", unsigned(PROJECT_DATA_PIN));
-  html.text("<div class='actions'><a class='button secondary' href='/health' download='led-forge-health.txt'>Завантажити діагностику</a></div></section>");
-  html.text("<section class='section'><div class='section-head'><h2>Обслуговування</h2></div>"
-            "<form method='post' action='/restart' onsubmit='return confirm(&quot;Перезапустити контролер?&quot;)'><button type='submit' class='danger'");
-  if (view.restarting) html.text(" disabled");
-  html.text(">Перезапустити контролер</button></form></section></div></div>");
+  html.render("templates/settings/rssi.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%d", view.rssi); break;
+    }
+  });
+  html.render("templates/settings/frame-rate.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%u", unsigned(PROJECT_FPS)); break;
+    }
+  });
+  html.render("templates/settings/matrix-pin.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%u", unsigned(PROJECT_DATA_PIN)); break;
+    }
+  });
+  html.file("templates/settings/diagnostics.html");
+  html.file("templates/settings/maintenance-open.html");
+  if (view.restarting) html.file("templates/disabled.html");
+  html.file("templates/settings/maintenance-close.html");
 }
 esp_err_t page(httpd_req_t *request) {
   HandlerScope scope; View view;
@@ -749,42 +876,42 @@ esp_err_t page(httpd_req_t *request) {
   const bool agentsPage = !std::strcmp(request->uri, "/agents");
   const bool settingsPage = !std::strcmp(request->uri, "/settings");
   Html html(request);
-  html.text("<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>LED Forge Controller</title><style>");
-  html.text(kPortalCss);
-  html.text(kPreviewCss);
-  html.text("</style></head><body><div class='shell'><header class='topbar'><div><div class='brand'>LED Forge <span class='muted'>S3</span></div>");
-  html.format("<p class='device-meta'>Матриця 50 × 20 <span>·</span> <code>%06lX</code> <span>·</span> <code>%s</code></p>", (unsigned long)view.deviceId, view.control.ip);
-  html.text("</div><div class='header-status'><span data-live='connection' role='status'>Статичний перегляд</span>"
-            "<label class='checkbox-label' data-js hidden><input id='live-poll' type='checkbox' data-poll-toggle checked> Наживо</label>"
-            "<button type='button' class='secondary' data-refresh data-js hidden>Оновити</button></div></header>");
-  html.text("<nav class='tabs' aria-label='Розділи контролера'>");
-  html.format("<a href='/'%s>Огляд</a><a href='/agents'%s>Агенти</a><a href='/settings'%s>Налаштування</a></nav>",
-              !agentsPage && !settingsPage ? " aria-current='page'" : "", agentsPage ? " aria-current='page'" : "", settingsPage ? " aria-current='page'" : "");
-  html.text("<main><div class='section-head'><h1>");
+  html.file("templates/shell/document-head.html");
+  html.file("templates/shell/shell-open.html");
+  html.render("templates/shell/device-meta.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%06lX", (unsigned long)view.deviceId); break;
+      case 1: html.format("%s", view.control.ip); break;
+    }
+  });
+  html.file("templates/shell/header-status.html");
+  html.file("templates/shell/nav-open.html");
+  html.render("templates/shell/nav-links.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.attribute(!agentsPage && !settingsPage ? "@current" : ""); break;
+      case 1: html.attribute(agentsPage ? "@current" : ""); break;
+      case 2: html.attribute(settingsPage ? "@current" : ""); break;
+    }
+  });
+  html.file("templates/shell/main-open.html");
   html.text(agentsPage ? "Агенти" : settingsPage ? "Налаштування" : "Огляд");
-  html.text("</h1><span class='muted' data-live='updated'></span></div>");
-  if (view.message[0]) { html.text("<p class='notice' role='status'>"); html.escaped(view.message); html.text("</p>"); }
-  if (view.dirty) html.text("<p class='notice' role='status'>Зберігаємо налаштування.</p>");
-  if (view.restarting) html.text("<p class='notice' role='status'>Заплановано перезапуск контролера.</p>");
-  if (!view.render.assetsReady || view.render.ledError) html.text("<p class='notice danger' role='alert'>Матриця недоступна. Перевірте діагностику LED-драйвера.</p>");
-  if (!settingsPage) html.text("<p class='notice' data-new-agents hidden>З’явилися нові агенти. <a href='/agents'>Оновити список</a></p>");
-  if (agentsPage) { html.text("<section class='section'>"); writeAgents(html, view); html.text("</section>"); }
+  html.file("templates/shell/heading-close.html");
+  if (view.message[0]) { html.file("templates/shell/notice-open.html"); html.escaped(view.message); html.file("templates/shell/paragraph-close.html"); }
+  if (view.dirty) html.file("templates/shell/saving-notice.html");
+  if (view.restarting) html.file("templates/shell/restart-notice.html");
+  if (!view.render.assetsReady || view.render.ledError) html.file("templates/shell/matrix-error-notice.html");
+  if (!settingsPage) html.file("templates/shell/new-agents-notice.html");
+  if (agentsPage) { html.file("templates/shell/section-open.html"); writeAgents(html, view); html.file("templates/summary/section-close.html"); }
   else if (settingsPage) writeSettings(html, view);
   else writeOverview(html, view);
-  html.text("</main><footer class='footer'><span>LED Forge · ESP32-S3</span><a href='/health'>Діагностика</a></footer></div><script>");
-  html.text(kPortalScript);
-  if (!agentsPage && !settingsPage) html.text(kPreviewScript);
-  html.text("</script></body></html>");
+  html.file("templates/shell/footer.html");
+  if (!agentsPage && !settingsPage) html.file("templates/shell/preview-script.html");
+  html.file("templates/shell/document-close.html");
   return html.end();
 }
 esp_err_t deviceImage(httpd_req_t *request) {
   HandlerScope scope;
-  extern const uint8_t start[] asm("_binary_device_front_png_start");
-  extern const uint8_t end[] asm("_binary_device_front_png_end");
-  httpd_resp_set_type(request, "image/png");
-  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-  httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
-  return httpd_resp_send(request, reinterpret_cast<const char *>(start), end - start);
+  return serveWebFile(request, "images/device.png", "image/png");
 }
 esp_err_t frameGet(httpd_req_t *request) {
   HandlerScope scope; View view;
@@ -807,6 +934,14 @@ esp_err_t frameGet(httpd_req_t *request) {
   httpd_resp_set_hdr(request, "Cache-Control", "no-store");
   httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
   return httpd_resp_send(request, reinterpret_cast<const char *>(bytes), sizeof(bytes));
+}
+esp_err_t staticAsset(httpd_req_t *request) {
+  HandlerScope scope;
+  // Routes are explicitly registered; no user-supplied filesystem paths.
+  const bool css = !std::strcmp(request->uri, "/assets/css/portal.css") || !std::strcmp(request->uri, "/assets/css/preview.css");
+  const bool js = !std::strcmp(request->uri, "/assets/js/portal.js") || !std::strcmp(request->uri, "/assets/js/preview.js");
+  if (!css && !js) return error(request, "404 Not Found", "Not found");
+  return serveWebFile(request, request->uri + 1, css ? "text/css; charset=utf-8" : "text/javascript; charset=utf-8");
 }
 esp_err_t portalStatus(httpd_req_t *request) {
   HandlerScope scope; View view;
@@ -832,6 +967,7 @@ esp_err_t portalStatus(httpd_req_t *request) {
   char id[16], version[24]; std::snprintf(id, sizeof(id), "%06lX", (unsigned long)view.deviceId);
   std::snprintf(version, sizeof(version), "%llu", (unsigned long long)PROJECT_FIRMWARE_VERSION);
   string(root, "device_id", id); string(root, "version", version);
+  string(root, "web_filesystem", "littlefs"); string(root, "web_version", webFilesVersion());
   cJSON *agents = cJSON_AddArrayToObject(root, "agents");
   if (!agents) okay = false;
   else for (const auto &agent : view.control.agents) {
@@ -999,7 +1135,7 @@ esp_err_t commandPost(httpd_req_t *request) {
 }
 bool initializeHttp() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG(); config.core_id = 0; config.stack_size = 10240;
-  config.max_uri_handlers = 16; config.max_open_sockets = 4; config.lru_purge_enable = true;
+  config.max_uri_handlers = 20; config.max_open_sockets = 4; config.lru_purge_enable = true;
   config.recv_wait_timeout = 2; config.send_wait_timeout = 2;
   if (httpd_start(&model.http, &config) != ESP_OK) return false;
   const auto failed = []() { httpd_stop(model.http); model.http = nullptr; return false; };
@@ -1014,6 +1150,8 @@ bool initializeHttp() {
       !registerRoute("/health", HTTP_GET, health) || !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
   for (const char *uri : {"/save", "/power", "/brightness", "/schedule", "/agent-color", "/restart", "/update"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();
+  for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js"})
+    if (!registerRoute(uri, HTTP_GET, staticAsset)) return failed();
   return true;
 }
 
@@ -1309,7 +1447,7 @@ void serviceMaintenance() {
       case Maintenance::Persist: {
         bool saved = !model.dirty || saveSettings();
         if (saved) refreshStationAfterSave();
-        if (model.confirmationPending && model.render.watchdogReady && model.render.assetsReady && model.render.frames && model.render.ledError == 0 && model.wifiReady && model.httpReady && model.udp >= 0) {
+        if (model.confirmationPending && std::strcmp(webFilesVersion(), "unavailable") && model.render.watchdogReady && model.render.assetsReady && model.render.frames && model.render.ledError == 0 && model.wifiReady && model.httpReady && model.udp >= 0) {
           if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) model.confirmationPending = false;
           else { message("Boot confirmation could not be persisted."); saved = false; }
         }
@@ -1344,7 +1482,7 @@ void serviceMaintenance() {
     return;
   }
   if ((model.dirty && now - model.dirtyAt >= 300 && due(now, model.persistRetryAt)) ||
-      (model.confirmationPending && model.wifiReady && model.httpReady && model.udp >= 0 &&
+      (model.confirmationPending && std::strcmp(webFilesVersion(), "unavailable") && model.wifiReady && model.httpReady && model.udp >= 0 &&
        model.render.watchdogReady && model.render.assetsReady && model.render.frames && !model.render.ledError && due(now, model.persistRetryAt))) {
     requestMaintenance(Maintenance::Persist); return;
   }
@@ -1368,11 +1506,17 @@ void networkTask(void *) {
   if (!viewMutex || !wifiEvents || !telemetryQueue || !telemetryReplies || !manifestJobs || !manifestResults) { ESP_LOGE(kTag, "Cannot initialize network IPC"); vTaskDelete(nullptr); return; }
   // Complete all boot-time storage and PHY initialization before permitting RMT output.
   loadSettings();
+  const bool webReady = initializeWebFiles();
+  if (!webReady) { message("Web filesystem initialization failed."); ESP_LOGE(kTag, "Web filesystem unavailable"); }
   model.wifiReady = initializeWifi();
   if (!model.wifiReady) { message("Wi-Fi initialization failed."); ESP_LOGE(kTag, "Wi-Fi initialization failed"); }
   initializeUdp();
   esp_ota_img_states_t state;
   model.confirmationPending = esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY;
+  if (!webReady && model.confirmationPending) {
+    ESP_LOGE(kTag, "Rejecting OTA image: web tree could not be installed");
+    esp_ota_mark_app_invalid_rollback_and_reboot();
+  }
   model.otaAt = uptimeMs() + 30000;
   updateControl(); publishView();
   model.httpReady = initializeHttp();

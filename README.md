@@ -34,7 +34,13 @@ frame rate, scene data and the binary snapshot protocol are unchanged.
 Validation: 342 tests passed (three optional tests skipped), 14 preview-script
 tests passed, existing portal-script tests and analyzer passed. Desktop and mobile
 layout were checked with real recorded matrix bytes. PlatformIO build succeeded;
-static RAM remains 66,256 bytes. Live OTA verification follows below.
+static RAM remains 66,256 bytes. Wi-Fi OTA completed and post-boot status reported
+version `1791984176328` / Up to date with both agents reconnected. The PNG served
+by the S3 has the same SHA-256 as the committed image; the live browser showed
+the animation inside its window with the corrected encoding. Six short status
+samples all succeeded, measuring 29.32 FPS at the unchanged 30 FPS target and
+minimum sampled free heap of 158,936 bytes. No sampled LED errors, Wi-Fi
+disconnects or resets were observed. This is not a long-duration soak test.
 
 ## Previous Preview Release
 

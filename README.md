@@ -20,7 +20,7 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
-Version `1791980999999` adds an opt-in live matrix canvas on Overview. It reads
+Version `1791981464774` adds an opt-in live matrix canvas on Overview. It reads
 actual successful LED frames through the bounded `/frame` endpoint, including
 meteors and transitions. Logical mapping, 5 mm square pixels and the 7 mm clear
 vertical gap are preserved. Optional canvas brightness compensation does not
@@ -30,6 +30,11 @@ The renderer never waits on networking and keeps its 30 FPS target. Snapshot
 storage is static; total static RAM is 66,256 bytes. Validation: 340 tests passed
 (three optional tests skipped), 11 preview-script tests and eight portal-script
 tests passed, analyzer clean, PlatformIO build successful.
+Cold frame requests yield for at most 60 ms without holding a mutex, so retry
+backoff cannot continually outlast the short capture lease. The preceding preview
+build was checked on desktop and mobile, with actual changing meteor frames,
+correct square-pixel spacing and no horizontal overflow. Forty consecutive binary
+frame requests returned complete, advancing 3,024-byte snapshots.
 
 ## Previous Portal Release
 

@@ -781,7 +781,14 @@ esp_err_t frameGet(httpd_req_t *request) {
       !view.render.assetsReady || view.render.ledError)
     return error(request, "503 Service Unavailable", "Preview unavailable during maintenance.");
   uint8_t bytes[kPreviewFrameBytes];
-  if (!copyPreview(bytes, sizeof(bytes), uptimeMs())) {
+  bool copied = copyPreview(bytes, sizeof(bytes), uptimeMs());
+  // Cold leases need one renderer tick. Yield without holding the snapshot lock;
+  // otherwise client retry backoff can outlast the lease and stay cold forever.
+  for (unsigned attempt = 0; !copied && attempt < 6; ++attempt) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+    copied = copyPreview(bytes, sizeof(bytes), uptimeMs());
+  }
+  if (!copied) {
     httpd_resp_set_hdr(request, "Retry-After", "1");
     return error(request, "503 Service Unavailable", "Waiting for an LED frame.");
   }

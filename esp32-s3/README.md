@@ -87,6 +87,8 @@ HTTP copies a complete snapshot, releases the mutex, then sends it. No network
 operation blocks the renderer. The client has one in-flight request, pauses when
 collapsed, hidden or off-screen, and backs off on maintenance/errors. Capture
 leases expire after 1.5 seconds without requests; stale frames are not served.
+Cold HTTP requests yield for up to 60 ms for a new frame without holding any
+mutex. This prevents retry backoff from continually outlasting a capture lease.
 The physical matrix retains its 30 FPS target. The preview is not a camera and
 cannot report failed LEDs or electrical signal corruption after transmission.
 

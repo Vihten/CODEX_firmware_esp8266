@@ -34,6 +34,18 @@ Native HTML tests include missing and malformed templates. Bundle tests cover
 case-sensitive path order on Windows, SHA-256, traversal and size limits.
 Power-loss and filesystem-corruption recovery have not been hardware fault-tested.
 
+Installed successfully over Wi-Fi on 2026-10-14. The S3 reported version
+`1791985824771`, `web_filesystem=littlefs`, and web digest
+`d10c1fdeba993268392ed32dced7a84345604ffeeaa3a656ff66b26658a7d706`.
+The post-boot check reported `Up to date`. All three pages, four CSS/JS resources
+and the PNG returned HTTP 200; live preview returned changing LFP1 frames.
+Brightness 30/255, automatic power, and the disabled weekday 08:30-17:30 schedule
+survived. Real agents reconnected. Desktop and 390px mobile layouts were checked.
+A short 12-request profile had no failures, 65-231ms status responses, at least
+160,496 bytes free internal heap, and 29.18 measured FPS against the 30 FPS target.
+No LED errors, Wi-Fi disconnects or extra restarts were observed. This is not
+a long-duration or eight-agent hardware acceptance test.
+
 ## Previous Device Preview Release
 
 Version `1791984176328` places the live screen inside an actual orthographic

@@ -32,6 +32,13 @@ Validation: PlatformIO build, 20 export/network tests, 24 script tests and 34
 web-bundle tests passed; desktop and 390px mobile live previews were checked.
 The original private CAD file hash is unchanged.
 
+Wi-Fi OTA verified on 2026-10-15: version `1792046508883`, web digest
+`1b24843267a33afbffd7c86982c2b6172dcbbbd739249a55d439d685a803b51c`,
+and `Up to date`. The served PNG matches the prepared asset byte-for-byte.
+Live preview showed the restrained highlights without a canvas filter; brightness
+remained 44/255 and two agents reconnected. No LED error or Wi-Fi disconnect was
+reported in this short post-update check; it was not a long stability test.
+
 ## Soft Contact Shadow Release
 
 Version `1792046130754` adds subtle, soft contact shadows to the gray device

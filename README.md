@@ -32,6 +32,13 @@ Validation: PlatformIO build, targeted Dart analysis, 20 export/network tests,
 were visually checked. Animation/preview source and frame hashes are unchanged,
 as is the private original CAD file.
 
+Wi-Fi OTA verified on 2026-10-15: version `1792046130754`, web digest
+`333347b228b4dd150ccbc11847deb7b01f6f420f9f1dfd23761cad4db02accb4`,
+and `Up to date`. The device-served PNG matches the prepared file byte-for-byte.
+Its live page shows the new shadows with no canvas filter; brightness remains
+44/255 and two agents reconnected. No LED error or Wi-Fi disconnect was reported
+during this short post-update verification; this was not a long stability test.
+
 ## Soft Outline Release
 
 Version `1792045618143` softens and thins only the gray device body's CAD outlines.

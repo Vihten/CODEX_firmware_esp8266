@@ -33,6 +33,14 @@ the PlatformIO build passed, plus 24 script tests, 34 bundle tests and a raster
 check detecting 8,500 partially transparent antialiased edge pixels. Desktop and
 390px mobile views were checked; no overflow or aperture mismatch was observed.
 
+Wi-Fi OTA completed on 2026-10-15. The S3 reported version `1792043877479`, web
+digest `36b1a66520f57ba5016a208aee98c7976e434a453ff6e37fd9638f8dda06ff92`, and
+`Up to date` after boot. Its served PNG matched the prepared file byte-for-byte;
+the live page loaded the 1536 x 1100 image and correctly aligned colored canvas.
+Both active agents reconnected, brightness 44/255 and the schedule were preserved.
+No LED error, Wi-Fi disconnect or additional reset was reported in this short
+verification. This is not a long-duration hardware stability test.
+
 ## Angled Preview Release
 
 Version `1791988635014` uses a matte-gray angled render of the actual device.

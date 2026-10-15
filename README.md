@@ -20,6 +20,21 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792044933681` slightly lightens only the gray device render and restores
+shaded-with-edges CAD outlines, making the mounting holes, seams and symbols more
+readable. The mirrored 1536 x 1100 antialiased PNG is 133,863 bytes. Animation
+renderer, animation/effect frame data, browser color encoding and preview CSS
+were hash-checked unchanged; no brightness, normalization or palette adjustment
+was made. Target frequency remains 30 FPS.
+
+Validation: 344 Flutter tests passed (three optional tests skipped), analysis,
+PlatformIO, 24 script tests and 34 bundle tests passed. Raster tests now check
+body brightness and dark outline/detail pixels outside the live display area;
+the old dark image and an in-memory outline-erased image fail these checks.
+Desktop and 390px mobile previews were visually checked with live controller data.
+
+## Mirrored Preview Release
+
 Version `1792043877479` mirrors the device body horizontally and improves its
 render quality. Fine CAD tessellation, 4x supersampling and alpha-aware downsampling
 produce a 1536 x 1100 grayscale PNG (72,314 bytes). Layout remains in the same

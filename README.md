@@ -20,6 +20,20 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792046130754` adds subtle, soft contact shadows to the gray device
+body. Shadow coverage is derived from the CAD creases, blurred offline and
+offset consistently with the light direction. Thin outlines and all silhouette
+alpha remain intact; the 1536 x 1100 PNG is 162,865 bytes. No shadow processing
+runs on the MCU. Animation renderer, frame/effect data, browser color encoding,
+preview CSS and brightness settings are unchanged; target remains 30 FPS.
+
+Validation: PlatformIO build, targeted Dart analysis, 20 export/network tests,
+24 script tests and 34 bundle tests passed. Desktop and 390px mobile previews
+were visually checked. Animation/preview source and frame hashes are unchanged,
+as is the private original CAD file.
+
+## Soft Outline Release
+
 Version `1792045618143` softens and thins only the gray device body's CAD outlines.
 Matching shaded and edged rasters isolate the linework; subpixel thinning and
 reduced contrast retain engraved controls without a drawing-like black stroke.

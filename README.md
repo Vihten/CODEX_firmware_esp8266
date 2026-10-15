@@ -37,15 +37,31 @@ hidden/offscreen pages, malformed packets and a two-second no-frame timeout
 abort the stream. Colors, brightness, physical frame/effect data and 30 FPS
 matrix output remain unchanged.
 
-Validation: 66 export/network/native preview tests, 29 browser-preview tests,
+Validation: 67 export/network/native preview tests, 29 browser-preview tests,
 9 portal tests, 34 web-bundle tests and targeted Dart analysis passed. Includes
-22 native stream lifecycle/error cases. Device timing is verified after OTA;
+23 native stream lifecycle/error cases. Device timing is verified after OTA;
 no sustained frame-rate claim is made solely from unit tests.
 
 The initial stream build `1792048698713` reached 13.21 distinct FPS over 45 seconds
 but had two truncated connections and a 1.16 s maximum gap. The revised build
 relaxes the overly short send timeout and distinguishes graceful renewal from
 error shutdown; final device results are recorded after deployment.
+
+Wi-Fi OTA verified on 2026-10-15: version `1792049430436`, web digest
+`c11766433bb89e1ec2db90ccd0bfe4a9dc07f722995bab5dba50337efd9de3f5`,
+and `Up to date`. A 45.05-second stream test delivered 541 unique frames
+(12.01 FPS) over two connections, including normal renewal, with zero truncated
+connections or parser errors. Median arrival gap was 63 ms; seven gaps exceeded
+250 ms and the largest was 1.531 s. This is an improvement in connection
+continuity, not proof of stutter-free playback on the current network.
+
+The user explicitly chose minimum latency over a proposed two-second playback
+buffer. No artificial delay or interpolation was added. Desktop and 390px mobile
+browser checks confirmed `transport=stream`, changing frame sequences and no
+canvas filter. Brightness remains 44/255. Physical renderer/frame/effect hashes
+remain unchanged; no LED error or Wi-Fi disconnect was reported during the short
+post-update check. The web page and fallback `/frame` stayed available while the
+stream was active; a second stream was refused with 503 as designed.
 
 ## Lower-Latency Polling Release
 

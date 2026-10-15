@@ -20,6 +20,20 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792046508883` adds restrained plastic highlights from a separate CAD
+specular pass. Only the positive reflected-light difference is blended into the
+body, capped at 12 gray levels before downsampling, with dark creases protected.
+Existing soft shadows, fine outlines, geometry, mirroring and silhouette remain.
+The 1536 x 1100 PNG is 162,352 bytes; all asset rendering happens offline.
+Animation renderer, animation/effect data, preview color encoding and CSS remain
+hash-identical. Brightness settings and the 30 FPS target are unchanged.
+
+Validation: PlatformIO build, 20 export/network tests, 24 script tests and 34
+web-bundle tests passed; desktop and 390px mobile live previews were checked.
+The original private CAD file hash is unchanged.
+
+## Soft Contact Shadow Release
+
 Version `1792046130754` adds subtle, soft contact shadows to the gray device
 body. Shadow coverage is derived from the CAD creases, blurred offline and
 offset consistently with the light direction. Thin outlines and all silhouette

@@ -6,7 +6,7 @@
 #define PROJECT_FRAMES 201
 #define PROJECT_FPS 30
 #define PROJECT_BRIGHTNESS 30
-#define PROJECT_FIRMWARE_VERSION 1792046130754ULL
+#define PROJECT_FIRMWARE_VERSION 1792046508883ULL
 #define PROJECT_ACCOUNT_FINGERPRINT 0x53197668UL
 #define PROJECT_OTA_MANIFEST_URL "https://api.github.com/repos/Vihten/CODEX_firmware_esp8266/contents/esp32-s3/manifest.json?ref=main"
 #define PROJECT_NAME "Minecraft-ClockNew"

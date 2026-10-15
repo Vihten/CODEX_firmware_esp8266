@@ -20,6 +20,21 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792043877479` mirrors the device body horizontally and improves its
+render quality. Fine CAD tessellation, 4x supersampling and alpha-aware downsampling
+produce a 1536 x 1100 grayscale PNG (72,314 bytes). Layout remains in the same
+768 x 550 coordinate space. The live matrix follows the mirrored aperture with
+a positive-determinant transform, preserving the original animation orientation.
+The original CAD remains private and unchanged. MCU animation, GPIO18, agent
+handling and the 30 FPS target are unchanged.
+
+Validation: 344 Flutter tests passed (three optional tests skipped), analysis and
+the PlatformIO build passed, plus 24 script tests, 34 bundle tests and a raster
+check detecting 8,500 partially transparent antialiased edge pixels. Desktop and
+390px mobile views were checked; no overflow or aperture mismatch was observed.
+
+## Angled Preview Release
+
 Version `1791988635014` uses a matte-gray angled render of the actual device.
 The live colored LED canvas is mapped into the CAD aperture with a measured
 affine transform. Physical pixel spacing, centered letterboxing and color encoding

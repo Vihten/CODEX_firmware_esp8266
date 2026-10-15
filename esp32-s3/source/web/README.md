@@ -15,6 +15,10 @@ from this tree; separate static page copies are not needed.
 - `images/device-layout.json`: measured angled CAD aperture and physical pixel plane.
   `preview.css` maps the live canvas into this plane with an affine transform;
   the physical 348 x 233 mm matrix stays centered in the 348 x 248 mm aperture.
+  The body is horizontally mirrored, but the canvas keeps a positive-determinant
+  transform so the animation is not reflected. Layout uses a 768 x 550 coordinate
+  space; the PNG has a 1536 x 1100 raster for high-density displays. CAD exports
+  use fine tessellation and 4x supersampling, then alpha-aware 2x downsampling.
 
 ## Rendering Contract
 

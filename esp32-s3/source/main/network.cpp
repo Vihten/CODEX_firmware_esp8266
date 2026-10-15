@@ -914,6 +914,10 @@ esp_err_t deviceImage(httpd_req_t *request) {
   return serveWebFile(request, "images/device.png", "image/png");
 }
 esp_err_t frameGet(httpd_req_t *request) {
+  // Frame packets must not wait for a delayed ACK between headers and body.
+  const int noDelay = 1;
+  const int socket = httpd_req_to_sockfd(request);
+  if (socket >= 0) (void)setsockopt(socket, IPPROTO_TCP, TCP_NODELAY, &noDelay, sizeof(noDelay));
   HandlerScope scope; View view;
   if (!snapshot(view) || view.restarting || view.control.maintenance != Maintenance::None ||
       !view.render.assetsReady || view.render.ledError)

@@ -20,6 +20,22 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792047118711` adds a soft external shadow to the static body image
+only. Canvas and container filters remain absent. Web preview now targets a
+66 ms cadence (~15 FPS), with matching demand-only capture throttling. Frame
+responses enable TCP_NODELAY best-effort on valid sockets to reduce potential
+header/body delayed-ACK stalls. Requests stay sequential, bounded and paused
+when hidden. A gain-keyed 256-entry LUT replaces repeated sRGB calculations,
+with exhaustive tests proving identical output across all brightness values.
+Physical animation renderer, frame/effect data and 30 FPS target are unchanged.
+
+Validation: PlatformIO, targeted Dart analysis, 44 export/network/native preview
+tests, 26 browser-script tests and 34 web-bundle tests passed. Desktop/mobile
+preview and image-only shadow scope were checked. Before deployment, eight
+frame requests took 126-222 ms; actual post-update timing is checked separately.
+
+## Matte Plastic Highlight Release
+
 Version `1792046508883` adds restrained plastic highlights from a separate CAD
 specular pass. Only the positive reflected-light difference is blended into the
 body, capped at 12 gray levels before downsampling, with dark creases protected.

@@ -23,6 +23,8 @@
     let generation = 0;
     let failures = 0;
     let frame = null;
+    const channels = new Uint8Array(256);
+    let cachedGain = null;
     let intersecting = !('IntersectionObserver' in window);
     let pageActive = true;
     const enabled = () => details.open && !document.hidden && intersecting && pageActive;
@@ -36,17 +38,20 @@
       const left = (canvas.width - widthMm * scale) / 2;
       const top = (canvas.height - heightMm * scale) / 2;
       const gain = normalize.checked && frame.brightness < 255 ? 256 / (frame.brightness + 1) : 1;
-      const channel = value => {
-        const linear = Math.max(0, Math.min(1, value * gain / 255));
-        const srgb = linear <= 0.0031308
-          ? 12.92 * linear
-          : 1.055 * Math.pow(linear, 1 / 2.4) - 0.055;
-        return Math.max(0, Math.min(255, Math.round(srgb * 255)));
-      };
+      if (cachedGain !== gain) {
+        for (let value = 0; value < 256; ++value) {
+          const linear = Math.max(0, Math.min(1, value * gain / 255));
+          const srgb = linear <= 0.0031308
+            ? 12.92 * linear
+            : 1.055 * Math.pow(linear, 1 / 2.4) - 0.055;
+          channels[value] = Math.max(0, Math.min(255, Math.round(srgb * 255)));
+        }
+        cachedGain = gain;
+      }
       for (let y = 0; y < frame.height; ++y) {
         for (let x = 0; x < frame.width; ++x) {
           const offset = (y * frame.width + x) * 3;
-          context.fillStyle = `rgb(${channel(frame.rgb[offset])},${channel(frame.rgb[offset + 1])},${channel(frame.rgb[offset + 2])})`;
+          context.fillStyle = `rgb(${channels[frame.rgb[offset]]},${channels[frame.rgb[offset + 1]]},${channels[frame.rgb[offset + 2]]})`;
           context.fillRect(left + x * 7 * scale, top + y * 12 * scale, 5 * scale, 5 * scale);
         }
       }
@@ -103,7 +108,7 @@
       } finally {
         clearTimeout(request.timeout);
         active = null;
-        schedule(delay === null ? Math.max(0, 100 - (Date.now() - request.started)) : delay);
+        schedule(delay === null ? Math.max(0, 66 - (Date.now() - request.started)) : delay);
       }
     };
     const resume = () => {

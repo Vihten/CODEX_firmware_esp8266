@@ -36,7 +36,7 @@ void capturePreview(const uint8_t *grb, uint8_t brightness, uint32_t sequence,
   if (!mutex || !grb || !mapping || !requested.load(std::memory_order_acquire) ||
       uint32_t(now - requestedAt.load(std::memory_order_relaxed)) > 1500) return;
   if (xSemaphoreTake(mutex, 0) != pdTRUE) return;
-  if (valid && uint32_t(now - capturedAt) < 100) { xSemaphoreGive(mutex); return; }
+  if (valid && uint32_t(now - capturedAt) < 66) { xSemaphoreGive(mutex); return; }
   std::memcpy(packet, "LFP1", 4);
   little16(packet + 4, PROJECT_WIDTH); little16(packet + 6, PROJECT_HEIGHT);
   little32(packet + 8, sequence); little32(packet + 12, now);

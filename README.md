@@ -32,6 +32,13 @@ bundle tests passed. Raster comparison confirmed identical alpha and over one
 million unchanged shaded pixels; desktop and 390px mobile views were inspected.
 The original CAD remains private and its SHA-256 is unchanged.
 
+Wi-Fi OTA verified on 2026-10-15: version `1792045618143`, web digest
+`d1ab24143a88d38d59d3c8b3cb3acda4a190a012aa82dede766bd6deeafa75ed`,
+and `Up to date`. The served PNG matched the prepared asset byte-for-byte.
+The live page displayed the softer body with an unfiltered, aligned animation;
+brightness remained 44/255 and both agents reconnected. No LED error or Wi-Fi
+disconnect was reported during this short post-update check, not a soak test.
+
 ## Lighter Outlined Body Release
 
 Version `1792044933681` slightly lightens only the gray device render and restores

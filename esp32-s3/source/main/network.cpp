@@ -939,6 +939,87 @@ esp_err_t frameGet(httpd_req_t *request) {
   httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
   return httpd_resp_send(request, reinterpret_cast<const char *>(bytes), sizeof(bytes));
 }
+
+std::atomic<bool> previewStreamBusy{false};
+std::atomic<bool> previewStreamSealed{false};
+std::atomic<uint32_t> previewStreamFrames{0}, previewStreamStack{0};
+StaticQueue_t previewStreamQueueStorage;
+uint8_t previewStreamQueueBytes[sizeof(httpd_req_t *)];
+QueueHandle_t previewStreamQueue = nullptr;
+std::atomic<bool> previewStreamReady{false};
+
+bool previewStreamAllowed() {
+  View view;
+  return !previewStreamSealed.load() && snapshot(view) && !view.restarting && view.control.maintenance == Maintenance::None &&
+         view.render.assetsReady && !view.render.ledError;
+}
+
+void previewStreamTask(void *) {
+  httpd_req_t *request = nullptr;
+  uint8_t bytes[kPreviewFrameBytes];
+  for (;;) {
+    if (xQueueReceive(previewStreamQueue, &request, portMAX_DELAY) != pdTRUE) continue;
+    const int socket = httpd_req_to_sockfd(request);
+    const int noDelay = 1;
+    const timeval timeout{0, 250000};
+    bool writable = socket >= 0 && setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0;
+    if (writable) (void)setsockopt(socket, IPPROTO_TCP, TCP_NODELAY, &noDelay, sizeof(noDelay));
+    httpd_resp_set_type(request, "application/octet-stream");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(request, "Connection", "close");
+    httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+    uint32_t lastSequence = 0;
+    bool sent = false;
+    const uint32_t started = uptimeMs();
+    TickType_t wake = xTaskGetTickCount();
+    while (writable && uint32_t(uptimeMs() - started) < 30000 && previewStreamAllowed()) {
+      if (copyPreview(bytes, sizeof(bytes), uptimeMs())) {
+        uint32_t sequence = 0;
+        for (unsigned i = 0; i < 4; ++i) sequence |= uint32_t(bytes[8 + i]) << (8 * i);
+        if (!sent || sequence != lastSequence) {
+          writable = httpd_resp_send_chunk(request, reinterpret_cast<const char *>(bytes), sizeof(bytes)) == ESP_OK;
+          if (writable) { lastSequence = sequence; sent = true; ++previewStreamFrames; }
+        }
+      }
+      // No view/preview mutex is held during network I/O. Never queue old frames.
+      previewStreamStack.store(uxTaskGetStackHighWaterMark(nullptr), std::memory_order_relaxed);
+      if (xTaskGetTickCount() - wake >= pdMS_TO_TICKS(66)) wake = xTaskGetTickCount();
+      vTaskDelayUntil(&wake, pdMS_TO_TICKS(66));
+    }
+    if (writable && sent) (void)httpd_resp_send_chunk(request, nullptr, 0);
+    // The HTTP server owns close(); shutdown prevents reuse of this stream socket.
+    if (socket >= 0) (void)shutdown(socket, SHUT_RDWR);
+    (void)httpd_req_async_handler_complete(request);
+    --activeHandlers;
+    previewStreamBusy.store(false, std::memory_order_release);
+  }
+}
+
+esp_err_t framesGet(httpd_req_t *request) {
+  HandlerScope scope;
+  if (!previewStreamReady.load(std::memory_order_acquire) || !previewStreamAllowed())
+    return error(request, "503 Service Unavailable", "Preview stream unavailable.");
+  if (previewStreamBusy.exchange(true))
+    return error(request, "503 Service Unavailable", "Preview stream is already in use.");
+  if (previewStreamSealed.load()) {
+    previewStreamBusy.store(false, std::memory_order_release);
+    return error(request, "503 Service Unavailable", "Preview stream is draining for maintenance.");
+  }
+  httpd_req_t *async = nullptr;
+  if (httpd_req_async_handler_begin(request, &async) != ESP_OK) {
+    previewStreamBusy.store(false, std::memory_order_release);
+    return error(request, "503 Service Unavailable", "Cannot start preview stream.");
+  }
+  ++activeHandlers;
+  if (xQueueSend(previewStreamQueue, &async, 0) != pdTRUE) {
+    (void)httpd_resp_set_status(async, "503 Service Unavailable");
+    (void)httpd_resp_send(async, "Preview worker busy.", HTTPD_RESP_USE_STRLEN);
+    (void)httpd_req_async_handler_complete(async);
+    --activeHandlers;
+    previewStreamBusy.store(false, std::memory_order_release);
+  }
+  return ESP_OK;
+}
 esp_err_t staticAsset(httpd_req_t *request) {
   HandlerScope scope;
   // Routes are explicitly registered; no user-supplied filesystem paths.
@@ -960,6 +1041,9 @@ esp_err_t portalStatus(httpd_req_t *request) {
   number(root, "heap", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   number(root, "rssi", view.rssi); number(root, "activity", view.control.activityPercent);
   number(root, "agents_count", portalAgentCount(view)); number(root, "brightness", view.control.brightness);
+  boolean(root, "preview_stream_busy", previewStreamBusy.load(std::memory_order_acquire));
+  number(root, "preview_stream_frames", previewStreamFrames.load(std::memory_order_relaxed));
+  number(root, "preview_stream_stack", previewStreamStack.load(std::memory_order_relaxed));
   number(root, "ota_done", view.otaDone); number(root, "ota_total", view.otaTotal);
   const time_t epoch = std::time(nullptr); number(root, "time_epoch", epoch >= 1700000000 ? double(epoch) : 0);
   if (view.control.accountLinked) number(root, "remaining", view.control.remainingPercent);
@@ -1150,12 +1234,17 @@ bool initializeHttp() {
   if (!registerRoute("/", HTTP_GET, page) || !registerRoute("/agents", HTTP_GET, page) ||
       !registerRoute("/settings", HTTP_GET, page) || !registerRoute("/status", HTTP_GET, portalStatus) ||
       !registerRoute("/frame", HTTP_GET, frameGet) ||
+      !registerRoute("/frames", HTTP_GET, framesGet) ||
       !registerRoute("/device.png", HTTP_GET, deviceImage) ||
       !registerRoute("/health", HTTP_GET, health) || !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
   for (const char *uri : {"/save", "/power", "/brightness", "/schedule", "/agent-color", "/restart", "/update"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();
   for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js"})
     if (!registerRoute(uri, HTTP_GET, staticAsset)) return failed();
+  previewStreamQueue = xQueueCreateStatic(1, sizeof(httpd_req_t *), previewStreamQueueBytes, &previewStreamQueueStorage);
+  previewStreamReady.store(previewStreamQueue &&
+    xTaskCreatePinnedToCore(previewStreamTask, "preview-stream", 8192, nullptr, 2, nullptr, 0) == pdPASS,
+    std::memory_order_release);
   return true;
 }
 
@@ -1389,6 +1478,7 @@ bool installFirmware() {
 
 void requestMaintenance(Maintenance kind) {
   if (model.releasePending || model.control.maintenance != Maintenance::None) return;
+  previewStreamSealed.store(true);
   model.control.maintenance = kind; ++model.control.maintenanceEpoch;
   if (!model.control.maintenanceEpoch) ++model.control.maintenanceEpoch;
   model.maintenanceAt = uptimeMs(); updateControl(); publishView();
@@ -1397,6 +1487,7 @@ void releaseMaintenance() {
   model.control.maintenance = Maintenance::None;
   // Keep the old epoch until Core 1 explicitly reports that it resumed.
   model.releasePending = true; updateControl(); publishView();
+  previewStreamSealed.store(false);
 }
 bool acknowledged() {
   return model.render.quiescent &&
@@ -1437,9 +1528,9 @@ void serviceMaintenance() {
     else return;
   }
   if (model.control.maintenance != Maintenance::None) {
-    if (!acknowledged()) {
+    if (!acknowledged() || previewStreamBusy.load()) {
       if (now - model.maintenanceAt >= kMaintenanceTimeout) {
-        ++model.maintenanceTimeouts; message("LED maintenance was not acknowledged; no flash write occurred.");
+        ++model.maintenanceTimeouts; message("Renderer/preview maintenance was not acknowledged; no flash write occurred.");
         model.persistRetryAt = now + 5000; model.otaAt = now + 60000;
         model.manifestReady = false;
         if (model.control.maintenance == Maintenance::Restart) model.restarting = false;

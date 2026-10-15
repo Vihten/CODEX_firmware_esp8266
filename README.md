@@ -20,6 +20,29 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792048698713` replaces per-frame browser requests with a bounded raw
+LFP1 HTTP stream on `/frames`, keeping `/frame` as a compatibility fallback.
+One low-priority Core 0 worker owns one async request and a single copied frame;
+HTTP page handling stays independent. Streams renew after 30 seconds, skip
+duplicate frames, never queue historical frames, and use a 250 ms per-send
+socket timeout (not a total per-frame deadline). Only one streaming viewer is
+admitted; other viewers fall back to polling and may re-probe after 30 seconds.
+
+Before persistence, OTA or restart, stream admission is sealed and the worker
+must drain before flash work. Its socket is shut down before async completion;
+HTTPD retains descriptor ownership. Browser parsing accepts arbitrary fragments,
+keeps bounded storage and draws only the newest complete frame per read. Pause,
+hidden/offscreen pages, malformed packets and a two-second no-frame timeout
+abort the stream. Colors, brightness, physical frame/effect data and 30 FPS
+matrix output remain unchanged.
+
+Validation: 66 export/network/native preview tests, 29 browser-preview tests,
+9 portal tests, 34 web-bundle tests and targeted Dart analysis passed. Includes
+22 native stream lifecycle/error cases. Device timing is verified after OTA;
+no sustained frame-rate claim is made solely from unit tests.
+
+## Lower-Latency Polling Release
+
 Version `1792047118711` adds a soft external shadow to the static body image
 only. Canvas and container filters remain absent. Web preview now targets a
 66 ms cadence (~15 FPS), with matching demand-only capture throttling. Frame

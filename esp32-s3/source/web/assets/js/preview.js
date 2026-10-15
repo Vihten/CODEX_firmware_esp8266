@@ -23,6 +23,8 @@
     let generation = 0;
     let failures = 0;
     let frame = null;
+    let useStream = 'ReadableStream' in window;
+    let streamRetryAt = 0;
     const channels = new Uint8Array(256);
     let cachedGain = null;
     let intersecting = !('IntersectionObserver' in window);
@@ -83,19 +85,84 @@
     };
     const poll = async () => {
       if (active || !enabled()) return;
+      if (!useStream && 'ReadableStream' in window && Date.now() >= streamRetryAt) useStream = true;
       const request = {controller: new AbortController(), generation, timeout: null, started: Date.now()};
       active = request;
       request.timeout = setTimeout(() => request.controller.abort(), 2000);
       let delay = null;
       try {
-        const response = await fetch('/frame', {cache: 'no-store', signal: request.controller.signal});
+        const response = await fetch(useStream ? '/frames' : '/frame', {cache: 'no-store', signal: request.controller.signal});
+        if (useStream && (!response.ok || !response.body || !response.body.getReader)) {
+          if (response.body && response.body.cancel) await response.body.cancel();
+          useStream = false;
+          streamRetryAt = Date.now() + 30000;
+          delay = 0;
+          return;
+        }
         if (!response.ok) throw new Error(response.status === 503 ? 'maintenance' : 'http');
+        if (useStream) {
+          const reader = response.body.getReader();
+          const pending = new Uint8Array(49176);
+          let filled = 0, needed = 24, received = false;
+          const armStreamTimeout = () => {
+            clearTimeout(request.timeout);
+            request.timeout = setTimeout(() => request.controller.abort(), 2000);
+          };
+          try {
+            armStreamTimeout();
+            for (;;) {
+              const chunk = await reader.read();
+              if (request.generation !== generation || request.controller.signal.aborted || !enabled()) return;
+              if (chunk.done) {
+                if (filled || !received) throw new Error('truncated');
+                delay = 100;
+                return;
+              }
+              let cursor = 0, latest = null;
+              while (cursor < chunk.value.length) {
+                const count = Math.min(needed - filled, chunk.value.length - cursor);
+                pending.set(chunk.value.subarray(cursor, cursor + count), filled);
+                filled += count;
+                cursor += count;
+                if (filled === 24 && needed === 24) {
+                  const header = new DataView(pending.buffer);
+                  const width = header.getUint16(4, true), height = header.getUint16(6, true);
+                  if (header.getUint32(0, true) !== 0x3150464c || !width || width > 128 || !height || height > 128)
+                    throw new Error('header');
+                  needed = 24 + width * height * 3;
+                }
+                if (filled === needed) {
+                  latest = decode(pending.slice(0, needed).buffer);
+                  filled = 0;
+                  needed = 24;
+                }
+              }
+              if (latest) {
+                // Coalesced network reads render only the newest complete frame, never a catch-up queue.
+                frame = latest;
+                failures = 0;
+                received = true;
+                armStreamTimeout();
+                draw();
+                canvas.dataset.paused = 'false';
+                canvas.dataset.transport = 'stream';
+                canvas.dataset.sequence = String(frame.sequence);
+                label('Живий перегляд', 'live');
+              }
+            }
+          } finally {
+            request.controller.abort();
+            reader.releaseLock();
+          }
+        }
         const next = decode(await response.arrayBuffer());
         if (request.generation !== generation || request.controller.signal.aborted || !enabled()) return;
         frame = next;
         failures = 0;
         draw();
         canvas.dataset.paused = 'false';
+        canvas.dataset.transport = 'poll';
+        canvas.dataset.sequence = String(frame.sequence);
         label('Живий перегляд', 'live');
       } catch (error) {
         if (request.generation !== generation || !enabled()) return;

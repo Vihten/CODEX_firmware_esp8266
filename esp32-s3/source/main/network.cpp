@@ -943,6 +943,7 @@ esp_err_t frameGet(httpd_req_t *request) {
 std::atomic<bool> previewStreamBusy{false};
 std::atomic<bool> previewStreamSealed{false};
 std::atomic<uint32_t> previewStreamFrames{0}, previewStreamStack{0};
+std::atomic<uint32_t> previewStreamSendErrors{0};
 StaticQueue_t previewStreamQueueStorage;
 uint8_t previewStreamQueueBytes[sizeof(httpd_req_t *)];
 QueueHandle_t previewStreamQueue = nullptr;
@@ -961,7 +962,7 @@ void previewStreamTask(void *) {
     if (xQueueReceive(previewStreamQueue, &request, portMAX_DELAY) != pdTRUE) continue;
     const int socket = httpd_req_to_sockfd(request);
     const int noDelay = 1;
-    const timeval timeout{0, 250000};
+    const timeval timeout{1, 0};
     bool writable = socket >= 0 && setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0;
     if (writable) (void)setsockopt(socket, IPPROTO_TCP, TCP_NODELAY, &noDelay, sizeof(noDelay));
     httpd_resp_set_type(request, "application/octet-stream");
@@ -986,9 +987,11 @@ void previewStreamTask(void *) {
       if (xTaskGetTickCount() - wake >= pdMS_TO_TICKS(66)) wake = xTaskGetTickCount();
       vTaskDelayUntil(&wake, pdMS_TO_TICKS(66));
     }
-    if (writable && sent) (void)httpd_resp_send_chunk(request, nullptr, 0);
-    // The HTTP server owns close(); shutdown prevents reuse of this stream socket.
-    if (socket >= 0) (void)shutdown(socket, SHUT_RDWR);
+    if (writable && sent) writable = httpd_resp_send_chunk(request, nullptr, 0) == ESP_OK;
+    if (!writable) ++previewStreamSendErrors;
+    // Preserve queued data/FIN on clean renewal; force shutdown only after an error.
+    // The HTTP server still owns close().
+    if (socket >= 0) (void)shutdown(socket, writable && sent ? SHUT_WR : SHUT_RDWR);
     (void)httpd_req_async_handler_complete(request);
     --activeHandlers;
     previewStreamBusy.store(false, std::memory_order_release);
@@ -1044,6 +1047,7 @@ esp_err_t portalStatus(httpd_req_t *request) {
   boolean(root, "preview_stream_busy", previewStreamBusy.load(std::memory_order_acquire));
   number(root, "preview_stream_frames", previewStreamFrames.load(std::memory_order_relaxed));
   number(root, "preview_stream_stack", previewStreamStack.load(std::memory_order_relaxed));
+  number(root, "preview_stream_send_errors", previewStreamSendErrors.load(std::memory_order_relaxed));
   number(root, "ota_done", view.otaDone); number(root, "ota_total", view.otaTotal);
   const time_t epoch = std::time(nullptr); number(root, "time_epoch", epoch >= 1700000000 ? double(epoch) : 0);
   if (view.control.accountLinked) number(root, "remaining", view.control.remainingPercent);

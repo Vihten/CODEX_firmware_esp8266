@@ -34,6 +34,18 @@ tests, 26 browser-script tests and 34 web-bundle tests passed. Desktop/mobile
 preview and image-only shadow scope were checked. Before deployment, eight
 frame requests took 126-222 ms; actual post-update timing is checked separately.
 
+Wi-Fi OTA verified on 2026-10-15: version `1792047118711`, web digest
+`f6799bf956a88ddea3c66c8f11e908b7adede215b1acee661bc93eaa15ad026f`,
+and `Up to date`. Brightness remained 44/255; live canvas filter is `none`,
+while only the body image has the soft drop shadow. No LED error or Wi-Fi
+disconnect was reported in the short post-update verification.
+
+Timing caveat: seven of eight fresh-connection frame reads took 22-63 ms;
+one took 228 ms. Two 30-request persistent-connection samples delivered 4.7-6.0
+distinct frames/s, with isolated 1.2-1.4 s stalls. A connection-close diagnostic
+still stalled. The 15 FPS value is a target, not a demonstrated sustained rate;
+typical response latency improved, but network jitter remains unresolved.
+
 ## Matte Plastic Highlight Release
 
 Version `1792046508883` adds restrained plastic highlights from a separate CAD

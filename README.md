@@ -33,6 +33,13 @@ body brightness and dark outline/detail pixels outside the live display area;
 the old dark image and an in-memory outline-erased image fail these checks.
 Desktop and 390px mobile previews were visually checked with live controller data.
 
+Wi-Fi OTA completed on 2026-10-15. The S3 reported `1792044933681`, web digest
+`69e9a3f2f747b971048597a1ad22e9824d5babb190c596702468c448b88aa398`, and `Up to date`.
+The device served the matching 133,863-byte PNG with HTTP 200 in 0.62 seconds.
+The live page showed lighter gray body details and restored outlines; the canvas
+still had no filter. Both active agents reconnected and brightness stayed 44/255.
+No LED error or Wi-Fi disconnect was reported in this short verification.
+
 ## Mirrored Preview Release
 
 Version `1792043877479` mirrors the device body horizontally and improves its

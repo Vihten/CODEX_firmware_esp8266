@@ -20,6 +20,20 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792045618143` softens and thins only the gray device body's CAD outlines.
+Matching shaded and edged rasters isolate the linework; subpixel thinning and
+reduced contrast retain engraved controls without a drawing-like black stroke.
+The 1536 x 1100 PNG is 115,906 bytes. Camera, mirroring, aperture alignment and
+silhouette alpha are unchanged. Animation renderer, frame data, color encoding,
+preview CSS and physical brightness settings are unchanged; target remains 30 FPS.
+
+Validation: PlatformIO build, 20 export/network tests, 24 script tests and 34 web
+bundle tests passed. Raster comparison confirmed identical alpha and over one
+million unchanged shaded pixels; desktop and 390px mobile views were inspected.
+The original CAD remains private and its SHA-256 is unchanged.
+
+## Lighter Outlined Body Release
+
 Version `1792044933681` slightly lightens only the gray device render and restores
 shaded-with-edges CAD outlines, making the mounting holes, seams and symbols more
 readable. The mirrored 1536 x 1100 antialiased PNG is 133,863 bytes. Animation

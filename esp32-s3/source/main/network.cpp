@@ -1022,8 +1022,8 @@ void writeOverview(Html &html, const View &view) {
     }
   });
   html.file("templates/overview/brightness-actions.html");
-  writeAgentSummary(html, view);
   html.file("templates/overview/column-next.html"); writeSchedule(html, view); html.file("templates/overview/workspace-close.html");
+  writeAgentSummary(html, view);
 }
 void writeSettings(Html &html, const View &view) {
   html.file("templates/settings/workspace-open.html");

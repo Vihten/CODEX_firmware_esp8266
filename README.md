@@ -20,6 +20,22 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792146750418` removes the duplicate overview controls when interactive
+device settings are available. Brightness, power and schedule use the same native
+forms inside the device-image dialogs; unsupported browsers retain the fallback
+controls. Agent activity remains visible below the image.
+
+The shared header no longer repeats the matrix dimensions. Page headings have a
+24 px gap below navigation, and the last-update timestamp now sits beside the
+connection status instead of beside the page title. Matrix colors, brightness,
+30 FPS target and persisted settings are unchanged. No password feature is added.
+
+Validation: ESP32-S3 PlatformIO build, 31 network contract tests and 24 portal
+JavaScript tests passed. The release retains the previous filesystem asset
+validators, favicon and bounded initial preloader.
+
+## Previous Portal Release
+
 Version `1792141127529` updates the Codex web portal: explicit filesystem asset
 validators and conditional responses, quieter background refresh, compact agent
 management controls, corrected live counters and form state, and grouped weekly

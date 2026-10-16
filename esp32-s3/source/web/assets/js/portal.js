@@ -60,6 +60,9 @@
         power: {title: 'Живлення матриці', form: one('form[action="/power"]')},
         schedule: {title: 'Розклад матриці', form: one('form[action="/schedule"]')},
       };
+      const controls = one('[data-device-controls]');
+      if (controls && content && heading && typeof settingsDialog.showModal === 'function' &&
+          Object.values(targets).every(target => target.form)) controls.hidden = true;
       let moved = null, placeholder = null, trigger = null;
       settingsDialog.addEventListener('close', () => {
         if (moved && placeholder) placeholder.replaceWith(moved);

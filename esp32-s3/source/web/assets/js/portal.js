@@ -172,6 +172,29 @@
       all('.filter-empty').forEach(node => { node.hidden = rows.length === 0 || visible !== 0; });
       all('[data-filter]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.filter === selectedFilter)));
     };
+    const sortAgentRows = () => {
+      const focused = document.activeElement;
+      const selection = focused && typeof focused.selectionStart === 'number'
+        ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
+      rosters.forEach(({root}) => {
+        const rows = all(agentSelector, root);
+        const online = row => row.dataset.online === undefined
+          ? !!one('.agent-status.online', row) : row.dataset.online === 'true';
+        const ordered = [...rows].sort((a, b) => Number(online(b)) - Number(online(a)));
+        ordered.forEach((row, index) => {
+          if (rows[index] === row) return;
+          // moveBefore preserves focus and open controls where supported.
+          if (typeof root.moveBefore === 'function') root.moveBefore(row, rows[index]);
+          else rows[index].before(row);
+          rows.splice(rows.indexOf(row), 1);
+          rows.splice(index, 0, row);
+        });
+      });
+      if (focused && focused.isConnected && !focused.disabled && document.activeElement !== focused) {
+        focused.focus({preventScroll: true});
+        if (selection && typeof focused.setSelectionRange === 'function') focused.setSelectionRange(...selection);
+      }
+    };
     const reconcileAgents = agents => {
       rosters.forEach(({root, template}) => {
         const rows = new Map(all(agentSelector, root).map(row => [(row.dataset.agent || '').toUpperCase(), row]));
@@ -272,6 +295,7 @@
           });
         }
       });
+      sortAgentRows();
       if (changed) filterAgents();
     };
     const update = status => {
@@ -449,6 +473,7 @@
       pageActive = true;
       if (automatic()) schedule(5000);
     });
+    sortAgentRows();
     all('[data-js][hidden]').forEach(node => { node.hidden = false; });
     all('[data-live=connection]').forEach(node => { node.setAttribute('role', 'status'); node.setAttribute('aria-live', 'polite'); });
     if (!('fetch' in window) || !('AbortController' in window)) {

@@ -20,6 +20,20 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792157021571` lists connected agents before disconnected agents in
+both the management list and overview summary, including initial server-side
+rendering. Status polls update ordering without reload. Stable partitioning keeps
+relative order inside each group and moves existing DOM nodes only when needed;
+unsaved forms, focus/selection, open controls and filters are preserved. Weekly
+token ranking remains sorted by tokens, independently of connection state.
+
+Validation: ESP32-S3 PlatformIO build, 32 native network tests, 42 portal script
+tests and targeted Dart analysis passed. Browser verification confirmed online
+agents first, with no console errors or overflow. Matrix output remains 30 FPS;
+animation colors, brightness and persistent settings are unchanged.
+
+## Previous Automatic Roster Release
+
 Version `1792147117597` automatically inserts newly reported agents in the
 overview summary and agent management list during the existing status poll.
 The new-agent notice and manual list reload are removed. Inert server-rendered

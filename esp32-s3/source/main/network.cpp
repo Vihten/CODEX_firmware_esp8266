@@ -874,9 +874,9 @@ void writeAgents(Html &html, const View &view) {
   html.file("templates/agents/filters.html");
   html.file("templates/agents/list-open.html");
   unsigned known = 0;
-  for (size_t i = 0; i < kAgentCapacity; ++i) {
+  for (const bool online : {true, false}) for (size_t i = 0; i < kAgentCapacity; ++i) {
     const auto &agent = view.control.agents[i];
-    if (!agent.present && !agent.name[0]) continue;
+    if (agent.present != online || (!agent.present && !agent.name[0])) continue;
     ++known;
     writeAgentControls(html, agent.name, agent.clientId, agent.rgb,
                        agent.present, agent.activity, agent.remaining, view.overrideColor[i], &view);
@@ -996,8 +996,8 @@ void writeAgentSummary(Html &html, const View &view) {
   html.file("templates/summary/section-open.html");
   html.file("templates/summary/list-open.html");
   unsigned known = 0;
-  for (const auto &agent : view.control.agents) {
-    if (!agent.present && !agent.name[0]) continue;
+  for (const bool online : {true, false}) for (const auto &agent : view.control.agents) {
+    if (agent.present != online || (!agent.present && !agent.name[0])) continue;
     ++known;
     writeAgentSummaryRow(html, agent);
   }

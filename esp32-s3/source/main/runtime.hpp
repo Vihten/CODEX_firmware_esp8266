@@ -48,8 +48,15 @@ struct RenderStatus {
   bool sceneVisible = false;
 };
 
-enum class CommandKind : uint8_t { Wifi, Power, Brightness, Schedule, Color, Restart, Update };
+enum class CommandKind : uint8_t { Wifi, Power, Brightness, Schedule, Color, Restart, Update, AgentPoll, AgentUpgrade, AgentRename, AgentUninstall };
 struct NetworkCommand {
+  uint64_t agentVersion = 0;
+  uint64_t agentNonceCounter = 0;
+  uint64_t agentFailedVersion = 0;
+  uint64_t agentActionAck = 0;
+  bool agentManagement = false;
+  uint8_t agentActionResult = 0;
+  char agentName[49] = {};
   CommandKind kind = CommandKind::Update;
   uint32_t clientId = 0;
   uint32_t rgb = 0;

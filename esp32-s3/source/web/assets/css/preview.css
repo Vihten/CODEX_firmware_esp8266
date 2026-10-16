@@ -8,3 +8,22 @@
 .device-visual{position:relative;width:100%;max-width:956px;margin-inline:auto;aspect-ratio:768/550}
 .device-visual>img{display:block;width:100%;height:auto;aspect-ratio:768/550;pointer-events:none;filter:drop-shadow(0 8px 12px rgba(0,0,0,.32))}
 .device-display{position:absolute;left:20.892221%;top:24.13712%;width:90.625%;height:90.181818%;transform-origin:0 0;transform:matrix(.66011443,-.06110564,0,.706795,0,0);display:flex;align-items:center;justify-content:center;background:#080a09;overflow:hidden}
+html:has(#device-settings-dialog){scrollbar-gutter:stable}
+html:has(#device-settings-dialog[open]){overflow:hidden}
+.device-hotspot{position:absolute;z-index:1;background:transparent;border:0;border-radius:4px;min-height:44px;padding:0;color:var(--accent);cursor:pointer}
+.device-matrix-hotspot{inset:0;width:100%;height:100%;min-height:0;border-radius:0}
+.device-housing-hotspot{inset:0;width:100%;height:100%;min-height:0;border-radius:0;pointer-events:none;filter:none}
+.device-housing-hotspot>svg{display:block;width:100%;height:100%;pointer-events:none}
+/* Image-space contours own both hit testing and the visible casing outline. */
+.device-housing-contour{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;stroke-opacity:0;vector-effect:non-scaling-stroke;pointer-events:all}
+.device-hotspot:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
+.device-housing-hotspot:focus-visible{outline:none}
+.device-housing-hotspot:focus-visible .device-housing-contour{stroke-opacity:1}
+@media(hover:hover) and (pointer:fine){.device-matrix-hotspot:hover{box-shadow:inset 0 0 0 2px var(--accent)}.device-housing-hotspot:hover{filter:none}.device-housing-hotspot:hover .device-housing-contour{stroke-opacity:1}}
+.device-settings-dialog{width:min(440px,calc(100% - 2rem));max-height:calc(100dvh - 2rem);overflow:auto;margin:auto;padding:1.25rem;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text);box-shadow:0 16px 48px rgba(0,0,0,.3)}
+.device-settings-dialog::backdrop{background:rgba(0,0,0,.55)}
+.device-settings-header{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:1.25rem}
+.device-settings-header h2{font-size:1.125rem;line-height:1.4}
+.device-settings-close{display:grid;place-items:center;flex:none;width:44px;height:44px;padding:0;background:transparent;color:var(--text);border:1px solid var(--line)}
+.device-settings-dialog .label-row{margin-bottom:.75rem}
+.device-settings-dialog .power{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.5rem}

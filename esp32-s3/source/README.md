@@ -202,6 +202,114 @@ Each OTA slot is 6 MiB. The app contains its artwork; there is no per-frame file
 I/O or separate filesystem update needed. Settings remain in the dedicated NVS
 partition when updating the app without erasing flash.
 
+## Local Agent Updates
+
+Remote updates are separate from controller OTA. The local publisher
+builds a signed release using `tool/build_agent_release.ps1`. Export firmware
+with `CLOCK_AGENT_RELEASE_DIR` pointing to that release directory to embed its
+manifest and ZIP in the verified LittleFS web tree. No agent package means the
+update controls remain disabled. The controller never downloads executable
+code from a user-supplied URL and never runs Windows commands.
+
+Each controller keeps an internal 128-bit channel seed in NVS, generated before
+rendering or Wi-Fi starts using an explicitly enabled hardware entropy source.
+It is no longer an operator password and is not printed or requested in the UI.
+Existing NVS seeds are preserved for compatibility with already enrolled agents.
+An NVS read/commit failure disables updates instead of guessing a seed.
+
+First install or update the bootstrap agent archive once on each PC. The agent
+automatically enrolls its update channel using its normally discovered, pinned
+controller identity and matching account. No setup helper or operator key is
+needed. Its per-agent credential is cached privately. The agent needs no inbound
+listening port. Request an update with the visible button under that agent's
+portal section. Only known online agents with a recent authenticated poll are
+eligible. Requests expire after ten minutes and are not persisted across a
+controller restart. Queued is not installed: the portal waits for a committed
+new version to be reported.
+
+Anyone who can reach the portal on the LAN can request an available signed
+update; there is intentionally no operator authentication. Automatic enrollment
+also has no operator authentication. HTTP does not encrypt the channel secret.
+Operate only on a trusted, isolated LAN; never expose these routes to the Internet.
+Polls and responses use HMAC-SHA256 with a fresh controller boot/window challenge,
+fresh agent random suffix and consumed monotonic counter. This is not a defense
+against a hostile LAN client obtaining an enrollment secret. Captured polls cannot renew capability after
+the challenge window or after reboot. Signed RSA-SHA256 packages, pinned publisher
+keys, strict file allowlists and version checks are additionally enforced by the
+Windows updater. The publisher private key stays on the publishing PC, outside
+the workspace, firmware and archives. Never lose it without planning a manual
+trust-key replacement on every enrolled agent.
+
+The controller only serves `/agent-update/manifest.json` and
+`/agent-update/package.zip`; management endpoints are explicit POST routes.
+Capability polling does not change meteor activity, weekly counters or agent
+metadata. Update job state is owned by the network task, not the HTTP task.
+The Windows updater owns staging, code-only replacement, health confirmation
+and rollback; user metadata, endpoint, configuration and weekly ledger are not
+package targets.
+
+## Agent Management
+
+The Agents page can rename an agent on its PC or uninstall its executable code
+and Startup shortcut. Uninstall always requires explicit confirmation in the UI;
+metadata, configuration, endpoint, enrollment and weekly statistics remain for
+reinstallation. It does not erase the controller's historical weekly ranking.
+Both commands require an online agent advertising fresh management support.
+Older agents can still update normally before advertising that capability.
+
+Management uses the existing bounded polling connection, not an inbound PC port
+or arbitrary shell command. A poll opts in with `manage=1`, appending exactly
+`MANAGE\n1\n` after the existing optional FAILED block in its request MAC text.
+An acknowledgment adds `ack=<id>&result=ok|failed` and appends exactly
+`ACK\n<id>\n<result>\n`. Unknown acknowledgments after a controller restart are
+authenticated no-ops, allowing the agent to clear its old acknowledgment record.
+
+Only pending actions add `action_id`, `action` (`rename` or `uninstall`) and
+`name_hex` to the response. The response MAC appends exactly
+`ACTION\n<id>\n<action>\n<lowercase UTF-8 name hex>\n`; uninstall has an empty
+name. Names are bounded to 48 UTF-8 bytes. Action IDs are boot-randomized safe
+integers, not a global monotonic sequence across controller restarts. Queues
+expire after ten minutes and never overlap firmware-package updates for that
+agent. The PC stores an idempotent command record and also expires pending work.
+The UI distinguishes queued, confirmed, failed and expired commands.
+
+After stopping its telemetry worker, an uninstall may acknowledge within its
+bounded retry budget even though the agent is no longer considered online.
+The controller accepts only the authenticated poll; enrollment and new command
+requests still require an online agent. Reinstalling explicitly resets the local
+uninstall command record without deleting user data.
+
+There is intentionally no operator password. Anyone on the trusted LAN who can
+reach this portal can request rename/uninstall, just as they can request an
+available signed update. Do not expose the controller HTTP server to the Internet.
+
+## Weekly Agent Tokens
+
+The Agents page ranks up to 12 agent IDs by reported input plus output tokens
+for the current Monday-Sunday week in Kyiv time. Cached input is a subset of
+input, not added a second time. These are local Codex session counters, not an
+account billing report. Agents without the updated reporter do not contribute.
+
+Updated agents send an additional bounded datagram over the existing transport:
+`LFT1,ACCOUNT_HEX,CLIENT_HEX,YYYYMMDD,TOKENS,RGB6,UTF8_NAME_HEX`.
+The date is the Monday of the week. The controller requires its NTP-synchronized
+current week and matching account fingerprint. It acknowledges with
+`LFT1_ACK,CONTROLLER_HEX,CLIENT_HEX`. This report never refreshes meteor activity.
+Repeated or lower cumulative totals cannot inflate or reduce an agent's total.
+Old-week and future-week reports are rejected. Full tables never evict another
+agent's weekly contribution. The LAN protocol is unauthenticated; use a trusted
+network and do not expose it to the Internet.
+
+A separate checksummed NVS blob (`weekly_tokens`) preserves the leaderboard
+without altering the Wi-Fi/settings schema. Checkpoints occur every five minutes
+and before a requested restart or OTA, behind the existing renderer/preview
+maintenance gate. Abrupt power loss can lose the most recent checkpoint interval;
+the next cumulative report from each updated agent restores its current total.
+Without those agents reconnecting, only the last committed totals are available.
+Rollover waits for valid controller time. A backward clock correction does not
+roll the stored week backward. The portal distinguishes pending data from a
+failed persistence attempt; failed commits are retried, not marked saved.
+
 ## Hardware Acceptance
 
 After initial USB installation, switch safely to the normal external supply.

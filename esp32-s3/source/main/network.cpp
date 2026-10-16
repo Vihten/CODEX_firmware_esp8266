@@ -1,6 +1,9 @@
 #include "runtime.hpp"
 #include "web_files.hpp"
 #include "preview.hpp"
+#include "weekly.hpp"
+#include "agent_update.hpp"
+#include "agent_release.hpp"
 
 #include <algorithm>
 #include <array>
@@ -11,6 +14,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <new>
 #include <ctime>
 #include <fcntl.h>
 #include <strings.h>
@@ -29,6 +34,9 @@
 #include "esp_ota_ops.h"
 #include "esp_psram.h"
 #include "esp_system.h"
+#include "esp_random.h"
+#include "bootloader_random.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/semphr.h"
 #include "lwip/sockets.h"
@@ -80,6 +88,10 @@ struct WifiEvent {
 struct TelemetryRequest { uint32_t id; uint32_t receivedAt; char packet[160]; };
 struct TelemetryReply { uint32_t id; bool accepted; char ack[64]; };
 struct View {
+  agent_update::Table agentUpdates;
+  bool agentUpdateKeyReady = false;
+  weekly::Store weekly;
+  bool weeklyDirty = false, weeklySaveFailed = false;
   ControlFrame control;
   RenderStatus render;
   char ssid[33] = {}, ap[32] = {}, message[96] = {}, ota[96] = {};
@@ -93,6 +105,11 @@ struct View {
   ColorOverride savedColors[kAgentCapacity] = {};
 };
 struct Model {
+  agent_update::Table agentUpdates;
+  uint64_t actionSequence = 0;
+  weekly::Store weekly;
+  bool weeklyDirty = false, weeklySaveFailed = false;
+  uint32_t weeklySavedAt = 0;
   Settings settings;
   ControlFrame control;
   RenderStatus render;
@@ -127,6 +144,8 @@ alignas(4) uint8_t manifestResultBytes[sizeof(ManifestResult)];
 QueueHandle_t wifiEvents = nullptr, telemetryQueue = nullptr, telemetryReplies = nullptr;
 QueueHandle_t manifestJobs = nullptr, manifestResults = nullptr;
 std::atomic<uint32_t> requestSequence{0}, activeHandlers{0};
+char agentUpdateKey[33] = {};
+char agentUpdateBoot[17] = {};
 
 template<size_t N> void copy(char (&target)[N], const char *text) {
   std::snprintf(target, N, "%s", text ? text : "");
@@ -173,6 +192,78 @@ void loadSettings() {
   if (result == ESP_ERR_NVS_NOT_FOUND) return;
   if (result == ESP_OK && size == sizeof(stored) && validSettings(stored)) model.settings = stored;
   else { model.nvsReady = false; message("Settings are invalid; existing NVS was preserved."); }
+}
+void loadAgentUpdateKey() {
+  if (!model.nvsReady) return;
+  uint8_t boot[8];
+  bootloader_random_enable(); esp_fill_random(boot, sizeof(boot)); bootloader_random_disable();
+  for (unsigned i = 0; i < sizeof(boot); ++i) std::snprintf(agentUpdateBoot + i * 2, 3, "%02x", boot[i]);
+  nvs_handle_t handle;
+  if (nvs_open("led_forge_s3", NVS_READWRITE, &handle) != ESP_OK) return;
+  size_t length = sizeof(agentUpdateKey);
+  const esp_err_t result = nvs_get_str(handle, "agent_admin", agentUpdateKey, &length);
+  if (result == ESP_ERR_NVS_NOT_FOUND) {
+    uint8_t random[16];
+    bootloader_random_enable(); esp_fill_random(random, sizeof(random)); bootloader_random_disable();
+    for (unsigned i = 0; i < sizeof(random); ++i) std::snprintf(agentUpdateKey + i * 2, 3, "%02x", random[i]);
+    if (nvs_set_str(handle, "agent_admin", agentUpdateKey) != ESP_OK || nvs_commit(handle) != ESP_OK) agentUpdateKey[0] = 0;
+  } else if (result != ESP_OK || length != sizeof(agentUpdateKey)) agentUpdateKey[0] = 0;
+  if (agentUpdateKey[0]) for (unsigned i = 0; i < 32; ++i)
+    if (!((agentUpdateKey[i] >= '0' && agentUpdateKey[i] <= '9') || (agentUpdateKey[i] >= 'a' && agentUpdateKey[i] <= 'f'))) { agentUpdateKey[0] = 0; break; }
+  nvs_close(handle);
+  // Internal channel seed only; enrollment no longer needs an operator key.
+}
+bool knownAgent(const ControlFrame &control, uint32_t id) {
+  for (const auto &agent : control.agents) if (id && agent.clientId == id && agent.present) return true;
+  return false;
+}
+bool uninstallAcknowledgmentWindow(const agent_update::Table &table, uint32_t id, uint32_t now) {
+  const auto *entry = table.find(id);
+  return entry && entry->action == agent_update::Action::Uninstall && entry->actionState >= 1 &&
+      entry->actionState <= 3 && now - entry->actionAt < agent_update::requestMs;
+}
+void loadWeekly() {
+  if (!model.nvsReady) return;
+  nvs_handle_t handle;
+  if (nvs_open("led_forge_s3", NVS_READONLY, &handle) != ESP_OK) return;
+  weekly::Store stored;
+  size_t size = sizeof(stored);
+  const esp_err_t result = nvs_get_blob(handle, "weekly_tokens", &stored, &size);
+  nvs_close(handle);
+  if (result == ESP_ERR_NVS_NOT_FOUND) return;
+  if (result == ESP_OK && size == sizeof(stored) && weekly::valid(stored)) model.weekly = stored;
+  else model.weeklySaveFailed = true;
+}
+bool saveWeekly() {
+  if (!model.weeklyDirty) return true;
+  if (!model.nvsReady) { model.weeklySaveFailed = true; return false; }
+  weekly::Store stored = model.weekly;
+  stored.crc = weekly::checksum(stored);
+  nvs_handle_t handle;
+  esp_err_t result = nvs_open("led_forge_s3", NVS_READWRITE, &handle);
+  if (result == ESP_OK) {
+    result = nvs_set_blob(handle, "weekly_tokens", &stored, sizeof(stored));
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  model.weeklySaveFailed = result != ESP_OK;
+  if (result != ESP_OK) return false;
+  model.weeklyDirty = false;
+  model.weeklySavedAt = uptimeMs();
+  return true;
+}
+uint32_t currentWeek() {
+  const time_t now = std::time(nullptr);
+  if (now < 1700000000) return 0;
+  tm local{};
+  localtime_r(&now, &local);
+  local.tm_mday -= (local.tm_wday + 6) % 7;
+  local.tm_hour = 12; local.tm_min = local.tm_sec = 0; local.tm_isdst = -1;
+  if (mktime(&local) == time_t(-1)) return 0;
+  return uint32_t((local.tm_year + 1900) * 10000 + (local.tm_mon + 1) * 100 + local.tm_mday);
+}
+void serviceWeekly() {
+  if (weekly::advance(model.weekly, currentWeek())) model.weeklyDirty = true;
 }
 bool saveSettings() {
   if (!model.nvsReady) { message("Cannot save settings; NVS requires repair."); return false; }
@@ -306,7 +397,7 @@ bool parseTelemetry(const char *packet, AgentInput &agent, bool &legacy, uint8_t
     remaining = uint8_t(r); activity = uint8_t(a); return true;
   }
   if (std::strcmp(fields[0], "LFA2") || (count != 5 && count != 7) ||
-      !hexValue(fields[2], 1, 8, agent.clientId) || !percent(fields[3], false, a) || !percent(fields[4], true, r)) return false;
+      !hexValue(fields[2], 1, 8, agent.clientId) || !agent.clientId || !percent(fields[3], false, a) || !percent(fields[4], true, r)) return false;
   agent.activity = uint8_t(a); agent.remaining = int16_t(r); agent.rgb = fallbackColor(agent.clientId);
   if (count == 7) {
     if (!hexValue(fields[5], 6, 6, agent.rgb)) return false;
@@ -322,7 +413,55 @@ bool parseTelemetry(const char *packet, AgentInput &agent, bool &legacy, uint8_t
   if (!agent.name[0]) std::snprintf(agent.name, sizeof(agent.name), "%08lX", (unsigned long)agent.clientId);
   return true;
 }
+bool parseWeeklyTelemetry(const char *packet, weekly::Entry &entry, uint32_t &week) {
+  const size_t length = std::strlen(packet);
+  if (!length || length >= 160) return false;
+  char buffer[160]; std::memcpy(buffer, packet, length + 1);
+  char *fields[7] = {buffer}; size_t count = 1;
+  for (size_t i = 0; i < length; ++i) if (buffer[i] == ',') {
+    if (count == 7) return false;
+    buffer[i] = 0; fields[count++] = buffer + i + 1;
+  }
+  uint32_t account;
+  if (count != 7 || std::strcmp(fields[0], "LFT1") ||
+      !hexValue(fields[1], 1, 8, account) || account != PROJECT_ACCOUNT_FINGERPRINT ||
+      !hexValue(fields[2], 1, 8, entry.clientId) || !entry.clientId ||
+      std::strlen(fields[3]) != 8 || !hexValue(fields[5], 6, 6, entry.rgb)) return false;
+  week = 0;
+  for (const char *c = fields[3]; *c; ++c) {
+    if (*c < '0' || *c > '9') return false;
+    week = week * 10 + unsigned(*c - '0');
+  }
+  entry.tokens = 0;
+  if (!fields[4][0]) return false;
+  for (const char *c = fields[4]; *c; ++c) {
+    if (*c < '0' || *c > '9' || entry.tokens > (weekly::maximum - unsigned(*c - '0')) / 10) return false;
+    entry.tokens = entry.tokens * 10 + unsigned(*c - '0');
+  }
+  const size_t nameLength = std::strlen(fields[6]);
+  if (nameLength > 96 || (nameLength & 1)) return false;
+  for (size_t i = 0; i < nameLength / 2; ++i) {
+    const int high = hexDigit(fields[6][i * 2]), low = hexDigit(fields[6][i * 2 + 1]);
+    if (high < 0 || low < 0) return false;
+    entry.name[i] = char((high << 4) | low);
+  }
+  if (!validUtf8(entry.name, nameLength / 2)) return false;
+  if (!entry.name[0]) std::snprintf(entry.name, sizeof(entry.name), "%08lX", (unsigned long)entry.clientId);
+  return true;
+}
+bool acceptWeeklyTelemetry(const char *packet, char (&ack)[64]) {
+  weekly::Entry entry; uint32_t week = 0;
+  if (!parseWeeklyTelemetry(packet, entry, week) || week != currentWeek()) return false;
+  serviceWeekly();
+  if (const auto *override = findOverride(entry.clientId)) entry.rgb = override->rgb;
+  bool changed = false;
+  if (!weekly::merge(model.weekly, week, entry, changed)) return false;
+  model.weeklyDirty |= changed;
+  std::snprintf(ack, sizeof(ack), "LFT1_ACK,%06lX,%08lX", (unsigned long)model.deviceId, (unsigned long)entry.clientId);
+  return true;
+}
 bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
+  if (!std::strncmp(packet, "LFT1,", 5)) return acceptWeeklyTelemetry(packet, ack);
   AgentInput incoming; bool legacy = false; uint8_t remaining = 100, activity = 0;
   if (!parseTelemetry(packet, incoming, legacy, remaining, activity)) return false;
   const uint32_t now = uptimeMs();
@@ -333,7 +472,18 @@ bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
     size_t slot = kAgentCapacity;
     for (size_t i = 0; i < kAgentCapacity; ++i) if (model.control.agents[i].clientId == incoming.clientId &&
         (model.control.agents[i].present || model.control.agents[i].name[0])) { slot = i; break; }
-    if (slot == kAgentCapacity) for (size_t i = 0; i < kAgentCapacity; ++i) if (!model.control.agents[i].present || now - model.control.agents[i].seenAt >= kAgentTimeout) { slot = i; break; }
+    if (slot == kAgentCapacity) for (size_t i = 0; i < kAgentCapacity; ++i)
+      if (!model.control.agents[i].clientId) { slot = i; break; }
+    if (slot == kAgentCapacity) {
+      uint32_t oldestAge = 0;
+      for (size_t i = 0; i < kAgentCapacity; ++i) {
+        const auto &agent = model.control.agents[i];
+        const uint32_t age = now - agent.seenAt;
+        if ((!agent.present || age >= kAgentTimeout) && (slot == kAgentCapacity || age > oldestAge)) {
+          slot = i; oldestAge = age;
+        }
+      }
+    }
     if (slot == kAgentCapacity) return false;
     const auto &previous = model.control.agents[slot];
     const bool sameColor = previous.present && previous.clientId == incoming.clientId &&
@@ -384,6 +534,7 @@ bool scheduledOn() {
 }
 void updateControl() {
   const uint32_t now = uptimeMs();
+  model.agentUpdates.expire(now);
   unsigned combined = 0; int remaining = 101; bool direct = false;
   for (auto &agent : model.control.agents) {
     if (agent.present && now - agent.seenAt >= kAgentTimeout) agent.present = false;
@@ -400,8 +551,38 @@ void updateControl() {
   // Maintenance and its epoch are deliberately retained in every overwritten snapshot.
   xQueueOverwrite(controlQueue, &model.control);
 }
+void restoreWeeklyAgents(View &view) {
+  // History belongs to the web snapshot, never to live telemetry or the renderer.
+  for (const auto &entry : view.weekly.entries) {
+    if (!entry.clientId || !entry.name[0]) continue;
+    size_t empty = kAgentCapacity;
+    bool listed = false;
+    for (size_t i = 0; i < kAgentCapacity; ++i) {
+      if (view.control.agents[i].clientId == entry.clientId) { listed = true; break; }
+      if (!view.control.agents[i].clientId && empty == kAgentCapacity) empty = i;
+    }
+    if (listed || empty == kAgentCapacity) continue;
+    auto &agent = view.control.agents[empty];
+    agent = AgentInput{};
+    agent.clientId = entry.clientId; agent.rgb = entry.rgb;
+    copy(agent.name, entry.name);
+    view.overrideColor[empty] = false;
+    for (const auto &color : view.savedColors) if (color.used && color.clientId == entry.clientId) {
+      agent.rgb = color.rgb; view.overrideColor[empty] = true; break;
+    }
+  }
+}
 void publishView() {
   View view;
+  view.agentUpdates = model.agentUpdates;
+  view.agentUpdateKeyReady = agentUpdateKey[0] != 0;
+  view.weekly = model.weekly;
+  view.weeklyDirty = model.weeklyDirty; view.weeklySaveFailed = model.weeklySaveFailed;
+  for (auto &entry : view.weekly.entries) {
+    if (const auto *color = findOverride(entry.clientId)) entry.rgb = color->rgb;
+    else for (const auto &agent : model.control.agents)
+      if (agent.clientId == entry.clientId && agent.name[0]) { entry.rgb = agent.rgb; break; }
+  }
   view.control = model.control; view.render = model.render;
   copy(view.ssid, model.settings.ssid); copy(view.ap, model.apName); copy(view.message, model.message); copy(view.ota, model.ota);
   view.deviceId = model.deviceId; view.rssi = model.rssi; view.power = model.settings.power;
@@ -414,6 +595,7 @@ void publishView() {
     view.overrideColor[i] = findOverride(model.control.agents[i].clientId) != nullptr;
     view.savedColors[i] = model.settings.colors[i];
   }
+  restoreWeeklyAgents(view);
   if (xSemaphoreTake(viewMutex, pdMS_TO_TICKS(5)) == pdTRUE) { sharedView = view; xSemaphoreGive(viewMutex); }
 }
 bool snapshot(View &view) {
@@ -593,8 +775,38 @@ public:
   }
   esp_err_t end() { flush(); if (result_ == ESP_OK) result_ = httpd_resp_send_chunk(request_, nullptr, 0); return result_; }
 };
+void writeAgentUpgrade(Html &html, const View &view, uint32_t id, bool online) {
+  const auto *entry = view.agentUpdates.find(id);
+  const bool ready = online && view.agentUpdateKeyReady && agent_release::version && entry &&
+      uptimeMs() - entry->polledAt < agent_update::freshMs;
+  html.file("templates/agent/update-open.html");
+  if (!entry) html.text("Очікування агента з підтримкою оновлень");
+  else if (entry->failed && entry->failed >= agent_release::version) html.text("Оновлення не вдалося; збережено попередню версію");
+  else if (view.agentUpdates.target(id, uptimeMs())) html.text("Запит у черзі; очікування підтвердження нової версії");
+  else if (agent_release::version && entry->version >= agent_release::version) html.text("Установлена актуальна версія");
+  else if (!online) html.text("Агент не на зв’язку");
+  else if (!agent_release::version) html.text("Підписаний пакет ще не підготовлено");
+  else html.format("Версія %llu · доступна %llu", (unsigned long long)entry->version, (unsigned long long)agent_release::version);
+  html.render("templates/agent/update-form.html", [&](unsigned token) {
+    if (!token) html.format("%08lX", (unsigned long)id);
+    else if (token == 1) html.attribute(ready && entry->version < agent_release::version && entry->failed < agent_release::version &&
+        !view.agentUpdates.target(id, uptimeMs()) ? "" : "@disabled");
+  });
+  const bool managementReady = ready && entry->management && entry->actionState != 1 && !view.agentUpdates.target(id, uptimeMs());
+  html.file("templates/agent/manage-open.html");
+  if (entry && entry->actionState == 1) html.text("Команда в черзі; очікування відповіді агента");
+  else if (entry && entry->actionState == 2) html.text("Агент підтвердив виконання");
+  else if (entry && entry->actionState == 3) html.text("Не вдалося виконати команду на ПК");
+  else if (entry && entry->actionState == 4) html.text("Час очікування минув; команду скасовано");
+  else if (!entry || !entry->management) html.text("Для керування потрібна нова версія агента");
+  html.render("templates/agent/manage-form.html", [&](unsigned token) {
+    if (!token) html.format("%08lX", (unsigned long)id);
+    else if (token == 1) html.attribute(managementReady ? "" : "@disabled");
+    else if (token == 2) for (const auto &agent : view.control.agents) if (agent.clientId == id) { html.escaped(agent.name); break; }
+  });
+}
 void writeAgentControls(Html &html, const char *name, uint32_t id, uint32_t rgb,
-                        bool online, unsigned activity, int remaining, bool custom) {
+                        bool online, unsigned activity, int remaining, bool custom, const View *view = nullptr) {
   html.render("templates/agent/heading-open.html", [&](unsigned token) {
     switch (token) {
       case 0: html.format("%08lX", (unsigned long)id); break;
@@ -646,6 +858,8 @@ void writeAgentControls(Html &html, const char *name, uint32_t id, uint32_t rgb,
     }
   });
   html.file("templates/agent/controls-close.html");
+  if (view) writeAgentUpgrade(html, *view, id, online);
+  html.file("templates/summary/section-close.html");
 }
 
 void writeAgents(Html &html, const View &view) {
@@ -664,7 +878,7 @@ void writeAgents(Html &html, const View &view) {
     if (!agent.present && !agent.name[0]) continue;
     ++known;
     writeAgentControls(html, agent.name, agent.clientId, agent.rgb,
-                       agent.present, agent.activity, agent.remaining, view.overrideColor[i]);
+                       agent.present, agent.activity, agent.remaining, view.overrideColor[i], &view);
   }
   for (const auto &entry : view.savedColors) {
     if (!entry.used) continue;
@@ -674,7 +888,7 @@ void writeAgents(Html &html, const View &view) {
     if (listed) continue;
     char name[24]; std::snprintf(name, sizeof(name), "Агент %08lX", (unsigned long)entry.clientId);
     ++known;
-    writeAgentControls(html, name, entry.clientId, entry.rgb, false, 0, -1, true);
+    writeAgentControls(html, name, entry.clientId, entry.rgb, false, 0, -1, true, &view);
   }
   if (!known) html.file("templates/agents/empty.html");
   html.file("templates/agents/filter-footer.html");
@@ -869,6 +1083,28 @@ void writeSettings(Html &html, const View &view) {
   if (view.restarting) html.file("templates/disabled.html");
   html.file("templates/settings/maintenance-close.html");
 }
+void writeWeekly(Html &html, const View &view) {
+  html.file("templates/weekly/open.html");
+  if (view.weekly.week) html.format("%02lu.%02lu.%04lu · понеділок–неділя, Київ", (unsigned long)(view.weekly.week % 100),
+      (unsigned long)(view.weekly.week / 100 % 100), (unsigned long)(view.weekly.week / 10000));
+  else html.text("Очікування синхронізації часу");
+  html.file("templates/weekly/table.html");
+  const weekly::Entry *sorted[weekly::capacity] = {};
+  size_t count = 0; double total = 0;
+  for (const auto &entry : view.weekly.entries) if (entry.clientId) { sorted[count++] = &entry; total += double(entry.tokens); }
+  std::sort(sorted, sorted + count, [](const weekly::Entry *a, const weekly::Entry *b) {
+    return a->tokens != b->tokens ? a->tokens > b->tokens : a->clientId < b->clientId;
+  });
+  for (size_t i = 0; i < count; ++i) {
+    const auto &entry = *sorted[i];
+    html.format("<tr><td>%u</td><td><span class='weekly-agent-color' style='background:#%06lX' aria-hidden='true'></span>",
+        unsigned(i + 1), (unsigned long)entry.rgb);
+    html.escaped(entry.name);
+    html.format("</td><td>%llu</td><td>%.1f%%</td></tr>", (unsigned long long)entry.tokens, total ? 100.0 * double(entry.tokens) / total : 0.0);
+  }
+  html.file("templates/weekly/close.html");
+  html.format("<p class='muted' data-weekly-empty%s>Ще немає даних за цей тиждень.</p></section>", count ? " hidden" : "");
+}
 esp_err_t page(httpd_req_t *request) {
   HandlerScope scope; View view;
   if (!snapshot(view)) return error(request, "503 Service Unavailable", "Controller busy; retry.");
@@ -901,7 +1137,7 @@ esp_err_t page(httpd_req_t *request) {
   if (view.restarting) html.file("templates/shell/restart-notice.html");
   if (!view.render.assetsReady || view.render.ledError) html.file("templates/shell/matrix-error-notice.html");
   if (!settingsPage) html.file("templates/shell/new-agents-notice.html");
-  if (agentsPage) { html.file("templates/shell/section-open.html"); writeAgents(html, view); html.file("templates/summary/section-close.html"); }
+  if (agentsPage) { writeWeekly(html, view); html.file("templates/shell/section-open.html"); writeAgents(html, view); html.file("templates/summary/section-close.html"); }
   else if (settingsPage) writeSettings(html, view);
   else writeOverview(html, view);
   html.file("templates/shell/footer.html");
@@ -1072,14 +1308,44 @@ esp_err_t portalStatus(httpd_req_t *request) {
     string(item, "id", client); string(item, "name", agent.name); string(item, "color", color);
     boolean(item, "online", agent.present); number(item, "activity", agent.present ? agent.activity : 0);
     number(item, "remaining", agent.present ? agent.remaining : -1);
+    const auto *update = view.agentUpdates.find(agent.clientId);
+    number(item, "agent_version", update ? double(update->version) : 0);
+    boolean(item, "update_capable", update && view.agentUpdateKeyReady && agent_release::version &&
+        uptimeMs() - update->polledAt < agent_update::freshMs);
+    boolean(item, "update_pending", view.agentUpdates.target(agent.clientId, uptimeMs()) != 0);
+    boolean(item, "update_failed", update && update->failed && update->failed >= agent_release::version);
+    boolean(item, "update_available", update && agent_release::version > update->version && agent_release::version > update->failed);
+    boolean(item, "management_capable", update && update->management && view.agentUpdateKeyReady &&
+        uptimeMs() - update->polledAt < agent_update::freshMs);
+    number(item, "management_state", update ? update->actionState : 0);
   }
-  char body[4096];
-  const bool printed = okay && cJSON_PrintPreallocated(root, body, sizeof(body), false);
+  cJSON *ranking = cJSON_AddObjectToObject(root, "weekly");
+  if (!ranking) okay = false;
+  else {
+    number(ranking, "week", view.weekly.week);
+    boolean(ranking, "dirty", view.weeklyDirty);
+    boolean(ranking, "save_failed", view.weeklySaveFailed);
+    cJSON *rows = cJSON_AddArrayToObject(ranking, "entries");
+    if (!rows) okay = false;
+    else for (const auto &entry : view.weekly.entries) {
+      if (!entry.clientId) continue;
+      cJSON *item = cJSON_CreateObject();
+      if (!item) { okay = false; break; }
+      if (!cJSON_AddItemToArray(rows, item)) { cJSON_Delete(item); okay = false; break; }
+      char id[9], color[8]; std::snprintf(id, sizeof(id), "%08lX", (unsigned long)entry.clientId);
+      std::snprintf(color, sizeof(color), "#%06lX", (unsigned long)entry.rgb);
+      string(item, "id", id); string(item, "name", entry.name); string(item, "color", color);
+      number(item, "tokens", double(entry.tokens));
+    }
+  }
+  // Bounded heap buffer avoids growing the HTTP task's stack with the leaderboard.
+  std::unique_ptr<char[]> body(new(std::nothrow) char[16384]);
+  const bool printed = okay && body && cJSON_PrintPreallocated(root, body.get(), 16384, false);
   cJSON_Delete(root);
   if (!printed) return error(request, "503 Service Unavailable", "Status unavailable; retry.");
   httpd_resp_set_type(request, "application/json; charset=utf-8");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-  return httpd_resp_send(request, body, HTTPD_RESP_USE_STRLEN);
+  return httpd_resp_send(request, body.get(), HTTPD_RESP_USE_STRLEN);
 }
 esp_err_t health(httpd_req_t *request) {
   HandlerScope scope; View view;
@@ -1153,6 +1419,187 @@ bool clockMinutes(const char *text, uint16_t &result) {
   if (!unsignedValue(hour, 23, h) || !unsignedValue(minute, 59, m)) return false;
   result = uint16_t(h * 60 + m); return true;
 }
+bool agentMac(const uint8_t *key, size_t keySize, const char *text, uint8_t (&output)[32]) {
+  psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+  psa_set_key_type(&attributes, PSA_KEY_TYPE_HMAC);
+  psa_set_key_bits(&attributes, keySize * 8);
+  psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_MESSAGE);
+  psa_set_key_algorithm(&attributes, PSA_ALG_HMAC(PSA_ALG_SHA_256));
+  psa_key_id_t id = 0;
+  if (psa_import_key(&attributes, key, keySize, &id) != PSA_SUCCESS) return false;
+  size_t written = 0;
+  const bool okay = psa_mac_compute(id, PSA_ALG_HMAC(PSA_ALG_SHA_256), reinterpret_cast<const uint8_t *>(text),
+      std::strlen(text), output, sizeof(output), &written) == PSA_SUCCESS && written == sizeof(output);
+  psa_destroy_key(id);
+  return okay;
+}
+void hexBytes(const uint8_t (&bytes)[32], char (&hex)[65]) {
+  for (unsigned i = 0; i < sizeof(bytes); ++i) std::snprintf(hex + i * 2, 3, "%02x", bytes[i]);
+}
+bool agentSecret(uint32_t client, uint8_t (&output)[32]) {
+  char context[32]; std::snprintf(context, sizeof(context), "LFAU1-AGENT\n%08lX\n", (unsigned long)client);
+  return agentUpdateKey[0] && agentMac(reinterpret_cast<const uint8_t *>(agentUpdateKey), 32, context, output);
+}
+bool lowerHex(const char *value, size_t size) {
+  if (std::strlen(value) != size) return false;
+  for (size_t i = 0; i < size; ++i) if (!((value[i] >= '0' && value[i] <= '9') || (value[i] >= 'a' && value[i] <= 'f'))) return false;
+  return true;
+}
+uint64_t agentChallengeCounter() { return uint64_t(esp_timer_get_time()) / 10000000ULL + 1; }
+void agentChallenge(char (&nonce)[33]) {
+  std::snprintf(nonce, sizeof(nonce), "%s%016llx", agentUpdateBoot, (unsigned long long)agentChallengeCounter());
+}
+bool validAgentChallenge(const char *nonce, uint64_t &counter) {
+  if (!agentUpdateBoot[0] || !lowerHex(nonce, 64) || std::strncmp(nonce, agentUpdateBoot, 16)) return false;
+  counter = 0;
+  for (unsigned i = 16; i < 32; ++i) counter = counter * 16 + unsigned(hexDigit(nonce[i]));
+  const uint64_t current = agentChallengeCounter();
+  return counter && counter <= current && current - counter <= 1;
+}
+esp_err_t agentUpdateArtifact(httpd_req_t *request) {
+  HandlerScope scope;
+  if (!agent_release::version) return error(request, "503 Service Unavailable", "No signed agent release.");
+  if (!std::strcmp(request->uri, "/agent-update/manifest.json"))
+    return serveWebFile(request, "agent-update/manifest.json", "application/json; charset=utf-8");
+  if (!std::strcmp(request->uri, "/agent-update/package.zip"))
+    return serveWebFile(request, "agent-update/package.zip", "application/zip");
+  return error(request, "404 Not Found", "Not found.");
+}
+esp_err_t agentUpdatePost(httpd_req_t *request) {
+  HandlerScope scope;
+  View view;
+  if (!snapshot(view) || view.restarting || view.control.maintenance == Maintenance::Ota || view.control.maintenance == Maintenance::Restart)
+    return error(request, "503 Service Unavailable", "Controller maintenance; retry.");
+  char body[513]; Form form;
+  if (!readBody(request, body, sizeof(body)) || !form.parse(body)) return error(request, "400 Bad Request", "Invalid form.");
+  uint32_t client;
+  if (!hexValue(form.get("client"), 8, 8, client))
+    return error(request, "400 Bad Request", "Known online agent required.");
+  const bool enroll = !std::strcmp(request->uri, "/agent-update-enroll");
+  const bool poll = !std::strcmp(request->uri, "/agent-update-poll");
+  const bool challenge = !std::strcmp(request->uri, "/agent-update-challenge");
+  if (!knownAgent(view.control, client) && !((poll || challenge) && uninstallAcknowledgmentWindow(view.agentUpdates, client, uptimeMs())))
+    return error(request, "400 Bad Request", "Known online agent required.");
+  const bool rename = !std::strcmp(request->uri, "/agent-rename");
+  const bool uninstall = !std::strcmp(request->uri, "/agent-uninstall");
+  if (!enroll && !poll && !challenge && !rename && !uninstall && std::strcmp(request->uri, "/agent-upgrade")) return error(request, "404 Not Found", "Not found.");
+  if (enroll) {
+    uint32_t account;
+    if (!hexValue(form.get("account"), 8, 8, account) || account != PROJECT_ACCOUNT_FINGERPRINT)
+      return error(request, "400 Bad Request", "Invalid enrollment account.");
+  }
+  uint8_t secret[32];
+  if (!agentSecret(client, secret)) return error(request, "503 Service Unavailable", "Agent updates unavailable.");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  httpd_resp_set_hdr(request, "Connection", "close");
+  if (challenge) {
+    uint32_t account;
+    if (!hexValue(form.get("account"), 8, 8, account) || account != PROJECT_ACCOUNT_FINGERPRINT)
+      return error(request, "400 Bad Request", "Invalid challenge request.");
+    char nonce[33], response[100]; agentChallenge(nonce);
+    std::snprintf(response, sizeof(response), "{\"device\":\"%06lX\",\"nonce\":\"%s\"}", (unsigned long)view.deviceId, nonce);
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_send(request, response, HTTPD_RESP_USE_STRLEN);
+  }
+  if (enroll) {
+    char hex[65], response[128]; hexBytes(secret, hex);
+    std::snprintf(response, sizeof(response), "{\"device\":\"%06lX\",\"secret\":\"%s\"}", (unsigned long)view.deviceId, hex);
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_send(request, response, HTTPD_RESP_USE_STRLEN);
+  }
+  NetworkCommand command{}; command.clientId = client;
+  if (poll) {
+    uint32_t account;
+    if (!unsignedValue(form.get("version"), weekly::maximum, command.agentVersion) || !command.agentVersion ||
+        !hexValue(form.get("account"), 8, 8, account) || account != PROJECT_ACCOUNT_FINGERPRINT ||
+        !validAgentChallenge(form.get("nonce"), command.agentNonceCounter) || !lowerHex(form.get("mac"), 64))
+      return error(request, "400 Bad Request", "Invalid update poll.");
+    if (const auto *entry = view.agentUpdates.find(command.clientId))
+      if (command.agentNonceCounter < entry->lastCounter || (command.agentNonceCounter == entry->lastCounter &&
+          !(form.get("ack")[0] && entry->actionState == 1))) return error(request, "409 Conflict", "Poll challenge already consumed.");
+    command.kind = CommandKind::AgentPoll;
+    command.agentManagement = !std::strcmp(form.get("manage"), "1");
+    if (form.get("manage")[0] && !command.agentManagement) return error(request, "400 Bad Request", "Invalid management capability.");
+    if (form.get("ack")[0] || form.get("result")[0]) {
+      if (!command.agentManagement || !unsignedValue(form.get("ack"), weekly::maximum, command.agentActionAck) || !command.agentActionAck)
+        return error(request, "400 Bad Request", "Invalid command acknowledgment.");
+      command.agentActionResult = !std::strcmp(form.get("result"), "ok") ? 1 : !std::strcmp(form.get("result"), "failed") ? 2 : 0;
+      if (!command.agentActionResult) return error(request, "400 Bad Request", "Invalid command result.");
+    }
+    if (form.get("failed")[0] && !unsignedValue(form.get("failed"), weekly::maximum, command.agentFailedVersion))
+      return error(request, "400 Bad Request", "Invalid update failure status.");
+    char signedText[384]; uint8_t expected[32]; char hex[65];
+    std::snprintf(signedText, sizeof(signedText), "LFAU1-POLL\n%06lX\n%08lX\n%s\n%llu\n",
+        (unsigned long)view.deviceId, (unsigned long)command.clientId, form.get("nonce"), (unsigned long long)command.agentVersion);
+    if (command.agentFailedVersion) {
+      const size_t used = std::strlen(signedText);
+      std::snprintf(signedText + used, sizeof(signedText) - used, "FAILED\n%llu\n", (unsigned long long)command.agentFailedVersion);
+    }
+    if (command.agentManagement) {
+      size_t used = std::strlen(signedText);
+      std::snprintf(signedText + used, sizeof(signedText) - used, "MANAGE\n1\n");
+      if (command.agentActionAck) {
+        used = std::strlen(signedText);
+        std::snprintf(signedText + used, sizeof(signedText) - used, "ACK\n%llu\n%s\n", (unsigned long long)command.agentActionAck, form.get("result"));
+      }
+    }
+    if (!agentMac(secret, sizeof(secret), signedText, expected)) return error(request, "503 Service Unavailable", "Authentication unavailable.");
+    hexBytes(expected, hex);
+    unsigned difference = 0;
+    for (unsigned i = 0; i < 64; ++i) difference |= unsigned(uint8_t(hex[i]) ^ uint8_t(form.get("mac")[i]));
+    if (difference) return error(request, "403 Forbidden", "Invalid poll authentication.");
+  } else if (rename || uninstall) {
+    const auto *entry = view.agentUpdates.find(client);
+    if (!entry || !entry->management || uptimeMs() - entry->polledAt >= agent_update::freshMs ||
+        entry->actionState == 1 || view.agentUpdates.target(client, uptimeMs()))
+      return error(request, "409 Conflict", "Agent management channel is not ready.");
+    command.kind = rename ? CommandKind::AgentRename : CommandKind::AgentUninstall;
+    if (rename) {
+      const char *name = form.get("name"); const size_t length = std::strlen(name);
+      bool visible = false;
+      for (size_t i = 0; i < length; ++i) if (uint8_t(name[i]) > 0x20) visible = true;
+      if (!length || length > 48 || !visible || !validUtf8(name, length))
+        return error(request, "400 Bad Request", "Name must contain 1-48 UTF-8 bytes without controls.");
+      copy(command.agentName, name);
+    } else if (std::strcmp(form.get("confirm"), "uninstall")) return error(request, "400 Bad Request", "Uninstall confirmation required.");
+  } else {
+    command.kind = CommandKind::AgentUpgrade;
+    const auto *entry = view.agentUpdates.find(command.clientId);
+    if (!entry || !agent_release::version || entry->version >= agent_release::version || entry->failed >= agent_release::version ||
+        uptimeMs() - entry->polledAt >= agent_update::freshMs || entry->actionState == 1)
+      return error(request, "409 Conflict", "Agent update channel is not ready.");
+  }
+  if (xSemaphoreTake(viewMutex, pdMS_TO_TICKS(20)) != pdTRUE) return error(request, "503 Service Unavailable", "Controller busy.");
+  const bool blocked = sharedView.restarting || sharedView.control.maintenance == Maintenance::Ota || sharedView.control.maintenance == Maintenance::Restart;
+  const bool queued = !blocked && xQueueSend(commandQueue, &command, 0) == pdTRUE;
+  xSemaphoreGive(viewMutex);
+  if (!queued) return error(request, "503 Service Unavailable", "Update queue unavailable.");
+  if (poll) {
+    uint64_t target = view.agentUpdates.target(command.clientId, uptimeMs());
+    if (target <= command.agentVersion) target = 0;
+    const auto *action = command.agentManagement ? view.agentUpdates.pendingAction(command.clientId, uptimeMs()) : nullptr;
+    if (action && command.agentActionAck == action->actionId) action = nullptr;
+    char signedText[384]; uint8_t mac[32]; char hex[65], response[512], nameHex[97] = {};
+    std::snprintf(signedText, sizeof(signedText), "LFAU1\n%06lX\n%08lX\n%s\n%llu\n",
+        (unsigned long)view.deviceId, (unsigned long)command.clientId, form.get("nonce"), (unsigned long long)target);
+    const char *actionName = action && action->action == agent_update::Action::Rename ? "rename" : "uninstall";
+    if (action) {
+      for (size_t i = 0; action->actionName[i]; ++i) std::snprintf(nameHex + i * 2, 3, "%02x", uint8_t(action->actionName[i]));
+      const size_t used = std::strlen(signedText);
+      std::snprintf(signedText + used, sizeof(signedText) - used, "ACTION\n%llu\n%s\n%s\n", (unsigned long long)action->actionId, actionName, nameHex);
+    }
+    if (!agentMac(secret, sizeof(secret), signedText, mac)) return error(request, "503 Service Unavailable", "Authentication unavailable.");
+    hexBytes(mac, hex);
+    if (action) std::snprintf(response, sizeof(response), "{\"device\":\"%06lX\",\"version\":%llu,\"nonce\":\"%s\",\"mac\":\"%s\",\"action_id\":%llu,\"action\":\"%s\",\"name_hex\":\"%s\"}",
+        (unsigned long)view.deviceId, (unsigned long long)target, form.get("nonce"), hex, (unsigned long long)action->actionId, actionName, nameHex);
+    else std::snprintf(response, sizeof(response), "{\"device\":\"%06lX\",\"version\":%llu,\"nonce\":\"%s\",\"mac\":\"%s\"}",
+        (unsigned long)view.deviceId, (unsigned long long)target, form.get("nonce"), hex);
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_send(request, response, HTTPD_RESP_USE_STRLEN);
+  }
+  httpd_resp_set_status(request, "303 See Other"); httpd_resp_set_hdr(request, "Location", "/agents");
+  return httpd_resp_send(request, nullptr, 0);
+}
 esp_err_t telemetryPost(httpd_req_t *request) {
   HandlerScope scope;
   View view;
@@ -1161,7 +1608,9 @@ esp_err_t telemetryPost(httpd_req_t *request) {
   TelemetryRequest command{}; command.id = ++requestSequence;
   if (!readBody(request, command.packet, sizeof(command.packet))) return error(request, "400 Bad Request", "Invalid telemetry.");
   AgentInput agent; bool legacy; uint8_t remaining, activity;
-  if (!parseTelemetry(command.packet, agent, legacy, remaining, activity)) return error(request, "400 Bad Request", "Invalid telemetry.");
+  weekly::Entry weeklyEntry; uint32_t week = 0;
+  if (!parseTelemetry(command.packet, agent, legacy, remaining, activity) &&
+      !parseWeeklyTelemetry(command.packet, weeklyEntry, week)) return error(request, "400 Bad Request", "Invalid telemetry.");
   command.receivedAt = uptimeMs();
   if (xQueueSend(telemetryQueue, &command, 0) != pdTRUE) return error(request, "503 Service Unavailable", "Telemetry queue full.");
   const uint32_t start = uptimeMs(); TelemetryReply reply{};
@@ -1226,8 +1675,8 @@ esp_err_t commandPost(httpd_req_t *request) {
   return httpd_resp_send(request, nullptr, 0);
 }
 bool initializeHttp() {
-  httpd_config_t config = HTTPD_DEFAULT_CONFIG(); config.core_id = 0; config.stack_size = 10240;
-  config.max_uri_handlers = 20; config.max_open_sockets = 4; config.lru_purge_enable = true;
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG(); config.core_id = 0; config.stack_size = 16384;
+  config.max_uri_handlers = 28; config.max_open_sockets = 4; config.lru_purge_enable = true;
   config.recv_wait_timeout = 2; config.send_wait_timeout = 2;
   if (httpd_start(&model.http, &config) != ESP_OK) return false;
   const auto failed = []() { httpd_stop(model.http); model.http = nullptr; return false; };
@@ -1245,6 +1694,10 @@ bool initializeHttp() {
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();
   for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js"})
     if (!registerRoute(uri, HTTP_GET, staticAsset)) return failed();
+  for (const char *uri : {"/agent-update-enroll", "/agent-update-challenge", "/agent-update-poll", "/agent-upgrade", "/agent-rename", "/agent-uninstall"})
+    if (!registerRoute(uri, HTTP_POST, agentUpdatePost)) return failed();
+  for (const char *uri : {"/agent-update/manifest.json", "/agent-update/package.zip"})
+    if (!registerRoute(uri, HTTP_GET, agentUpdateArtifact)) return failed();
   previewStreamQueue = xQueueCreateStatic(1, sizeof(httpd_req_t *), previewStreamQueueBytes, &previewStreamQueueStorage);
   previewStreamReady.store(previewStreamQueue &&
     xTaskCreatePinnedToCore(previewStreamTask, "preview-stream", 8192, nullptr, 2, nullptr, 0) == pdPASS,
@@ -1257,6 +1710,26 @@ void serviceCommands() {
   NetworkCommand command;
   for (unsigned count = 0; count < 8 && xQueueReceive(commandQueue, &command, 0) == pdTRUE; ++count) {
     switch (command.kind) {
+      case CommandKind::AgentPoll:
+        if (knownAgent(model.control, command.clientId) || (command.agentActionAck && uninstallAcknowledgmentWindow(model.agentUpdates, command.clientId, uptimeMs())))
+          model.agentUpdates.poll(command.clientId, command.agentVersion, uptimeMs(), command.agentNonceCounter,
+            command.agentFailedVersion, command.agentManagement, command.agentActionAck, command.agentActionResult);
+        break;
+      case CommandKind::AgentRename:
+      case CommandKind::AgentUninstall:
+        if (!model.actionSequence) {
+          for (unsigned i = 0; i < 12; ++i) model.actionSequence = model.actionSequence * 16 + unsigned(hexDigit(agentUpdateBoot[i]));
+        }
+        if (knownAgent(model.control, command.clientId) && model.agentUpdates.requestAction(command.clientId,
+            command.kind == CommandKind::AgentRename ? agent_update::Action::Rename : agent_update::Action::Uninstall,
+            ++model.actionSequence, command.agentName, uptimeMs())) message("Команду надіслано; очікування агента.");
+        else message("Канал керування агентом недоступний.");
+        break;
+      case CommandKind::AgentUpgrade:
+        if (knownAgent(model.control, command.clientId) && model.agentUpdates.request(command.clientId, agent_release::version, uptimeMs()))
+          message("Agent update queued; waiting for confirmation.");
+        else message("Agent update channel is not ready; request not queued.");
+        break;
       case CommandKind::Wifi: {
         const bool sameSsid = !std::strcmp(command.ssid, model.settings.ssid);
         if (command.password[0] || !sameSsid) copy(model.settings.password, command.password);
@@ -1273,7 +1746,10 @@ void serviceCommands() {
           if ((model.control.agents[i].present || model.control.agents[i].name[0]) && model.control.agents[i].clientId == command.clientId) { agentSlot = i; break; }
         ColorOverride *slot = nullptr;
         for (auto &entry : model.settings.colors) if (entry.used && entry.clientId == command.clientId) { slot = &entry; break; }
-        if (agentSlot == kAgentCapacity && !slot) { message("Unknown agent; waiting for its first heartbeat."); break; }
+        bool historical = false;
+        for (const auto &entry : model.weekly.entries)
+          if (entry.clientId == command.clientId && entry.name[0]) { historical = true; break; }
+        if (agentSlot == kAgentCapacity && !slot && !historical) { message("Unknown agent; waiting for its first heartbeat."); break; }
         if (command.automatic) {
           if (slot) { *slot = {}; dirty(); }
           if (agentSlot != kAgentCapacity) model.control.agents[agentSlot].rgb = distinctColor(model.requestedRgb[agentSlot], command.clientId);
@@ -1546,6 +2022,7 @@ void serviceMaintenance() {
       case Maintenance::Persist: {
         bool saved = !model.dirty || saveSettings();
         if (saved) refreshStationAfterSave();
+        saved = saveWeekly() && saved;
         if (model.confirmationPending && std::strcmp(webFilesVersion(), "unavailable") && model.render.watchdogReady && model.render.assetsReady && model.render.frames && model.render.ledError == 0 && model.wifiReady && model.httpReady && model.udp >= 0) {
           if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) model.confirmationPending = false;
           else { message("Boot confirmation could not be persisted."); saved = false; }
@@ -1553,7 +2030,7 @@ void serviceMaintenance() {
         model.persistRetryAt = now + (saved ? 0 : 5000); releaseMaintenance(); break;
       }
       case Maintenance::Ota:
-        if (model.dirty || model.restarting) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.restarting) { releaseMaintenance(); break; }
         if (!model.render.assetsReady || model.render.ledError) {
           otaMessage("OTA refused: renderer unhealthy"); model.manifestReady = false; releaseMaintenance(); break;
         }
@@ -1562,7 +2039,7 @@ void serviceMaintenance() {
         installFirmware(); discardBlockedTelemetry();
         model.manifestReady = false; model.otaAt = uptimeMs() + 60000; releaseMaintenance(); break;
       case Maintenance::Restart:
-        if (model.dirty) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty) { releaseMaintenance(); break; }
         if (!activeHandlers.load() && !uxQueueMessagesWaiting(commandQueue)) esp_restart();
         else if (now - model.maintenanceAt >= kMaintenanceTimeout) {
           model.restarting = false; ++model.maintenanceTimeouts;
@@ -1581,15 +2058,16 @@ void serviceMaintenance() {
     return;
   }
   if ((model.dirty && now - model.dirtyAt >= 300 && due(now, model.persistRetryAt)) ||
+      (model.weeklyDirty && (now - model.weeklySavedAt >= 300000 || model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
       (model.confirmationPending && std::strcmp(webFilesVersion(), "unavailable") && model.wifiReady && model.httpReady && model.udp >= 0 &&
        model.render.watchdogReady && model.render.assetsReady && model.render.frames && !model.render.ledError && due(now, model.persistRetryAt))) {
     requestMaintenance(Maintenance::Persist); return;
   }
   if (model.restarting) {
-    if (!model.dirty && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
+    if (!model.dirty && !model.weeklyDirty && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
     return;
   }
-  if (model.manifestReady && !model.dirty) { requestMaintenance(Maintenance::Ota); return; }
+  if (model.manifestReady && !model.dirty && !model.weeklyDirty) { requestMaintenance(Maintenance::Ota); return; }
   if (!model.connected || model.dirty || model.confirmationPending || !model.render.assetsReady || model.render.ledError) return;
   if (model.updateRequested || due(now, model.otaAt)) queueManifestCheck();
 }
@@ -1605,6 +2083,8 @@ void networkTask(void *) {
   if (!viewMutex || !wifiEvents || !telemetryQueue || !telemetryReplies || !manifestJobs || !manifestResults) { ESP_LOGE(kTag, "Cannot initialize network IPC"); vTaskDelete(nullptr); return; }
   // Complete all boot-time storage and PHY initialization before permitting RMT output.
   loadSettings();
+  loadAgentUpdateKey();
+  loadWeekly();
   const bool webReady = initializeWebFiles();
   if (!webReady) { message("Web filesystem initialization failed."); ESP_LOGE(kTag, "Web filesystem unavailable"); }
   model.wifiReady = initializeWifi();
@@ -1635,7 +2115,7 @@ void networkTask(void *) {
         renderReported = true;
       }
     }
-    serviceWifi(); serviceCommands(); serviceTelemetry(); discover(); serviceManifestResults();
+    serviceWifi(); serviceCommands(); serviceWeekly(); serviceTelemetry(); discover(); serviceManifestResults();
     updateControl(); publishView(); serviceMaintenance();
     // A blocking flash transfer must not leave thousands of overdue polling ticks.
     if (xTaskGetTickCount() - wake > pdMS_TO_TICKS(100)) wake = xTaskGetTickCount();

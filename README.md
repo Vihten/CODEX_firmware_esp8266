@@ -20,6 +20,28 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792135037323` fixes agent roster slot allocation: unused slots are
+preferred over offline identities; only a full live table reclaims the oldest
+expired entry. The web snapshot also lists missing agents from the persisted
+current-week ranking as offline, without creating telemetry or meteor activity.
+Historical-only agents can retain and change their saved color. This is not a
+permanent agent registry: weekly-only identities expire with the weekly history.
+
+This release includes the locally verified interactive device settings, saved
+weekly token ranking, signed keyless agent updates, and remote rename/uninstall
+commands. Remote uninstall retains identity, configuration and statistics on the
+PC. Management actions require an online compatible agent; legacy telemetry
+remains accepted, but a legacy heartbeat does not imply management support.
+The bundled signed agent package is version `20261016094859`; publisher private
+keys, controller credentials and local user statistics are not distributed.
+
+Validation: 73 native network/preview/stream tests passed, along with the export,
+targeted Dart analysis and ESP32-S3 PlatformIO build. Physical output remains
+30 FPS on GPIO18. USB installation and the live device version/roster are checked
+separately; this release makes no new long-duration stability claim.
+
+## Previous Stream Release
+
 Version `1792049430436` replaces per-frame browser requests with a bounded raw
 LFP1 HTTP stream on `/frames`, keeping `/frame` as a compatibility fallback.
 One low-priority Core 0 worker owns one async request and a single copied frame;

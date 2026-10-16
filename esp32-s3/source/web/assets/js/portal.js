@@ -37,7 +37,88 @@
     });
     const automatic = () => !document.hidden && (!toggle || toggle.checked);
     const markDirty = form => { if (form) dirtyForms.add(form); };
+    const settingsDialog = one('#device-settings-dialog');
+    if (settingsDialog) {
+      const content = one('[data-device-settings-body]', settingsDialog);
+      const heading = one('#device-settings-title', settingsDialog);
+      const targets = {
+        brightness: {title: 'Яскравість матриці', form: one('form[action="/brightness"]')},
+        power: {title: 'Живлення матриці', form: one('form[action="/power"]')},
+        schedule: {title: 'Розклад матриці', form: one('form[action="/schedule"]')},
+      };
+      let moved = null, placeholder = null, trigger = null;
+      settingsDialog.addEventListener('close', () => {
+        if (moved && placeholder) placeholder.replaceWith(moved);
+        moved = placeholder = null;
+        if (trigger && trigger.isConnected) trigger.focus({preventScroll: true});
+        trigger = null;
+      });
+      all('[data-device-settings]').forEach(button => button.addEventListener('click', () => {
+        const target = targets[button.dataset.deviceSettings];
+        if (!target || !target.form || !content || !heading || settingsDialog.open) return;
+        if (typeof settingsDialog.showModal !== 'function') {
+          target.form.scrollIntoView({block: 'center'});
+          const field = one('input:not([type=hidden]),button', target.form);
+          if (field) field.focus();
+          return;
+        }
+        // Move the existing form, preserving native submission, field IDs and dirty state.
+        placeholder = document.createComment('device settings form');
+        target.form.before(placeholder);
+        moved = target.form;
+        trigger = button;
+        heading.textContent = target.title;
+        content.append(moved);
+        settingsDialog.showModal();
+        const field = one('input:not([type=hidden]),button', moved);
+        if (field) field.focus({preventScroll: true});
+      }));
+      all('[data-device-settings-close]', settingsDialog).forEach(button =>
+        button.addEventListener('click', () => settingsDialog.close()));
+      settingsDialog.addEventListener('click', event => {
+        if (event.target !== settingsDialog) return;
+        const bounds = settingsDialog.getBoundingClientRect();
+        if (event.clientX < bounds.left || event.clientX > bounds.right ||
+            event.clientY < bounds.top || event.clientY > bounds.bottom) settingsDialog.close();
+      });
+    }
     const anyDirty = () => Array.from(document.forms).some(form => dirtyForms.has(form));
+    const updateWeekly = (ranking, agents = []) => {
+      const root = one('#weekly-ranking');
+      if (!root || !ranking || !Array.isArray(ranking.entries)) return;
+      const entries = ranking.entries.filter(row => row && /^[0-9a-f]{8}$/i.test(row.id) &&
+        Number.isSafeInteger(row.tokens) && row.tokens >= 0 && /^#[0-9a-f]{6}$/i.test(row.color))
+        .slice(0, 12).sort((a, b) => b.tokens - a.tokens || a.id.localeCompare(b.id));
+      const total = entries.reduce((sum, row) => sum + row.tokens, 0);
+      const rows = entries.map((row, index) => {
+        const tr = document.createElement('tr');
+        const values = [String(index + 1), typeof row.name === 'string' ? row.name : row.id,
+          number(row.tokens), `${(total ? 100 * row.tokens / total : 0).toLocaleString('uk-UA', {maximumFractionDigits: 1})}%`];
+        values.forEach((value, column) => {
+          const td = document.createElement('td');
+          td.textContent = value;
+          if (column === 1) {
+            const color = document.createElement('span');
+            color.className = 'weekly-agent-color'; color.style.backgroundColor = row.color;
+            color.setAttribute('aria-hidden', 'true'); td.prepend(color);
+          }
+          tr.append(td);
+        });
+        return tr;
+      });
+      one('[data-weekly-rows]', root).replaceChildren(...rows);
+      one('[data-weekly-empty]', root).hidden = entries.length > 0;
+      const known = new Set(entries.map(row => row.id.toUpperCase()));
+      const pending = Array.isArray(agents) ? agents.filter(agent => agent && agent.online &&
+        typeof agent.id === 'string' && !known.has(agent.id.toUpperCase())).slice(0, 12) : [];
+      text('[data-weekly-pending]', pending.length ? `Очікується статистика токенів: ${pending.map(agent =>
+        typeof agent.name === 'string' ? agent.name : agent.id).join(', ')}` : '', root);
+      const week = String(ranking.week);
+      text('[data-weekly-period]', /^\d{8}$/.test(week) ?
+        `${week.slice(6, 8)}.${week.slice(4, 6)}.${week.slice(0, 4)} · понеділок–неділя, Київ` : 'Очікування синхронізації часу', root);
+      text('[data-weekly-state]', ranking.save_failed ? 'Не вдалося зберегти статистику. Повторна спроба автоматично.' :
+        ranking.dirty ? 'Є нові дані · збереження кожні 5 хвилин' : 'Збережено на контролері', root);
+    };
     const duration = milliseconds => {
       if (!finite(milliseconds) || milliseconds < 0) return missing;
       const seconds = Math.floor(milliseconds / 1000);
@@ -79,6 +160,28 @@
         text('[data-agent-activity]', percent(activity), row);
         text('[data-agent-remaining]', online ? percent(agent.remaining) : missing, row);
         if (agent && typeof agent.name === 'string') text('[data-agent-name]', agent.name, row);
+        const updates = agent && agent.update_capable === true;
+        const pending = agent && agent.update_pending === true;
+        const available = agent && agent.update_available === true;
+        text('[data-agent-update-state]', !agent || !agent.agent_version ? 'Очікування агента з підтримкою оновлень' :
+          agent.update_failed === true ? 'Оновлення не вдалося; збережено попередню версію' :
+          pending ? 'Запит у черзі; очікування підтвердження нової версії' :
+          !online ? 'Агент не на зв’язку' : !updates ? 'Канал оновлень недоступний' :
+          available ? `Установлена версія ${number(agent.agent_version)}` : 'Установлена актуальна версія', row);
+        all('.agent-upgrade button[type=submit]', row).forEach(control => { control.disabled = !online || !updates || !available || pending; });
+        const managementState = agent && agent.management_state;
+        const managing = managementState === 1;
+        const canManage = online && agent && agent.management_capable === true && !managing && !pending;
+        text('[data-agent-management-state]', managing ? 'Команда в черзі; очікування відповіді агента' :
+          managementState === 2 ? 'Агент підтвердив виконання' : managementState === 3 ? 'Не вдалося виконати команду на ПК' :
+          managementState === 4 ? 'Час очікування минув; команду скасовано' :
+          !agent || agent.management_capable !== true ? 'Для керування потрібна нова версія агента' : '', row);
+        all('.agent-rename button,.agent-rename input[name=name],.agent-uninstall button', row).forEach(control => { control.disabled = !canManage; });
+        all('form.agent-rename', row).forEach(form => {
+          const input = one('[data-agent-name-input]', form);
+          if (input && !dirtyForms.has(form) && agent && typeof agent.name === 'string') input.value = agent.name;
+        });
+        if (managing) all('.agent-upgrade button[type=submit]', row).forEach(control => { control.disabled = true; });
         all('.agent-status', row).forEach(node => {
           node.classList.toggle('online', online);
           if (!node.hasAttribute('data-agent-state') && !one('[data-agent-state]', node)) node.textContent = online ? 'На зв’язку' : 'Не на зв’язку';
@@ -121,6 +224,7 @@
         all('.power button[name=mode]').forEach(button => button.setAttribute('aria-pressed', String(button.value === status.power)));
       }
       updateAgents(status.agents);
+      updateWeekly(status.weekly, status.agents);
     };
     const schedule = delay => {
       if (timer !== null) clearTimeout(timer);
@@ -142,6 +246,7 @@
       active = request;
       all('[data-refresh]').forEach(button => { button.disabled = true; });
       if (manual || !baseline) connection('Оновлення…');
+      if (manual) text('[data-weekly-state]', 'Оновлення рейтингу…');
       const timeout = setTimeout(() => { request.reason = 'timeout'; request.controller.abort(); }, 6000);
       try {
         const response = await fetch('/status', {signal: request.controller.signal, cache: 'no-store', credentials: 'same-origin', redirect: 'error'});
@@ -157,6 +262,7 @@
           ++failures;
           baseline = null;
           live('fps', missing);
+          text('[data-weekly-state]', 'Не вдалося оновити рейтинг. Спробуйте ще раз.');
           connection(request.reason === 'timeout' ? 'Контролер не відповів вчасно' : 'Не вдалося оновити дані', 'error');
         }
       } finally {
@@ -170,6 +276,7 @@
       const input = event.target;
       if (!(input instanceof Element)) return;
       if (!input.matches('[data-poll-toggle],#show-password')) markDirty(input.closest('form'));
+      if (input.matches('[data-agent-name-input]')) input.setCustomValidity?.('');
       if (input.id === 'brightness') {
         const output = one('#brightnessValue');
         if (output) output.textContent = `${Math.round(Number(input.value) * 100 / 255)}%`;
@@ -181,6 +288,13 @@
     });
     document.addEventListener('submit', event => {
       const form = event.target;
+      if (form instanceof Element && form.matches('form.agent-rename')) {
+        const input = one('[data-agent-name-input]', form);
+        if (input && typeof TextEncoder === 'function' && typeof input.setCustomValidity === 'function') {
+          input.setCustomValidity(new TextEncoder().encode(input.value.trim()).length > 48 ? 'Скоротіть ім’я: до 24 українських або 48 латинських літер.' : '');
+          if (!input.checkValidity()) { event.preventDefault(); input.reportValidity(); return; }
+        }
+      }
       if (form instanceof Element && form.matches('form[data-confirm]') && !window.confirm(form.dataset.confirm)) event.preventDefault();
     });
     document.addEventListener('change', event => {

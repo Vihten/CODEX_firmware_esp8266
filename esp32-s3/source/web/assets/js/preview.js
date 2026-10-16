@@ -27,20 +27,30 @@
     let streamRetryAt = 0;
     const channels = new Uint8Array(256);
     let cachedGain = null;
+    let layout = null;
+    let drawnRgb = null;
     let intersecting = !('IntersectionObserver' in window);
     let pageActive = true;
     const enabled = () => details.open && !document.hidden && intersecting && pageActive;
     const draw = () => {
-      context.fillStyle = '#080a09';
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      if (!frame) return;
-      const widthMm = frame.width * 7 - 2;
-      const heightMm = frame.height * 12 - 7;
-      const scale = Math.min(canvas.width / widthMm, canvas.height / heightMm);
-      const left = (canvas.width - widthMm * scale) / 2;
-      const top = (canvas.height - heightMm * scale) / 2;
+      if (!frame) {
+        context.fillStyle = '#080a09';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        return;
+      }
+      const resized = !layout || layout.width !== frame.width || layout.height !== frame.height ||
+        layout.canvasWidth !== canvas.width || layout.canvasHeight !== canvas.height;
+      if (resized) {
+        const widthMm = frame.width * 7 - 2;
+        const heightMm = frame.height * 12 - 7;
+        const scale = Math.min(canvas.width / widthMm, canvas.height / heightMm);
+        layout = {width: frame.width, height: frame.height, canvasWidth: canvas.width, canvasHeight: canvas.height,
+          scale, left: (canvas.width - widthMm * scale) / 2, top: (canvas.height - heightMm * scale) / 2};
+      }
+      const {scale, left, top} = layout;
       const gain = normalize.checked && frame.brightness < 255 ? 256 / (frame.brightness + 1) : 1;
-      if (cachedGain !== gain) {
+      const gainChanged = cachedGain !== gain;
+      if (gainChanged) {
         for (let value = 0; value < 256; ++value) {
           const linear = Math.max(0, Math.min(1, value * gain / 255));
           const srgb = linear <= 0.0031308
@@ -50,13 +60,35 @@
         }
         cachedGain = gain;
       }
+      let repaint = resized || gainChanged;
+      if (!repaint && scale < 1) {
+        for (let offset = 0; offset < frame.rgb.length; ++offset) {
+          if (drawnRgb[offset] !== frame.rgb[offset]) { repaint = true; break; }
+        }
+        if (!repaint) { drawnRgb = frame.rgb; return; }
+      }
+      if (repaint) {
+        context.fillStyle = '#080a09';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+      }
       for (let y = 0; y < frame.height; ++y) {
         for (let x = 0; x < frame.width; ++x) {
           const offset = (y * frame.width + x) * 3;
+          if (!repaint && drawnRgb[offset] === frame.rgb[offset] &&
+              drawnRgb[offset + 1] === frame.rgb[offset + 1] && drawnRgb[offset + 2] === frame.rgb[offset + 2]) continue;
+          const ledX = left + x * 7 * scale, ledY = top + y * 12 * scale;
+          if (!repaint) {
+            // Reset fractional edge coverage. At scale >= 1 these integer bounds cannot touch another LED.
+            const resetX = Math.floor(ledX), resetY = Math.floor(ledY);
+            context.fillStyle = '#080a09';
+            context.fillRect(resetX, resetY, Math.ceil(ledX + 5 * scale) - resetX, Math.ceil(ledY + 5 * scale) - resetY);
+          }
           context.fillStyle = `rgb(${channels[frame.rgb[offset]]},${channels[frame.rgb[offset + 1]]},${channels[frame.rgb[offset + 2]]})`;
-          context.fillRect(left + x * 7 * scale, top + y * 12 * scale, 5 * scale, 5 * scale);
+          context.fillRect(ledX, ledY, 5 * scale, 5 * scale);
         }
       }
+      // Retain only the displayed RGB data for comparison; stream playback has no queue.
+      drawnRgb = frame.rgb;
     };
     const decode = buffer => {
       if (buffer.byteLength < 24 || buffer.byteLength > 49176) throw new Error('length');

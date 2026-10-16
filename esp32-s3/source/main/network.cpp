@@ -1083,6 +1083,14 @@ void writeSettings(Html &html, const View &view) {
   if (view.restarting) html.file("templates/disabled.html");
   html.file("templates/settings/maintenance-close.html");
 }
+void writeTokenCount(Html &html, uint64_t value) {
+  char digits[21]; std::snprintf(digits, sizeof(digits), "%llu", (unsigned long long)value);
+  const size_t length = std::strlen(digits);
+  for (size_t i = 0; i < length; ++i) {
+    if (i && (length - i) % 3 == 0) html.text(" ");
+    const char digit[2] = {digits[i], 0}; html.text(digit);
+  }
+}
 void writeWeekly(Html &html, const View &view) {
   html.file("templates/weekly/open.html");
   if (view.weekly.week) html.format("%02lu.%02lu.%04lu · понеділок–неділя, Київ", (unsigned long)(view.weekly.week % 100),
@@ -1100,7 +1108,11 @@ void writeWeekly(Html &html, const View &view) {
     html.format("<tr><td>%u</td><td><span class='weekly-agent-color' style='background:#%06lX' aria-hidden='true'></span>",
         unsigned(i + 1), (unsigned long)entry.rgb);
     html.escaped(entry.name);
-    html.format("</td><td>%llu</td><td>%.1f%%</td></tr>", (unsigned long long)entry.tokens, total ? 100.0 * double(entry.tokens) / total : 0.0);
+    html.text("</td><td>"); writeTokenCount(html, entry.tokens);
+    const unsigned tenths = total ? unsigned(1000.0 * double(entry.tokens) / total + 0.5) : 0;
+    html.format("</td><td>%u", tenths / 10);
+    if (tenths % 10) html.format(",%u", tenths % 10);
+    html.text("%</td></tr>");
   }
   html.file("templates/weekly/close.html");
   html.format("<p class='muted' data-weekly-empty%s>Ще немає даних за цей тиждень.</p></section>", count ? " hidden" : "");
@@ -1113,6 +1125,9 @@ esp_err_t page(httpd_req_t *request) {
   const bool settingsPage = !std::strcmp(request->uri, "/settings");
   Html html(request);
   html.file("templates/shell/document-head.html");
+  // Bootstrap and its watchdog fit in the first HTML chunk: no blocking script fetch.
+  html.file("assets/js/boot.js");
+  html.file("templates/shell/document-assets.html");
   html.file("templates/shell/shell-open.html");
   html.render("templates/shell/device-meta.html", [&](unsigned token) {
     switch (token) {
@@ -1148,6 +1163,10 @@ esp_err_t page(httpd_req_t *request) {
 esp_err_t deviceImage(httpd_req_t *request) {
   HandlerScope scope;
   return serveWebFile(request, "images/device.png", "image/png");
+}
+esp_err_t favicon(httpd_req_t *request) {
+  HandlerScope scope;
+  return serveWebFile(request, "images/favicon.svg", "image/svg+xml");
 }
 esp_err_t frameGet(httpd_req_t *request) {
   // Frame packets must not wait for a delayed ACK between headers and body.
@@ -1263,7 +1282,7 @@ esp_err_t staticAsset(httpd_req_t *request) {
   HandlerScope scope;
   // Routes are explicitly registered; no user-supplied filesystem paths.
   const bool css = !std::strcmp(request->uri, "/assets/css/portal.css") || !std::strcmp(request->uri, "/assets/css/preview.css");
-  const bool js = !std::strcmp(request->uri, "/assets/js/portal.js") || !std::strcmp(request->uri, "/assets/js/preview.js");
+  const bool js = !std::strcmp(request->uri, "/assets/js/portal.js") || !std::strcmp(request->uri, "/assets/js/preview.js") || !std::strcmp(request->uri, "/assets/js/boot.js");
   if (!css && !js) return error(request, "404 Not Found", "Not found");
   return serveWebFile(request, request->uri + 1, css ? "text/css; charset=utf-8" : "text/javascript; charset=utf-8");
 }
@@ -1676,7 +1695,7 @@ esp_err_t commandPost(httpd_req_t *request) {
 }
 bool initializeHttp() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG(); config.core_id = 0; config.stack_size = 16384;
-  config.max_uri_handlers = 28; config.max_open_sockets = 4; config.lru_purge_enable = true;
+  config.max_uri_handlers = 32; config.max_open_sockets = 4; config.lru_purge_enable = true;
   config.recv_wait_timeout = 2; config.send_wait_timeout = 2;
   if (httpd_start(&model.http, &config) != ESP_OK) return false;
   const auto failed = []() { httpd_stop(model.http); model.http = nullptr; return false; };
@@ -1689,10 +1708,11 @@ bool initializeHttp() {
       !registerRoute("/frame", HTTP_GET, frameGet) ||
       !registerRoute("/frames", HTTP_GET, framesGet) ||
       !registerRoute("/device.png", HTTP_GET, deviceImage) ||
+      !registerRoute("/favicon.svg", HTTP_GET, favicon) ||
       !registerRoute("/health", HTTP_GET, health) || !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
   for (const char *uri : {"/save", "/power", "/brightness", "/schedule", "/agent-color", "/restart", "/update"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();
-  for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js"})
+  for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js", "/assets/js/boot.js"})
     if (!registerRoute(uri, HTTP_GET, staticAsset)) return failed();
   for (const char *uri : {"/agent-update-enroll", "/agent-update-challenge", "/agent-update-poll", "/agent-upgrade", "/agent-rename", "/agent-uninstall"})
     if (!registerRoute(uri, HTTP_POST, agentUpdatePost)) return failed();

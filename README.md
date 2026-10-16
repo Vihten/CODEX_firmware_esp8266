@@ -20,6 +20,27 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792141127529` updates the Codex web portal: explicit filesystem asset
+validators and conditional responses, quieter background refresh, compact agent
+management controls, corrected live counters and form state, and grouped weekly
+token totals. A matrix/meteor favicon and a bounded, fail-open initial loader
+prevent progressive page rendering without delaying live preview startup.
+The loader watchdog is embedded in the first HTML chunk; the remaining assets
+continue to be maintained in the filesystem web tree.
+
+No web password feature is included. Physical matrix output remains 30 FPS on
+GPIO18, with unchanged animation colors and brightness behavior. Existing NVS
+settings, Wi-Fi configuration, agent colors and weekly statistics are preserved
+by the normal OTA application update. The signed agent package remains version
+`20261016094859`; no account credentials or local statistics are published.
+
+Before publication: ESP32-S3 PlatformIO build and 32 network/asset contract tests
+passed. Portal JavaScript: 23 tests passed. This same firmware version was
+previously installed locally through USB. Publication does not assert that a
+controller has already downloaded or installed the release over Wi-Fi.
+
+## Previous Roster Release
+
 Version `1792135037323` fixes agent roster slot allocation: unused slots are
 preferred over offline identities; only a full live table reclaims the oldest
 expired entry. The web snapshot also lists missing agents from the persisted

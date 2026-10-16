@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "esp_app_desc.h"
 #include "esp_littlefs.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -21,6 +22,59 @@ extern const uint8_t bundleStart[] asm("_binary_web_bundle_bin_start");
 extern const uint8_t bundleEnd[] asm("_binary_web_bundle_bin_end");
 char root[32] = {}, version[65] = {};
 bool ready = false;
+
+struct CachedAsset { const char *path; char etag[136]; };
+CachedAsset cachedAssets[] = {
+  {"assets/css/portal.css", {}}, {"assets/css/preview.css", {}},
+  {"assets/js/portal.js", {}}, {"assets/js/preview.js", {}},
+  {"images/device.png", {}}, {"images/favicon.svg", {}},
+  {"assets/js/boot.js", {}}
+};
+void initializeAssetEtags() {
+  char firmware[65];
+  const auto *app = esp_app_get_description();
+  for (size_t i = 0; i < sizeof(app->app_elf_sha256); ++i)
+    std::snprintf(firmware + i * 2, 3, "%02x", app->app_elf_sha256[i]);
+  for (size_t i = 0; i < sizeof(cachedAssets) / sizeof(cachedAssets[0]); ++i)
+    std::snprintf(cachedAssets[i].etag, sizeof(cachedAssets[i].etag), "\"%s-%s-%u\"", firmware, version, unsigned(i));
+}
+const char *assetEtag(const char *path) {
+  if (ready) for (const auto &asset : cachedAssets)
+    if (!std::strcmp(path, asset.path)) return asset.etag;
+  return nullptr;
+}
+bool matchesAssetEtag(const char *header, const char *etag) {
+  const auto skipSpace = [](const char *&p) { while (*p == ' ' || *p == '\t') ++p; };
+  const char *p = header;
+  skipSpace(p);
+  if (*p == '*') { ++p; skipSpace(p); return !*p; }
+  bool matched = false;
+  const size_t length = std::strlen(etag);
+  for (;;) {
+    if (p[0] == 'W' && p[1] == '/') p += 2;
+    const char *start = p;
+    if (*p++ != '"') return false;
+    while (*p && *p != '"') {
+      const unsigned char c = static_cast<unsigned char>(*p++);
+      if (c < 0x21 || c == 0x7f) return false;
+    }
+    if (!*p) return false;
+    ++p;
+    matched = matched || (size_t(p - start) == length && !std::memcmp(start, etag, length));
+    skipSpace(p);
+    if (!*p) return matched;
+    if (*p++ != ',') return false;
+    skipSpace(p);
+  }
+}
+bool assetNotModified(httpd_req_t *request, const char *etag) {
+  // Oversized or malformed validators fall back to a full response, never allocation.
+  char header[256];
+  const size_t length = httpd_req_get_hdr_value_len(request, "If-None-Match");
+  return length && length < sizeof(header) &&
+      httpd_req_get_hdr_value_str(request, "If-None-Match", header, sizeof(header)) == ESP_OK &&
+      matchesAssetEtag(header, etag);
+}
 
 uint32_t u32(const uint8_t *p) { return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24; }
 bool digest(const void *bytes, size_t size, uint8_t (&output)[32]) {
@@ -181,6 +235,7 @@ bool initializeWebFiles() {
   if (esp_vfs_littlefs_unregister("storage") != ESP_OK || !ok) return false;
   config.format_if_mount_failed = false; config.read_only = true;
   ready = esp_vfs_littlefs_register(&config) == ESP_OK;
+  if (ready) initializeAssetEtags();
   if (ready) ESP_LOGI(kTag, "Serving %lu verified files from %s (%.12s), read-only", (unsigned long)count, root, version);
   return ready;
 }
@@ -194,10 +249,23 @@ const char *webFilesVersion() { return ready ? version : "unavailable"; }
 
 esp_err_t serveWebFile(httpd_req_t *request, const char *relativePath, const char *mime) {
   FILE *file = openWebFile(relativePath);
-  if (!file) return httpd_resp_send_err(request, HTTPD_404_NOT_FOUND, "Web file unavailable");
+  if (!file) {
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    return httpd_resp_send_err(request, HTTPD_404_NOT_FOUND, "Web file unavailable");
+  }
   httpd_resp_set_type(request, mime);
-  httpd_resp_set_hdr(request, "Cache-Control", "no-cache");
   httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+  const char *etag = assetEtag(relativePath);
+  httpd_resp_set_hdr(request, "Cache-Control", etag ? "private, no-cache" : "no-store");
+  if (etag) {
+    // Stable URLs must revalidate even immediately after firmware replacement.
+    httpd_resp_set_hdr(request, "ETag", etag);
+    if (assetNotModified(request, etag)) {
+      std::fclose(file);
+      httpd_resp_set_status(request, "304 Not Modified");
+      return httpd_resp_send(request, nullptr, 0);
+    }
+  }
   char bytes[1024]; size_t size; esp_err_t result = ESP_OK;
   while ((size = std::fread(bytes, 1, sizeof(bytes), file)) != 0) {
     result = httpd_resp_send_chunk(request, bytes, size); if (result != ESP_OK) break;

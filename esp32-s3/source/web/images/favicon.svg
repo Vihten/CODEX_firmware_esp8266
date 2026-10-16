@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 16 16" shape-rendering="crispEdges">
+  <title>Codex pixel meteor</title>
+  <rect width="16" height="16" rx="2" fill="#111315"/>
+  <path fill="#353d38" d="M3 3h2v2H3zm4 0h2v2H7zm4 0h2v2h-2zM3 7h2v2H3zm8 0h2v2h-2zM3 11h2v2H3zm4 0h2v2H7zm4 0h2v2h-2z"/>
+  <path fill="#56d39b" d="M3 3h2v2H3zm2 2h2v2H5zm2 2h2v2H7zm2 2h4v4H9z"/>
+  <path fill="#e8bc72" d="M9 9h2v2H9z"/>
+</svg>

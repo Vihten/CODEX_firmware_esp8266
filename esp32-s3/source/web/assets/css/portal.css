@@ -3,6 +3,14 @@
 *{box-sizing:border-box;letter-spacing:0}
 body{margin:0;background:var(--bg);color:var(--text)}
 [hidden]{display:none!important}
+html[data-page-loading=true] .shell{visibility:hidden}
+html[data-page-loading=true] .page-loader{display:grid!important;position:fixed;inset:0;z-index:1000;place-items:center;background:var(--bg);color:var(--text)}
+.page-loader>div{display:grid;justify-items:center;gap:.75rem;padding:1.5rem;text-align:center}
+.page-loader strong{font-size:1.25rem;font-weight:650}
+.page-loader span{color:var(--muted);font-size:.875rem}
+.page-loader img{animation:page-loading 1.2s cubic-bezier(.77,0,.175,1) infinite alternate}
+@keyframes page-loading{from{opacity:.45}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){.page-loader img{animation:none}}
 ::selection{background:var(--accent);color:#102219}
 a{color:var(--accent);text-underline-offset:4px;overflow-wrap:anywhere}
 button,input,select,textarea,summary,a{ -webkit-tap-highlight-color:transparent}
@@ -105,7 +113,7 @@ details[open]>summary{margin-bottom:.75rem}
 .agent-status.online{color:var(--accent)}
 .agent-status.online>span:empty{background:var(--accent)}
 .agent-meta{display:flex;gap:.5rem 1rem;flex-wrap:wrap;margin:.65rem 0 1.25rem;color:var(--muted);font-size:.8125rem}
-.agent-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem;margin-bottom:1.25rem}
+.agent-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem;margin-bottom:1.25rem;max-width:32rem}
 .agent-metrics dt{color:var(--muted);font-size:.875rem}
 .agent-metrics dd{margin:.3rem 0 0;font-size:1.25rem;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .agent-metrics dd span{font-size:.875rem;color:var(--muted)}
@@ -119,7 +127,7 @@ progress::-webkit-progress-bar{background:#343d37}
 progress::-webkit-progress-value{background:var(--accent)}
 progress::-moz-progress-bar{background:var(--accent)}
 .agent-metrics meter{margin-top:.6rem}
-.agent-color{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:.65rem;align-items:end}
+.agent-color{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:.65rem;align-items:end;max-width:32rem}
 .color-field label{font-size:.875rem;margin-bottom:.5rem}
 .color-value{display:flex;align-items:center;gap:.65rem;min-width:0}
 .color-value output{font-family:ui-monospace,Consolas,monospace;font-size:.875rem;color:var(--text);overflow-wrap:anywhere}
@@ -143,6 +151,13 @@ table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
 .agent-upgrade{display:grid;gap:.5rem;max-width:28rem}
 .agent-upgrade button{justify-self:start}
 .agent-management{margin-top:1rem;max-width:32rem}
+.agent-tools{margin-top:1.25rem;padding-top:0}
+.agent-tools>summary{font-size:.875rem;color:var(--muted)}
+.agent-tools[open]>summary{color:var(--text)}
+.agent-tools .agent-update-panel{margin-top:.5rem}
+.agent-tools [data-agent-management-state]:empty{display:none}
+.agent-tools .agent-uninstall{border-top:1px solid var(--line);padding-top:1rem}
+.stat-capacity{font-size:.875rem;color:var(--muted);white-space:nowrap}
 .agent-name-row{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
 .agent-name-row input{flex:1 1 12rem;min-width:0}
 .agent-uninstall{margin-top:1rem}
@@ -153,6 +168,8 @@ table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
 .weekly-table th{color:var(--muted);font-size:.8125rem;font-weight:500}
 .weekly-table th:nth-child(2),.weekly-table td:nth-child(2){text-align:left;overflow-wrap:anywhere;max-width:20rem}
 .weekly-table th:first-child,.weekly-table td:first-child{text-align:left;padding-left:0}
+.weekly-table td:nth-child(3),.weekly-table td:nth-child(4){white-space:nowrap}
+.weekly-table td:nth-child(3){font-size:.875rem}
 .weekly-agent-color{display:inline-block;width:.7rem;height:.7rem;margin-right:.5rem;border-radius:2px}
 .pill{display:inline-block;color:var(--muted);font-size:.8125rem}
 @media(hover:hover) and (pointer:fine){button:not(:disabled):hover{filter:brightness(1.08)}.secondary:not(:disabled):hover,.quickbuttons button:hover,.filter button:hover,.button:hover{border-color:var(--accent)}a:hover{color:var(--text)}}

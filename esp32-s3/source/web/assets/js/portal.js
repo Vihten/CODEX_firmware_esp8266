@@ -5,16 +5,31 @@
     const all = (selector, root = document) => Array.from(root.querySelectorAll(selector));
     const one = (selector, root = document) => root.querySelector(selector);
     const dirtyForms = new WeakSet();
+    const liveNodes = new Map();
+    all('[data-live]').forEach(node => {
+      const key = node.dataset.live;
+      if (!liveNodes.has(key)) liveNodes.set(key, []);
+      liveNodes.get(key).push(node);
+    });
+    const agentStates = new WeakMap();
+    const weeklyRoot = one('#weekly-ranking');
+    const weeklyRows = weeklyRoot && one('[data-weekly-rows]', weeklyRoot);
+    const weeklyEmpty = weeklyRoot && one('[data-weekly-empty]', weeklyRoot);
+    const weeklyRecords = new Map();
+    const numeric = new Intl.NumberFormat('uk-UA');
+    const decimal = new Intl.NumberFormat('uk-UA', {maximumFractionDigits: 1});
+    const integer = new Intl.NumberFormat('uk-UA', {maximumFractionDigits: 0});
     const toggle = one('[data-poll-toggle]');
     const agentSelector = '.agent[data-agent],.agent-summary[data-agent],.agent-summary [data-agent]';
     let timer = null;
     let active = null;
     let failures = 0;
     let baseline = null;
+    let pageActive = true;
     let selectedFilter = 'all';
     const missing = 'Немає даних';
     const finite = value => typeof value === 'number' && Number.isFinite(value);
-    const number = value => finite(value) ? value.toLocaleString('uk-UA') : missing;
+    const number = value => finite(value) ? numeric.format(value) : missing;
     const percent = value => finite(value) && value >= 0 && value <= 100 ? `${Math.round(value)}%` : missing;
     let clock;
     try { clock = new Intl.DateTimeFormat('uk-UA', {timeZone: 'Europe/Kyiv', hour: '2-digit', minute: '2-digit', second: '2-digit'}); }
@@ -24,18 +39,17 @@
     }
     const controllerClock = epoch => finite(epoch) && epoch > 0 && epoch <= 8640000000000
       ? clock.format(new Date(epoch * 1000)) : 'Очікування NTP';
-    const text = (selector, value, root = document) => all(selector, root).forEach(node => {
+    const setText = (nodes, value) => nodes.forEach(node => {
       const next = String(value);
       if (node.textContent !== next) node.textContent = next;
     });
-    const live = (key, value) => text(`[data-live='${key}']`, value);
-    const connection = (label, state = '') => all('[data-live=connection]').forEach(node => {
-      node.setAttribute('role', 'status');
-      node.setAttribute('aria-live', 'polite');
+    const text = (selector, value, root = document) => setText(all(selector, root), value);
+    const live = (key, value) => setText(liveNodes.get(key) || [], value);
+    const connection = (label, state = '') => (liveNodes.get('connection') || []).forEach(node => {
       if (node.textContent !== label) node.textContent = label;
       node.dataset.state = state;
     });
-    const automatic = () => !document.hidden && (!toggle || toggle.checked);
+    const automatic = () => pageActive && !document.hidden && (!toggle || toggle.checked);
     const markDirty = form => { if (form) dirtyForms.add(form); };
     const settingsDialog = one('#device-settings-dialog');
     if (settingsDialog) {
@@ -82,32 +96,42 @@
             event.clientY < bounds.top || event.clientY > bounds.bottom) settingsDialog.close();
       });
     }
-    const anyDirty = () => Array.from(document.forms).some(form => dirtyForms.has(form));
     const updateWeekly = (ranking, agents = []) => {
-      const root = one('#weekly-ranking');
+      const root = weeklyRoot;
       if (!root || !ranking || !Array.isArray(ranking.entries)) return;
       const entries = ranking.entries.filter(row => row && /^[0-9a-f]{8}$/i.test(row.id) &&
         Number.isSafeInteger(row.tokens) && row.tokens >= 0 && /^#[0-9a-f]{6}$/i.test(row.color))
         .slice(0, 12).sort((a, b) => b.tokens - a.tokens || a.id.localeCompare(b.id));
       const total = entries.reduce((sum, row) => sum + row.tokens, 0);
+      const retained = new Set();
       const rows = entries.map((row, index) => {
-        const tr = document.createElement('tr');
+        const id = row.id.toUpperCase();
+        retained.add(id);
+        let record = weeklyRecords.get(id);
+        if (!record) {
+          const tr = document.createElement('tr');
+          const cells = Array.from({length: 4}, () => tr.appendChild(document.createElement('td')));
+          const color = document.createElement('span');
+          color.className = 'weekly-agent-color'; color.setAttribute('aria-hidden', 'true');
+          record = {tr, cells, color, values: []};
+          weeklyRecords.set(id, record);
+        }
         const values = [String(index + 1), typeof row.name === 'string' ? row.name : row.id,
-          number(row.tokens), `${(total ? 100 * row.tokens / total : 0).toLocaleString('uk-UA', {maximumFractionDigits: 1})}%`];
+          number(row.tokens), `${decimal.format(total ? 100 * row.tokens / total : 0)}%`];
         values.forEach((value, column) => {
-          const td = document.createElement('td');
+          if (record.values[column] === value) return;
+          const td = record.cells[column];
           td.textContent = value;
-          if (column === 1) {
-            const color = document.createElement('span');
-            color.className = 'weekly-agent-color'; color.style.backgroundColor = row.color;
-            color.setAttribute('aria-hidden', 'true'); td.prepend(color);
-          }
-          tr.append(td);
+          if (column === 1) td.prepend(record.color);
         });
-        return tr;
+        record.values = values;
+        if (record.rgb !== row.color) { record.color.style.backgroundColor = row.color; record.rgb = row.color; }
+        return record.tr;
       });
-      one('[data-weekly-rows]', root).replaceChildren(...rows);
-      one('[data-weekly-empty]', root).hidden = entries.length > 0;
+      for (const id of weeklyRecords.keys()) if (!retained.has(id)) weeklyRecords.delete(id);
+      if (weeklyRows.children.length !== rows.length || rows.some((row, index) => weeklyRows.children[index] !== row))
+        weeklyRows.replaceChildren(...rows);
+      weeklyEmpty.hidden = entries.length > 0;
       const known = new Set(entries.map(row => row.id.toUpperCase()));
       const pending = Array.isArray(agents) ? agents.filter(agent => agent && agent.online &&
         typeof agent.id === 'string' && !known.has(agent.id.toUpperCase())).slice(0, 12) : [];
@@ -147,11 +171,17 @@
         if (agent && typeof agent.id === 'string' && /^[0-9a-f]{8}$/i.test(agent.id)) agents.set(agent.id.toUpperCase(), agent);
       });
       const known = new Set();
+      let changed = false;
       all(agentSelector).forEach(row => {
         const id = (row.dataset.agent || '').toUpperCase();
         if (!/^[0-9A-F]{8}$/.test(id)) return;
         known.add(id);
         const agent = agents.get(id);
+        const renameForms = all('form.agent-rename', row);
+        const signature = JSON.stringify([agent, renameForms.some(form => dirtyForms.has(form))]);
+        if (agentStates.get(row) === signature) return;
+        agentStates.set(row, signature);
+        changed = true;
         const online = !!agent && agent.online === true;
         const activity = online && finite(agent.activity) ? Math.max(0, Math.min(100, agent.activity)) : 0;
         row.dataset.online = String(online);
@@ -176,8 +206,14 @@
           managementState === 2 ? 'Агент підтвердив виконання' : managementState === 3 ? 'Не вдалося виконати команду на ПК' :
           managementState === 4 ? 'Час очікування минув; команду скасовано' :
           !agent || agent.management_capable !== true ? 'Для керування потрібна нова версія агента' : '', row);
-        all('.agent-rename button,.agent-rename input[name=name],.agent-uninstall button', row).forEach(control => { control.disabled = !canManage; });
-        all('form.agent-rename', row).forEach(form => {
+        all('.agent-rename button,.agent-rename input[name=name],.agent-uninstall button,.agent-uninstall input[type=checkbox]', row).forEach(control => { control.disabled = !canManage; });
+        text('[data-agent-tools-label]', managing || pending ? 'Керування · команда в черзі' :
+          agent && (agent.update_failed || managementState === 3 || managementState === 4) ? 'Керування · потрібна увага' :
+          available ? 'Керування · доступне оновлення' : 'Керування агентом', row);
+        if (agent && typeof agent.name === 'string') all('form.agent-uninstall', row).forEach(form => {
+          form.dataset.confirm = `Видалити агента «${agent.name}» (${id}) з його ПК та вимкнути автозапуск? Ім’я, налаштування та статистика залишаться для повторного встановлення.`;
+        });
+        renameForms.forEach(form => {
           const input = one('[data-agent-name-input]', form);
           if (input && !dirtyForms.has(form) && agent && typeof agent.name === 'string') input.value = agent.name;
         });
@@ -189,17 +225,25 @@
         all('[data-agent-bar]', row).forEach(meter => { meter.value = activity; meter.textContent = percent(activity); });
         if (agent && typeof agent.color === 'string' && /^#[0-9a-f]{6}$/i.test(agent.color)) {
           all('[data-agent-color] rect', row).forEach(swatch => { swatch.setAttribute('fill', agent.color); });
+          all('form.agent-color', row).forEach(form => {
+            const input = one('input[type=color]', form);
+            if (!dirtyForms.has(form)) {
+              if (input) input.value = agent.color.toLowerCase();
+              text('output', agent.color.toUpperCase(), form);
+            }
+            if (input && typeof agent.name === 'string') input.setAttribute('aria-label', `Колір метеорів агента ${agent.name}`);
+          });
         }
       });
       const unknown = Array.from(agents.keys()).some(id => !known.has(id));
       all('[data-new-agents]').forEach(node => { node.hidden = !unknown; });
-      filterAgents();
+      if (changed) filterAgents();
     };
     const update = status => {
       const stamp = {uptime: status.uptime_ms, frames: status.frames, device: status.device_id, version: status.version};
       let fps = missing;
       if (baseline && stamp.device === baseline.device && stamp.version === baseline.version && stamp.uptime > baseline.uptime && stamp.frames >= baseline.frames) {
-        fps = ((stamp.frames - baseline.frames) * 1000 / (stamp.uptime - baseline.uptime)).toLocaleString('uk-UA', {maximumFractionDigits: 1});
+        fps = decimal.format((stamp.frames - baseline.frames) * 1000 / (stamp.uptime - baseline.uptime));
       }
       baseline = stamp;
       live('remaining', percent(status.remaining));
@@ -208,7 +252,7 @@
       live('wifi', status.wifi === true ? 'Підключено' : status.wifi === false ? 'Не підключено' : missing);
       live('fps', fps);
       live('uptime', duration(status.uptime_ms));
-      live('heap', finite(status.heap) ? `${(status.heap / 1024).toLocaleString('uk-UA', {maximumFractionDigits: 0})} КіБ` : missing);
+      live('heap', finite(status.heap) ? `${integer.format(status.heap / 1024)} КіБ` : missing);
       live('rssi', finite(status.rssi) ? `${status.rssi} дБм` : missing);
       live('ota', typeof status.ota_label === 'string' ? status.ota_label : typeof status.ota === 'string' ? status.ota : missing);
       live('matrix', typeof status.matrix === 'string' ? status.matrix : missing);
@@ -220,8 +264,13 @@
         progress.hidden = !valid;
         if (valid) { progress.max = status.ota_total; progress.value = Math.max(0, Math.min(status.ota_done, status.ota_total)); }
       }
-      if (!anyDirty() && ['auto', 'on', 'off'].includes(status.power)) {
+      if (['auto', 'on', 'off'].includes(status.power)) {
         all('.power button[name=mode]').forEach(button => button.setAttribute('aria-pressed', String(button.value === status.power)));
+      }
+      const range = one('#brightness');
+      if (range && !dirtyForms.has(range.closest('form')) && Number.isInteger(status.brightness) && status.brightness >= 0 && status.brightness <= 255) {
+        range.value = String(status.brightness);
+        text('#brightnessValue', `${Math.round(status.brightness * 100 / 255)}%`);
       }
       updateAgents(status.agents);
       updateWeekly(status.weekly, status.agents);
@@ -236,17 +285,26 @@
       timer = null;
       if (active) { active.reason = 'pause'; active.controller.abort(); }
       baseline = null;
-      connection(document.hidden ? 'Оновлення призупинено' : 'Автооновлення вимкнено');
+      connection(document.hidden || !pageActive ? 'Оновлення призупинено' : 'Автооновлення вимкнено');
     };
     const poll = async (manual = false) => {
-      if (document.hidden || (!manual && !automatic()) || active) return;
+      if (!pageActive || document.hidden || (!manual && !automatic())) return;
+      const manualFeedback = request => {
+        request.manual = true;
+        all('[data-refresh]').forEach(button => { button.disabled = true; });
+        connection('Оновлення…');
+        text('[data-weekly-state]', 'Оновлення рейтингу…');
+      };
+      if (active) {
+        if (manual && !active.manual && !active.reason) manualFeedback(active);
+        return;
+      }
       if (timer !== null) clearTimeout(timer);
       timer = null;
-      const request = {controller: new AbortController(), reason: ''};
+      const request = {controller: new AbortController(), reason: '', manual: false};
       active = request;
-      all('[data-refresh]').forEach(button => { button.disabled = true; });
-      if (manual || !baseline) connection('Оновлення…');
-      if (manual) text('[data-weekly-state]', 'Оновлення рейтингу…');
+      if (manual) manualFeedback(request);
+      else if (!baseline) connection('Оновлення…');
       const timeout = setTimeout(() => { request.reason = 'timeout'; request.controller.abort(); }, 6000);
       try {
         const response = await fetch('/status', {signal: request.controller.signal, cache: 'no-store', credentials: 'same-origin', redirect: 'error'});
@@ -268,7 +326,7 @@
       } finally {
         clearTimeout(timeout);
         active = null;
-        all('[data-refresh]').forEach(button => { button.disabled = false; });
+        if (request.manual) all('[data-refresh]').forEach(button => { button.disabled = false; });
         schedule(Math.min(30000, 5000 * Math.pow(2, Math.min(failures, 3))));
       }
     };
@@ -340,6 +398,8 @@
       const form = event.target;
       setTimeout(() => {
         dirtyForms.delete(form);
+        const row = form instanceof Element && form.closest('[data-agent]');
+        if (row) agentStates.delete(row);
         const range = one('#brightness', form);
         const output = one('#brightnessValue');
         if (range && output) output.textContent = `${Math.round(Number(range.value) * 100 / 255)}%`;
@@ -348,6 +408,11 @@
     document.addEventListener('visibilitychange', () => {
       if (automatic()) { connection('Очікування оновлення'); schedule(5000); }
       else pause();
+    });
+    window.addEventListener('pagehide', () => { pageActive = false; pause(); });
+    window.addEventListener('pageshow', () => {
+      pageActive = true;
+      if (automatic()) schedule(5000);
     });
     all('[data-js][hidden]').forEach(node => { node.hidden = false; });
     all('[data-live=connection]').forEach(node => { node.setAttribute('role', 'status'); node.setAttribute('aria-live', 'polite'); });

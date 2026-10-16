@@ -21,6 +21,10 @@
     const integer = new Intl.NumberFormat('uk-UA', {maximumFractionDigits: 0});
     const toggle = one('[data-poll-toggle]');
     const agentSelector = '.agent[data-agent],.agent-summary[data-agent],.agent-summary [data-agent]';
+    const rosters = [
+      {root: one('[data-agent-list]'), template: one('#agent-row-template')},
+      {root: one('[data-agent-summary-list]'), template: one('#agent-summary-template')},
+    ].filter(roster => roster.root && roster.template?.content?.firstElementChild);
     let timer = null;
     let active = null;
     let failures = 0;
@@ -168,17 +172,45 @@
       all('.filter-empty').forEach(node => { node.hidden = rows.length === 0 || visible !== 0; });
       all('[data-filter]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.filter === selectedFilter)));
     };
+    const reconcileAgents = agents => {
+      rosters.forEach(({root, template}) => {
+        const rows = new Map(all(agentSelector, root).map(row => [(row.dataset.agent || '').toUpperCase(), row]));
+        agents.forEach((agent, id) => {
+          if (rows.has(id)) return;
+          // Bound retained history; never evict a row containing edits or active controls.
+          if (rows.size >= 24) {
+            const stale = Array.from(rows.entries()).find(([key, row]) => !agents.has(key) &&
+              !row.contains(document.activeElement) && !one('details[open]', row) &&
+              !all('form', row).some(form => dirtyForms.has(form)));
+            if (!stale) return;
+            stale[1].remove(); rows.delete(stale[0]);
+          }
+          const row = template.content.firstElementChild.cloneNode(true);
+          row.dataset.agent = id;
+          all('[id],[for]', row).forEach(node => {
+            for (const attribute of ['id', 'for']) {
+              const value = node.getAttribute(attribute);
+              if (value) node.setAttribute(attribute, value.replaceAll('00000000', id));
+            }
+          });
+          all('input[name=client]', row).forEach(input => { input.value = id; input.setAttribute('value', id); });
+          text('[data-agent-id]', id, row);
+          root.append(row); rows.set(id, row);
+        });
+        all('[data-agents-empty]', root).forEach(node => { node.hidden = rows.size > 0; });
+      });
+    };
     const updateAgents = incoming => {
       const agents = new Map();
-      incoming.forEach(agent => {
-        if (agent && typeof agent.id === 'string' && /^[0-9a-f]{8}$/i.test(agent.id)) agents.set(agent.id.toUpperCase(), agent);
+      incoming.slice(0, 12).forEach(agent => {
+        if (agent && typeof agent.id === 'string' && /^[0-9a-f]{8}$/i.test(agent.id) && agent.id !== '00000000')
+          agents.set(agent.id.toUpperCase(), agent);
       });
-      const known = new Set();
+      reconcileAgents(agents);
       let changed = false;
       all(agentSelector).forEach(row => {
         const id = (row.dataset.agent || '').toUpperCase();
         if (!/^[0-9A-F]{8}$/.test(id)) return;
-        known.add(id);
         const agent = agents.get(id);
         const renameForms = all('form.agent-rename', row);
         const signature = JSON.stringify([agent, renameForms.some(form => dirtyForms.has(form))]);
@@ -193,6 +225,8 @@
         text('[data-agent-activity]', percent(activity), row);
         text('[data-agent-remaining]', online ? percent(agent.remaining) : missing, row);
         if (agent && typeof agent.name === 'string') text('[data-agent-name]', agent.name, row);
+        if (agent && typeof agent.custom_color === 'boolean')
+          text('[data-agent-color-mode]', agent.custom_color ? 'Власний колір' : 'Автоматичний колір', row);
         const updates = agent && agent.update_capable === true;
         const pending = agent && agent.update_pending === true;
         const available = agent && agent.update_available === true;
@@ -238,8 +272,6 @@
           });
         }
       });
-      const unknown = Array.from(agents.keys()).some(id => !known.has(id));
-      all('[data-new-agents]').forEach(node => { node.hidden = !unknown; });
       if (changed) filterAgents();
     };
     const update = status => {

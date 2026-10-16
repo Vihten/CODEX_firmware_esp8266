@@ -872,6 +872,7 @@ void writeAgents(Html &html, const View &view) {
     }
   });
   html.file("templates/agents/filters.html");
+  html.file("templates/agents/list-open.html");
   unsigned known = 0;
   for (size_t i = 0; i < kAgentCapacity; ++i) {
     const auto &agent = view.control.agents[i];
@@ -891,7 +892,11 @@ void writeAgents(Html &html, const View &view) {
     writeAgentControls(html, name, entry.clientId, entry.rgb, false, 0, -1, true, &view);
   }
   if (!known) html.file("templates/agents/empty.html");
+  html.file("templates/agents/list-close.html");
   html.file("templates/agents/filter-footer.html");
+  html.file("templates/agents/template-open.html");
+  writeAgentControls(html, "", 0, 0x56d39b, false, 0, -1, false, &view);
+  html.file("templates/agents/template-close.html");
 }
 
 unsigned portalAgentCount(const View &view) {
@@ -968,31 +973,39 @@ void writeSchedule(Html &html, const View &view) {
   if (view.power != 0) html.file("templates/schedule/manual-notice.html");
   html.file("templates/schedule/form-close.html");
 }
-void writeAgentSummary(Html &html, const View &view) {
-  html.file("templates/summary/section-open.html");
-  unsigned known = 0;
-  for (const auto &agent : view.control.agents) {
-    if (!agent.present && !agent.name[0]) continue;
-    ++known;
-    html.render("templates/summary/agent-open.html", [&](unsigned token) {
+void writeAgentSummaryRow(Html &html, const AgentInput &agent) {
+  html.render("templates/summary/agent-open.html", [&](unsigned token) {
     switch (token) {
       case 0: html.format("%08lX", (unsigned long)agent.clientId); break;
       case 1: html.format("%06lX", (unsigned long)agent.rgb); break;
     }
   });
-    html.escaped(agent.name);
-    html.file("templates/summary/status-open.html");
-    if (agent.present) html.text(" online");
-    html.file("templates/summary/status-value-open.html"); html.text(agent.present ? "На зв’язку" : "Не на зв’язку");
-    html.render("templates/summary/activity-close.html", [&](unsigned token) {
+  html.escaped(agent.name);
+  html.file("templates/summary/status-open.html");
+  if (agent.present) html.text(" online");
+  html.file("templates/summary/status-value-open.html"); html.text(agent.present ? "На зв’язку" : "Не на зв’язку");
+  html.render("templates/summary/activity-close.html", [&](unsigned token) {
     switch (token) {
       case 0: html.format("%u", agent.present ? agent.activity : 0); break;
       case 1: html.format("%u", agent.present ? agent.activity : 0); break;
       case 2: html.format("%u", agent.present ? agent.activity : 0); break;
     }
   });
+}
+void writeAgentSummary(Html &html, const View &view) {
+  html.file("templates/summary/section-open.html");
+  html.file("templates/summary/list-open.html");
+  unsigned known = 0;
+  for (const auto &agent : view.control.agents) {
+    if (!agent.present && !agent.name[0]) continue;
+    ++known;
+    writeAgentSummaryRow(html, agent);
   }
   if (!known) html.file("templates/summary/empty.html");
+  html.file("templates/agents/list-close.html");
+  html.file("templates/summary/template-open.html");
+  writeAgentSummaryRow(html, AgentInput{});
+  html.file("templates/agents/template-close.html");
   html.file("templates/summary/section-close.html");
 }
 void writeOverview(Html &html, const View &view) {
@@ -1151,7 +1164,6 @@ esp_err_t page(httpd_req_t *request) {
   if (view.dirty) html.file("templates/shell/saving-notice.html");
   if (view.restarting) html.file("templates/shell/restart-notice.html");
   if (!view.render.assetsReady || view.render.ledError) html.file("templates/shell/matrix-error-notice.html");
-  if (!settingsPage) html.file("templates/shell/new-agents-notice.html");
   if (agentsPage) { writeWeekly(html, view); html.file("templates/shell/section-open.html"); writeAgents(html, view); html.file("templates/summary/section-close.html"); }
   else if (settingsPage) writeSettings(html, view);
   else writeOverview(html, view);
@@ -1325,6 +1337,8 @@ esp_err_t portalStatus(httpd_req_t *request) {
     char client[16], color[8]; std::snprintf(client, sizeof(client), "%08lX", (unsigned long)agent.clientId);
     std::snprintf(color, sizeof(color), "#%06lX", (unsigned long)agent.rgb);
     string(item, "id", client); string(item, "name", agent.name); string(item, "color", color);
+    boolean(item, "custom_color", std::any_of(std::begin(view.savedColors), std::end(view.savedColors),
+        [&](const ColorOverride &entry) { return entry.used && entry.clientId == agent.clientId; }));
     boolean(item, "online", agent.present); number(item, "activity", agent.present ? agent.activity : 0);
     number(item, "remaining", agent.present ? agent.remaining : -1);
     const auto *update = view.agentUpdates.find(agent.clientId);

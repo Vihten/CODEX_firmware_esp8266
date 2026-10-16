@@ -20,6 +20,21 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792147117597` automatically inserts newly reported agents in the
+overview summary and agent management list during the existing status poll.
+The new-agent notice and manual list reload are removed. Inert server-rendered
+templates reuse existing controls; client-side insertion uses DOM APIs, validates
+IDs, preserves unsaved edits and focus, and retains bounded offline history.
+Native forms, filters, capability gates and uninstall confirmation are preserved.
+Status reports each agent's saved-color mode for newly inserted controls.
+
+Validation: ESP32-S3 PlatformIO build, 31 native network tests, 33 portal script
+tests and 34 web-bundle tests passed. Local browser checks confirmed new rows in
+both destinations without page reload or console errors. Physical animation,
+30 FPS, colors and persisted settings are unchanged. No password is included.
+
+## Previous Overview Release
+
 Version `1792146750418` removes the duplicate overview controls when interactive
 device settings are available. Brightness, power and schedule use the same native
 forms inside the device-image dialogs; unsupported browsers retain the fallback

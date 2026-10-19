@@ -20,6 +20,24 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792414893985` prevents dark-blue night pixels from disappearing at
+low configured brightness. At brightness 51/255, the former blue values 2-4
+were truncated to zero by LED PWM scaling. Eligible moving night backgrounds
+now retain one visible blue PWM count; black/off pixels, fixed artwork and
+bright objects are excluded. Raw artwork and the brightness setting stay intact.
+Memorial brightness matching uses the same current-brightness reference.
+
+The single settling swing is shortened from 800 to 400 ms, doubling its peak
+return speed while preserving continuous velocity at the joins. Total startup
+duration remains 4600 ms; physical output remains 30 FPS. No heap is allocated.
+
+Validation: ESP32-S3 PlatformIO build, 288 regression tests, targeted Dart
+analysis and captured native renderer frames passed. Tests include actual LED
+PWM output at 20% brightness, closing sky visibility, raw-reference preservation
+and the sharper reversible curve. Two existing tests remain skipped.
+
+## Previous Full-Sky Release
+
 Version `1792413003306` preserves the entire authored sky during rotation.
 The old lunar-entry black mask is removed: daylight now remains behind the
 outgoing sun while night enters, rather than leaving an isolated sun on black.

@@ -85,7 +85,7 @@ float entranceSmooth(float value) {
   return t * t * (3 - 2 * t);
 }
 float entranceStrength() {
-  return entranceSmooth((4600.0f - sceneProgress) / 800.0f);
+  return entranceSmooth((4600.0f - sceneProgress) / 400.0f);
 }
 struct EntranceOrigin {
   float rayX, rayY, complete, reach;
@@ -100,6 +100,13 @@ float entranceOriginVisibility(const EntranceOrigin &origin, float dx, float dy)
   const float angular = entranceSmooth((cross - .25f) / 1.5f);
   const float radial = entranceSmooth((origin.reach * origin.reach - dx * dx - dy * dy) / max(2.0f, 4 * origin.reach));
   return (angular + (1 - angular) * origin.complete) * radial;
+}
+// Preserve a visible dark-blue sky when global PWM scaling would erase it.
+void preserveNightSkyPixel(uint8_t *rgb, uint16_t index, uint8_t effectType, uint8_t brightness) {
+  if (!brightness || effectType || pgm_read_byte(&ENTRANCE_FIXED[index]) ||
+      rgb[2] < 2 || rgb[2] > 4 || rgb[1] >= rgb[2] || rgb[0] > rgb[1]) return;
+  const uint16_t minimumBlue = (256U + brightness) / (uint16_t(brightness) + 1U);
+  if (rgb[2] < minimumBlue) rgb[2] = uint8_t(minimumBlue);
 }
 float entranceClosingFrom = 0, entranceClosingTo = 0;
 uint32_t entranceClosingAt = 0;
@@ -119,7 +126,7 @@ float entranceClosingAmount() {
 }
 const int32_t ENTRANCE_ANCHOR = 65000;
 const int32_t ENTRANCE_PHASE[139] PROGMEM = {
-0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,37,148,332,587,913,1309,1773,2306,2905,3570,4300,5094,5951,6869,7849,8889,9988,11145,12358,13628,14954,16333,17765,19250,20786,22372,24007,25691,27422,29199,31022,32889,34799,36752,38746,40781,42856,44968,47119,49306,51528,53785,56076,58399,60754,63140,65556,68000,70472,72971,75496,78045,80619,83215,85833,88472,91131,93809,96506,99219,101948,104692,107451,110222,113006,115801,118606,121420,124243,127072,129909,132750,135596,138445,141296,144149,147003,149855,152707,155556,158401,161242,164077,166906,169728,172541,175345,178139,180921,183691,186448,189191,191918,194630,197324,200000,202477,204593,206375,207852,209051,210000,210727,211259,211625,211852,211968,212000,211764,211111,210125,208889,207486,206000,204514,203111,201875,200889,200236,200000
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,29,117,262,465,723,1037,1406,1829,2306,2835,3416,4049,4733,5467,6250,7082,7962,8889,9863,10882,11948,13057,14211,15407,16647,17928,19250,20613,22015,23457,24937,26455,28009,29600,31227,32889,34585,36315,38077,39872,41698,43556,45443,47360,49306,51279,53281,55309,57363,59442,61546,63674,65826,68000,70196,72413,74651,76909,79186,81481,83795,86125,88472,90835,93213,95605,98011,100430,102861,105304,107758,110222,112696,115179,117670,120168,122674,125185,127702,130224,132750,135279,137811,140346,142881,145417,147954,150489,153023,155556,158085,160611,163133,165650,168161,170667,173165,175656,178139,180613,183077,185531,187974,190405,192824,195230,197622,200000,202535,205218,207778,209942,211440,212000,211111,208889,206000,203111,200889,200000
 };
 
 bool sceneEntranceActive() {
@@ -202,9 +209,10 @@ void drawSceneEntrance() {
               (1.5f * min(50.0f / MATRIX_WIDTH, 20.0f / MATRIX_HEIGHT)));
       visibility += (closed - visibility) * closing;
       const uint8_t *rgb = &entrancePixels[reflected * 3];
-      strip.setPixelColor(physicalIndex(x, y), strip.Color(
-          uint8_t(rgb[0] * visibility + .5f), uint8_t(rgb[1] * visibility + .5f),
-          uint8_t(rgb[2] * visibility + .5f)));
+      uint8_t visibleRgb[3] = {uint8_t(rgb[0] * visibility + .5f),
+          uint8_t(rgb[1] * visibility + .5f), uint8_t(rgb[2] * visibility + .5f)};
+      preserveNightSkyPixel(visibleRgb, index, entranceMask[reflected], strip.getBrightness());
+      strip.setPixelColor(physicalIndex(x, y), strip.Color(visibleRgb[0], visibleRgb[1], visibleRgb[2]));
       effectMask[index] = visibility <= 0 ? 0 : entranceMask[reflected];
     }
   }
@@ -766,7 +774,12 @@ uint8_t calculateMemorialBrightnessGain() {
   uint32_t referenceLight = 0, memorialLight = 0;
   for (int y = 0; y < MATRIX_HEIGHT; ++y) {
     for (int x = 0; x < MATRIX_WIDTH; ++x) {
-      const uint8_t *rgb = reference + (y * MATRIX_WIDTH + x) * 3;
+      const unsigned index = y * MATRIX_WIDTH + x;
+      uint8_t rgb[3];
+      std::memcpy(rgb, reference + index * 3, 3);
+      const uint8_t type = reference == entrancePixels ? effectMask[index] :
+          assets.effects[referenceFrame * EFFECT_BYTES + index];
+      preserveNightSkyPixel(rgb, index, type, control.brightness);
       referenceLight += memorial::luminance({rgb[0], rgb[1], rgb[2]});
       memorialLight += memorial::luminance(memorial::pixel(x, y, MATRIX_WIDTH, MATRIX_HEIGHT, colors));
     }
@@ -1042,6 +1055,7 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
       }
       const uint16_t entranceIndex = (y * MATRIX_WIDTH + x) * 3;
       memcpy(&entrancePixels[entranceIndex], rgb, 3);
+      preserveNightSkyPixel(rgb, pixelIndex, effectMask[pixelIndex], strip.getBrightness());
       #endif
       strip.setPixelColor(
         physicalIndex(x, y),

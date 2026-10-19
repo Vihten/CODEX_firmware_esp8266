@@ -650,7 +650,7 @@ uint32_t updateSkySample(uint16_t target, bool frozen) {
   const uint32_t now = millis();
   const uint32_t delta = min(uint32_t(250), uint32_t(now - skySampleAt));
   skySampleAt = now;
-  if (control.memorialActive) return quotaFrameMilli;
+  if (status.memorialTransition) return quotaFrameMilli;
   const uint32_t wanted = uint32_t(target) * 1000;
   if (!skySampleReady || sceneProgress < 4600) {
     skySampleReady = true; quotaFrameMilli = wanted;
@@ -805,7 +805,7 @@ void drawEventEffects() {
   // The legacy network maintenance interval is now an explicit IPC request.
   lastMeteorMaintenanceAt = millis();
   meteorMaintenancePending = false;
-  updateMeteorScheduler(!control.memorialActive && sceneProgress == 4600UL && matrixRequestsLight() && !otaCheckPending());
+  updateMeteorScheduler(!status.memorialTransition && sceneProgress == 4600UL && matrixRequestsLight() && !otaCheckPending());
   for (const auto &meteor : meteors) if (meteor.active) drawSmoothMeteorWake(meteor);
   for (const auto &meteor : meteors) if (meteor.active) drawSmoothMeteor(meteor);
 }
@@ -1045,6 +1045,11 @@ void renderTask(void *) {
   bool memorialSceneVisible = false, memorialSceneTargetOn = false;
   uint32_t memorialSceneProgress = 0, memorialQuota = 0;
   uint32_t memorialStart = 0, memorialCloseMs = 0, memorialSlideMs = 0;
+  bool memorialExiting = false;
+  uint32_t memorialPosition = 0, memorialForwardFrom = 0;
+  uint32_t memorialExitAt = 0, memorialExitFrom = 0;
+  uint32_t memorialParkedAt = 0;
+  bool memorialForceOff = false;
   uint32_t previousRenderAt = millis();
   int64_t effectOrigin = esp_timer_get_time();
   int64_t deadline = effectOrigin;
@@ -1056,6 +1061,7 @@ void renderTask(void *) {
     if (control.maintenance == Maintenance::None) status.maintenanceEpoch = control.maintenanceEpoch;
     if (control.maintenance == Maintenance::None && parked) {
       parked = false;
+      if (memorialExiting) memorialExitAt += uint32_t(millis() - memorialParkedAt);
       sceneTimelineAt = millis();
       effectOrigin = started - (int64_t(effectTick) * 256 + effectSubTick) * 1000000 / (EVENT_FPS * 256);
     }
@@ -1069,29 +1075,40 @@ void renderTask(void *) {
       const uint32_t now = millis();
       const bool memorialActive = control.on && control.memorialActive &&
           memorial::active(now, control.memorialStartedAt, control.memorialDurationMs);
-      const bool memorialTransition = memorialActive || memorialWasActive;
+      const bool previousMemorialTransition = status.memorialTransition;
+      const bool memorialOff = !control.on && previousMemorialTransition;
+      if (memorialOff) memorialForceOff = true;
+      if (control.on) memorialForceOff = false;
       const bool newMemorial = memorialActive &&
           (!memorialWasActive || memorialStart != control.memorialStartedAt);
-      if (memorialWasActive && (!memorialActive || newMemorial)) {
-        sceneVisible = memorialSceneVisible && status.assetsReady;
-        sceneTargetOn = memorialSceneTargetOn;
-        sceneProgress = memorialSceneProgress;
-        quotaFrameMilli = memorialQuota;
+      if (memorialWasActive && !memorialActive && control.on) {
+        memorialExiting = true;
+        memorialExitAt = now;
+        memorialExitFrom = memorialPosition;
       }
       if (newMemorial) {
         stopMemorialMeteors();
         memorialStart = control.memorialStartedAt;
-        memorialSceneVisible = sceneVisible;
-        memorialSceneTargetOn = sceneTargetOn;
-        memorialSceneProgress = sceneProgress;
-        memorialQuota = quotaFrameMilli;
-        // Late NTP arrivals still leave at least half the remaining minute for
-        // the settled memorial; manual playback uses the same bounded timeline.
-        memorialSlideMs = min(uint32_t(900), control.memorialDurationMs / 4);
-        const uint32_t closeBudget = control.memorialDurationMs / 2 - memorialSlideMs;
-        memorialCloseMs = sceneVisible && status.assetsReady
-            ? min(sceneProgress, closeBudget) : 0;
+        if (!previousMemorialTransition) {
+          memorialSceneVisible = sceneVisible;
+          memorialSceneTargetOn = sceneTargetOn;
+          memorialSceneProgress = sceneProgress;
+          memorialQuota = quotaFrameMilli;
+          // Reserve at least half the remaining minute for the settled scene.
+          memorialSlideMs = min(uint32_t(900), control.memorialDurationMs / 4);
+          const uint32_t closeBudget = control.memorialDurationMs / 2 - memorialSlideMs;
+          memorialCloseMs = sceneVisible && status.assetsReady
+              ? min(sceneProgress, closeBudget) : 0;
+          memorialPosition = 0;
+        }
+        // A play request during the return reverses direction at the last
+        // displayed position rather than replacing it with a different frame.
+        memorialForwardFrom = memorialPosition;
+        memorialExiting = false;
       }
+      if (memorialOff) memorialExiting = false;
+      status.memorialTransition = memorialActive || memorialExiting;
+      const bool memorialTransition = status.memorialTransition || previousMemorialTransition;
       if (memorialTransition) {
         // Rebase through the exit frame too: neither scene nor effects catch up.
         sceneTimelineAt = skySampleAt = now;
@@ -1120,41 +1137,61 @@ void renderTask(void *) {
         }
         if (complete) {
           acknowledgedEpoch = control.maintenanceEpoch;
+          memorialParkedAt = now;
           parked = true;
           status.quiescent = true;
           status.maintenanceEpoch = acknowledgedEpoch;
         }
-      } else if (memorialActive && !maintenance) {
+      } else if (status.memorialTransition && !maintenance) {
         strip.setBrightness(control.brightness);
         const uint32_t elapsed = uint32_t(now - memorialStart);
-        if (elapsed < memorialCloseMs) {
+        const uint32_t total = memorialCloseMs + memorialSlideMs;
+        if (memorialExiting) {
+          const uint32_t reversed = min(memorialExitFrom, uint32_t(now - memorialExitAt));
+          memorialPosition = memorialExitFrom - reversed;
+        } else {
+          memorialPosition = uint32_t(min(uint64_t(total), uint64_t(memorialForwardFrom) + elapsed));
+        }
+        if ((memorialPosition < memorialCloseMs || (memorialExiting && memorialPosition == 0)) &&
+            memorialSceneVisible && status.assetsReady) {
           sceneVisible = true;
-          sceneTargetOn = false;
-          sceneProgress = memorialSceneProgress - uint64_t(memorialSceneProgress) * elapsed / memorialCloseMs;
+          sceneTargetOn = memorialExiting;
+          sceneProgress = memorialCloseMs ? memorialSceneProgress -
+              uint64_t(memorialSceneProgress) * memorialPosition / memorialCloseMs : memorialSceneProgress;
           const bool complete = renderScene(animationFile, effectMaskFile, frame, false);
           quotaFrameMilli = memorialQuota;
           if (!complete) {
             status.assetsReady = false;
             sceneVisible = false;
-            memorialCloseMs = elapsed;
+            memorialCloseMs = memorialPosition;
             strip.clear();
           }
         } else {
           sceneProgress = 0;
           sceneVisible = false;
-          const float offset = memorial::slideOffset(elapsed - memorialCloseMs, memorialSlideMs, MATRIX_HEIGHT);
-          memorial::drawSliding(MATRIX_WIDTH, MATRIX_HEIGHT, elapsed,
-                               control.memorialDurationMs, offset, [](int x, int y, memorial::Pixel color) {
+          const uint32_t slide = memorialPosition >= memorialCloseMs ? memorialPosition - memorialCloseMs : 0;
+          const float offset = memorial::slideOffset(slide, memorialSlideMs, MATRIX_HEIGHT);
+          // Movement now owns disappearance. Keep the palette fully lit, with
+          // its original flame phase, instead of fading to black before exit.
+          memorial::drawSliding(MATRIX_WIDTH, MATRIX_HEIGHT, 4000 + elapsed % 4000,
+                               10000, offset, [](int x, int y, memorial::Pixel color) {
             strip.setPixelColor(physicalIndex(x, y), strip.Color(color.red, color.green, color.blue));
           });
         }
-        showFrame();
-      } else if (memorialWasActive && !control.on && !maintenance) {
+        const bool shown = showFrame();
+        if (memorialExiting && memorialPosition == 0 && shown) {
+          memorialExiting = false;
+          sceneVisible = memorialSceneVisible && status.assetsReady;
+          sceneTargetOn = memorialSceneTargetOn;
+          sceneProgress = memorialSceneProgress;
+          quotaFrameMilli = memorialQuota;
+        }
+      } else if (memorialForceOff && !maintenance) {
         sceneVisible = false;
         sceneTargetOn = false;
         sceneProgress = 0;
         strip.clear();
-        showFrame();
+        if (showFrame()) memorialForceOff = false;
       } else if (!status.assetsReady) {
         strip.clear();
         showFrame();

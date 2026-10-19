@@ -958,6 +958,7 @@ const char *portalMatrixState(const View &view) {
   if (!view.render.assetsReady || view.render.ledError) return "Помилка відмальовування";
   if (!view.control.on) return view.render.sceneVisible && view.render.sceneProgress ? "Вимикається" : "Вимкнено";
   if (view.control.memorialActive) return "Хвилина мовчання";
+  if (view.render.memorialTransition) return "Повернення до неба";
   if (!view.render.sceneVisible) return "Показ IP-адреси";
   return view.render.sceneProgress < 4600 ? "Запускається" : "Увімкнено";
 }
@@ -2165,7 +2166,7 @@ void serviceMaintenance() {
         model.persistRetryAt = now + (saved ? 0 : 5000); releaseMaintenance(); break;
       }
       case Maintenance::Ota:
-        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.restarting || model.control.memorialActive) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
         if (!model.render.assetsReady || model.render.ledError) {
           otaMessage("OTA refused: renderer unhealthy"); model.manifestReady = false; releaseMaintenance(); break;
         }
@@ -2203,7 +2204,7 @@ void serviceMaintenance() {
     if (!model.dirty && !model.weeklyDirty && !model.memorialDirty && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
     return;
   }
-  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.control.memorialActive) { requestMaintenance(Maintenance::Ota); return; }
+  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
   if (!model.connected || model.dirty || model.confirmationPending || !model.render.assetsReady || model.render.ledError) return;
   if (model.updateRequested || due(now, model.otaAt)) queueManifestCheck();
 }

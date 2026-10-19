@@ -20,6 +20,22 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792397625522` adds the reverse memorial transition on natural expiry
+and early stop: the entire memorial panel slides upward, then the saved sky
+reopens along the original entrance curve. Interruptions reverse from the last
+displayed position; play during the return changes direction without recapturing
+the partially opened sky. The old end fade no longer hides the moving panel.
+Power-off takes precedence, persistence pauses the return clock, and automatic
+OTA waits until the final restored frame has been transmitted successfully.
+The portal reports the return instead of mistaking it for an IP-address screen.
+Normal colors, brightness, persistent settings and 30 FPS remain unchanged.
+
+Validation: ESP32-S3 PlatformIO build, 176 ESP32-S3 tests, 49 portal script tests
+and targeted Dart analysis passed. Reverse pixels, cancellation, replay, power,
+persistence, timer rollover, final-show retry and OTA handshakes are covered.
+
+## Previous Entrance Transition Release
+
 Version `1792396389304` adds the memorial entrance transition. The current sky
 closes using the existing shutdown animation, then the entire Ukraine outline,
 clock and candle slide down from above with subpixel vertical sampling and

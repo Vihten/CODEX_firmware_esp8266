@@ -49,6 +49,7 @@ struct RenderStatus {
   bool watchdogReady = false;
   bool quiescent = false;
   bool sceneVisible = false;
+  bool memorialTransition = false;
 };
 
 enum class CommandKind : uint8_t { Wifi, Power, Brightness, Schedule, Color, Restart, Update, AgentPoll, AgentUpgrade, AgentRename, AgentUninstall, MemorialSave, MemorialPlay, MemorialStop };

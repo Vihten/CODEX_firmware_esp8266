@@ -20,6 +20,22 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792400561623` removes the memorial's blue background: only the
+Ukraine outline, clock, candle and flame remain lit. The main sky transition
+now uses a fixed lower-left entry/exit anchor independent of quota, with day
+rising first and one settling excursion instead of repeated oscillations.
+Reverse playback retraces the same path to the lower-left anchor. The final
+sky position still represents the available quota, including night at low quota.
+The pyramid-first reveal, subpixel sampling, shared brightness, 30 FPS,
+maintenance handshakes and persistent settings remain intact.
+
+Validation: ESP32-S3 PlatformIO build, 184 ESP32-S3 tests, seven curve tests,
+exporter tests and targeted Dart analysis passed. Captured renderer frames
+confirm lower-left appearance and reverse motion. The updated LUT and
+standalone renderer use bounded signed arithmetic and positive cycle wrapping.
+
+## Previous Brightness Matching Release
+
 Version `1792398844425` matches the memorial panel's average weighted RGB
 brightness to the current base animation. A uniform palette gain is captured
 once from the settled sky, or a validated source-frame fallback, excluding

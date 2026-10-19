@@ -50,10 +50,7 @@ inline Palette palette(uint32_t elapsedMs, uint32_t durationMs) {
   const auto color = [channel](unsigned r, unsigned g, unsigned b) {
     return Pixel{channel(r), channel(g), channel(b)};
   };
-  const auto background = [fade](unsigned channel) {
-    return uint8_t(std::ceil(channel * fade));
-  };
-  return {{background(1), background(3), background(9)},
+  return {{0, 0, 0},
           color(232, 219, kTextBlue), color(184, 170, 135),
           color(118, 104, 78), color(218, 205, 173), color(95, 53, 20),
           color(255, 191, 66), color(229, 89, 14),

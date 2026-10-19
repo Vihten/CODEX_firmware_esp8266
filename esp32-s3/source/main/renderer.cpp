@@ -85,7 +85,7 @@ float entranceSmooth(float value) {
   return t * t * (3 - 2 * t);
 }
 float entranceStrength() {
-  return entranceSmooth((4600.0f - sceneProgress) / 400.0f);
+  return entranceSmooth((4600.0f - sceneProgress) / 1000.0f);
 }
 struct EntranceOrigin {
   float rayX, rayY, complete, reach;
@@ -113,9 +113,16 @@ uint32_t entranceClosingAt = 0;
 bool entranceClosingTarget = false;
 float entranceClosingAmount() {
   const uint32_t now = millis();
+  const bool target = !sceneTargetOn;
+  // Both trajectories share their endpoints: no crossfade is needed there.
+  if (sceneProgress == 0 || sceneProgress >= 4600UL) {
+    entranceClosingTarget = target;
+    entranceClosingFrom = entranceClosingTo = target ? 1 : 0;
+    entranceClosingAt = now;
+    return entranceClosingTo;
+  }
   const float amount = entranceSmooth((now - entranceClosingAt) / 160.0f);
   const float current = entranceClosingFrom + (entranceClosingTo - entranceClosingFrom) * amount;
-  const bool target = !sceneTargetOn;
   if (target != entranceClosingTarget) {
     entranceClosingTarget = target;
     entranceClosingFrom = current;
@@ -126,8 +133,27 @@ float entranceClosingAmount() {
 }
 const int32_t ENTRANCE_ANCHOR = 65000;
 const int32_t ENTRANCE_PHASE[139] PROGMEM = {
-0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,29,117,262,465,723,1037,1406,1829,2306,2835,3416,4049,4733,5467,6250,7082,7962,8889,9863,10882,11948,13057,14211,15407,16647,17928,19250,20613,22015,23457,24937,26455,28009,29600,31227,32889,34585,36315,38077,39872,41698,43556,45443,47360,49306,51279,53281,55309,57363,59442,61546,63674,65826,68000,70196,72413,74651,76909,79186,81481,83795,86125,88472,90835,93213,95605,98011,100430,102861,105304,107758,110222,112696,115179,117670,120168,122674,125185,127702,130224,132750,135279,137811,140346,142881,145417,147954,150489,153023,155556,158085,160611,163133,165650,168161,170667,173165,175656,178139,180613,183077,185531,187974,190405,192824,195230,197622,200000,202535,205218,207778,209942,211440,212000,211111,208889,206000,203111,200889,200000
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,42,168,377,667,1037,1486,2013,2617,3296,4049,4876,5774,6743,7782,8889,10063,11303,12608,13976,15407,16900,18452,20063,21732,23457,25237,27072,28960,30899,32889,34928,37016,39150,41331,43556,45824,48135,50487,52878,55309,57777,60281,62820,65394,68000,70638,73306,76004,78729,81481,84260,87062,89888,92736,95605,98494,101401,104326,107266,110222,113192,116174,119168,122172,125185,128206,131234,134267,137305,140346,143388,146432,149475,152517,155556,158590,161620,164644,167659,170667,173664,176650,179624,182585,185531,188461,191374,194269,197145,200000,202781,205262,207258,208682,209538,209920,210000,209893,208999,206978,204078,200898,198133,196332,195647,195613,196019,197192,198876,200499,201522,201798,201718,201167,200297,199648,199500,199605,199895,200000
 };
+const int32_t EXIT_PHASE[139] PROGMEM = {
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,33,131,294,520,810,1161,1574,2047,2579,3171,3820,4527,5290,6108,6981,7909,8889,9921,11005,12140,13325,14558,15840,17169,18545,19966,21433,22944,24498,26094,27732,29411,31130,32889,34686,36520,38392,40299,42241,44218,46229,48272,50347,52453,54590,56756,58951,61173,63423,65699,68000,70326,72676,75048,77443,79859,82296,84752,87228,89721,92232,94759,97302,99860,102431,105016,107613,110222,112842,115471,118110,120757,123412,126073,128740,131412,134089,136769,139451,142135,144821,147506,150191,152874,155556,158234,160908,163577,166241,168899,171549,174192,176826,179450,182063,184666,187256,189834,192398,194948,197482,200000,202460,204684,206538,207960,208952,209563,209874,209985,210000,209885,209236,207901,206033,203967,202099,200764,200115,200000
+};
+
+int32_t entranceMotionPhase(uint32_t elapsed) {
+  const float direction = entranceClosingAmount();
+  if (elapsed >= 4600UL) return 200000L;
+  const uint32_t phaseTime = elapsed * 30;
+  const uint16_t key = phaseTime / 1000;
+  const int32_t fraction = phaseTime % 1000;
+  const int32_t a = (int32_t)pgm_read_dword(&ENTRANCE_PHASE[key]);
+  const int32_t b = (int32_t)pgm_read_dword(&ENTRANCE_PHASE[key + 1]);
+  const int32_t c = (int32_t)pgm_read_dword(&EXIT_PHASE[key]);
+  const int32_t d = (int32_t)pgm_read_dword(&EXIT_PHASE[key + 1]);
+  const int32_t opening = a + (b - a) * fraction / 1000;
+  const int32_t closing = c + (d - c) * fraction / 1000;
+  // Share the retargetable direction blend with the sky mask on interruption.
+  return int32_t(opening + (closing - opening) * direction + .5f);
+}
 
 bool sceneEntranceActive() {
   return sceneVisible && (sceneTargetOn ? sceneProgress < 4600UL : sceneProgress > 0);
@@ -139,8 +165,10 @@ void advanceSceneTimeline(bool targetOn) {
   sceneTimelineAt = now;
   if (targetOn != sceneTargetOn) {
     sceneTargetOn = targetOn;
+    entranceClosingAmount();
     return;
   }
+  entranceClosingAmount();
   if (targetOn) {
     const uint32_t left = 4600UL - sceneProgress;
     sceneProgress += delta < left ? delta : left;
@@ -985,12 +1013,8 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
   sceneFrameMilli = updateSkySample(frame, finishingMeteorFlight);
   frame = sceneFrameMilli / 1000;
   const uint32_t entranceElapsed = sceneProgress;
+  const int32_t phase = entranceMotionPhase(entranceElapsed);
   if (entranceElapsed < 4600UL) {
-    const uint32_t phaseTime = entranceElapsed * 30;
-    const uint16_t key = phaseTime / 1000;
-    const int32_t startPhase = (int32_t)pgm_read_dword(&ENTRANCE_PHASE[key]);
-    const int32_t endPhase = (int32_t)pgm_read_dword(&ENTRANCE_PHASE[key + 1]);
-    const int32_t phase = startPhase + (endPhase - startPhase) * (int32_t)(phaseTime % 1000) / 1000;
     const int64_t unwrapped = ENTRANCE_ANCHOR + int64_t(int32_t(sceneFrameMilli) - 200000L - ENTRANCE_ANCHOR) * phase / 200000L;
     entrancePhasePosition = unwrapped / 100000.0f;
     int32_t position = (unwrapped % 200000L + 200000L) % 200000L;

@@ -20,6 +20,24 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792417273550` separates opening and closing motion. Opening settles
+through two damped oscillations with progressively smaller amplitudes; closing
+uses just one excursion. Quintic settle segments match velocity and acceleration
+at their joins, removing the hard reversals of the previous short swing.
+
+Both paths retain the 4600 ms total duration, lower-left sky origin and final
+quota-dependent position. Their precomputed phase tables are interpolated at
+runtime without heap allocations or additional RAM. Settled endpoint switches
+select the correct trajectory immediately; interrupted transitions reuse the
+retargetable 160 ms direction blend instead of jumping between phase tables.
+
+Validation includes the ESP32-S3 PlatformIO build, Dart analysis, regression
+tests and native renderer captures. Tests cover decaying extrema, C2 settle
+joins, both directional tables, endpoint switching and memorial interruption.
+Physical output remains 30 FPS; colors, brightness and saved settings are intact.
+
+## Previous Night Visibility Release
+
 Version `1792414893985` prevents dark-blue night pixels from disappearing at
 low configured brightness. At brightness 51/255, the former blue values 2-4
 were truncated to zero by LED PWM scaling. Eligible moving night backgrounds

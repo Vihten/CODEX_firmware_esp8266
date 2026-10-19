@@ -20,6 +20,19 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792396389304` adds the memorial entrance transition. The current sky
+closes using the existing shutdown animation, then the entire Ukraine outline,
+clock and candle slide down from above with subpixel vertical sampling and
+gentle deceleration. The transition remains inside the existing 60-second window.
+Cancellation, matrix power-off and maintenance preserve or restore scene state.
+Normal animation colors, brightness, stored settings and 30 FPS are unchanged.
+
+Validation: ESP32-S3 PlatformIO build, all 167 ESP32-S3 tests and targeted Dart
+analysis passed. Coverage includes fractional quota, interrupted transitions,
+short remaining duration, repeated requests and maintenance handshakes.
+
+## Previous Ukraine Outline Release
+
 Version `1792394198807` frames the minute-of-silence clock and candle inside
 a blue-and-gold outline of Ukraine, including Crimea. The 50 x 20 composition
 accounts for the physical LED spacing: the clock and border remain steady,

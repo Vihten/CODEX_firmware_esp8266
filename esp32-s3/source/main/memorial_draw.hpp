@@ -112,4 +112,35 @@ inline void draw(int width, int height, uint32_t elapsedMs, uint32_t durationMs,
     for (int x = 0; x < width; ++x) setPixel(x, y, pixel(x, y, width, height, colors));
   }
 }
+
+inline float slideOffset(uint32_t elapsedMs, uint32_t slideDurationMs, int height) {
+  if (height <= 0 || slideDurationMs == 0 || elapsedMs >= slideDurationMs) return 0;
+  const float remaining = float(double(slideDurationMs - elapsedMs) / slideDurationMs);
+  return -float(height) * remaining * remaining * remaining;
+}
+
+// Translate the entire scene down from above. Off-canvas samples are black;
+// nonfinite offsets hide the scene. The caller owns both animation clocks.
+template <typename SetPixel>
+inline void drawSliding(int width, int height, uint32_t elapsedMs, uint32_t durationMs,
+                        float offsetY, SetPixel setPixel) {
+  if (width <= 0 || height <= 0) return;
+  const Palette colors = palette(elapsedMs, durationMs);
+  // Double keeps the clamped shift representable as int even at INT_MAX height.
+  const double shift = !std::isfinite(offsetY) ? double(height) :
+      offsetY >= 0 ? 0.0 : offsetY <= -double(height) ? double(height) : -double(offsetY);
+  const int rowShift = int(shift);
+  const float fraction = float(shift - rowShift);
+  for (int y = 0; y < height; ++y) {
+    const bool firstVisible = rowShift < height - y;
+    const int sourceRow = firstVisible ? y + rowShift : 0;
+    const bool secondVisible = firstVisible && sourceRow + 1 < height;
+    for (int x = 0; x < width; ++x) {
+      const Pixel first = firstVisible ? pixel(x, sourceRow, width, height, colors) : Pixel{};
+      const Pixel result = fraction == 0 ? first : blend(first,
+          secondVisible ? pixel(x, sourceRow + 1, width, height, colors) : Pixel{}, fraction);
+      setPixel(x, y, result);
+    }
+  }
+}
 }  // namespace memorial

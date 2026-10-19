@@ -101,6 +101,11 @@ float entranceOriginVisibility(const EntranceOrigin &origin, float dx, float dy)
   const float radial = entranceSmooth((origin.reach * origin.reach - dx * dx - dy * dy) / max(2.0f, 4 * origin.reach));
   return (angular + (1 - angular) * origin.complete) * radial;
 }
+float entranceBodyVisibility(float dx, float dy) {
+  dx /= 6;
+  dy /= 3.8f;
+  return 1 - entranceSmooth((dx * dx + dy * dy - 1.15f) / .5f);
+}
 float entranceClosingFrom = 0, entranceClosingTo = 0;
 uint32_t entranceClosingAt = 0;
 bool entranceClosingTarget = false;
@@ -143,11 +148,10 @@ void advanceSceneTimeline(bool targetOn) {
 }
 
 void drawSceneVisibility() {
-  if (sceneProgress >= 1600UL) return;
+  if (sceneProgress >= 600UL) return;
   const float rise = min(1.0f, sceneProgress / 600.0f);
   const float offset = 3 * (1 - rise) * (1 - rise) * (1 - rise);
-  const float fade = constrain(((int32_t)sceneProgress - 600) / 1000.0f, 0.0f, 1.0f);
-  const float sky = fade * fade * (3 - 2 * fade);
+  const float sky = 0;
   for (int16_t y = 0; y < MATRIX_HEIGHT; y++) {
     const float sourceY = y - offset;
     const int16_t y0 = floorf(sourceY);
@@ -198,9 +202,17 @@ void drawSceneEntrance() {
       if (phase >= 0) {
         visibility *= entranceOriginVisibility(openingOrigin, dx, dy);
       }
+      const float bodyX = x * 50.0f / MATRIX_WIDTH - 24.5f;
+      const float bodyY = y * 20.0f / MATRIX_HEIGHT - 18.5f;
+      if (phase > -1 && phase < 0)
+        visibility += (1 - visibility) * entranceBodyVisibility(bodyX - 18 * nx, bodyY - 13 * ny / 1.85f);
       if (phase > -1) {
         const float closed = phase >= 0 ? 0 : (1 - day) * entranceSmooth(-phase / .2f) * entranceOriginVisibility(closingOrigin, dx, dy);
         visibility += (closed - visibility) * closing * entranceSmooth((phase + 1) / .2f);
+      }
+      // Complete the authored celestial arc before the viewport clips it.
+      if (phase > -2 && phase < 0) {
+        visibility += (1 - visibility) * entranceBodyVisibility(bodyX + 18 * nx, bodyY + 13 * ny / 1.85f);
       }
       const uint8_t *rgb = &entrancePixels[reflected * 3];
       strip.setPixelColor(physicalIndex(x, y), strip.Color(

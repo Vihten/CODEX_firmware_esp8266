@@ -20,6 +20,22 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792406227615` removes the global sky fade-in/fade-out. After the
+pyramid rises, the moving artwork uses its normal contrast; the geometric
+origin mask still controls where it appears, rather than dimming the whole sky.
+
+Outgoing sun and moon footprints are protected from the background wipe until
+they leave the viewport. The opening sun is composed before direction blending,
+so interrupted transitions stay continuous without restoring the redundant
+closing sun. Configured brightness, colors, 30 FPS and saved settings are intact.
+
+Validation: ESP32-S3 PlatformIO build, 285 regression tests, targeted Dart
+analysis and native frame captures passed. Coverage includes actual-asset
+antialiased horizon pixels, no global fade, direction interruptions and C1 mask
+boundaries. Two existing tests remain skipped; no additional heap is allocated.
+
+## Previous Pyramid-Origin Release
+
 Version `1792404806928` anchors the first sky pixels beside the pyramid in
 the lower-left sector, rather than revealing the whole left edge. A bounded
 radial/sector mask follows the physical LED spacing and opens into the existing

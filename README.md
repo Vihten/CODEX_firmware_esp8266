@@ -20,6 +20,24 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792413003306` preserves the entire authored sky during rotation.
+The old lunar-entry black mask is removed: daylight now remains behind the
+outgoing sun while night enters, rather than leaving an isolated sun on black.
+The pyramid-origin mask is retained only for the initial sky reveal.
+
+Shutdown no longer shrinks or fades the night using a separate radial mask.
+A rotating bottom-edge clip lets the final night row leave the viewport before
+blanking, while still suppressing the redundant closing sun. Resolution-scaled
+edge antialiasing keeps boundary joins continuous on other matrix sizes too.
+Configured colors, brightness, 30 FPS, quota mapping and saved settings remain.
+
+Validation: ESP32-S3 PlatformIO build, 287 regression tests, targeted Dart
+analysis and native captured frames passed. Tests verify background RGB, not
+only celestial bodies, plus last-row exit and multi-size continuity. Two
+existing tests remain skipped. Per-pixel work is reduced; no heap is allocated.
+
+## Previous Celestial Departure Release
+
 Version `1792406227615` removes the global sky fade-in/fade-out. After the
 pyramid rises, the moving artwork uses its normal contrast; the geometric
 origin mask still controls where it appears, rather than dimming the whole sky.

@@ -101,11 +101,6 @@ float entranceOriginVisibility(const EntranceOrigin &origin, float dx, float dy)
   const float radial = entranceSmooth((origin.reach * origin.reach - dx * dx - dy * dy) / max(2.0f, 4 * origin.reach));
   return (angular + (1 - angular) * origin.complete) * radial;
 }
-float entranceBodyVisibility(float dx, float dy) {
-  dx /= 6;
-  dy /= 3.8f;
-  return 1 - entranceSmooth((dx * dx + dy * dy - 1.15f) / .5f);
-}
 float entranceClosingFrom = 0, entranceClosingTo = 0;
 uint32_t entranceClosingAt = 0;
 bool entranceClosingTarget = false;
@@ -185,9 +180,7 @@ void drawSceneEntrance() {
   const float ny = -1.85f * cosf(-PI * phase);
   const float closing = entranceClosingAmount();
   const EntranceOrigin openingOrigin = entranceOrigin((.65f - phase) / .65f);
-  const EntranceOrigin closingOrigin = entranceOrigin(-phase);
-  const float gate = entranceStrength() * (phase >= 0 ? entranceSmooth(phase / .2f) :
-      entranceSmooth(-phase / .2f) * (1 - entranceSmooth((-phase - 1) / .2f)));
+  const float gate = entranceStrength() * entranceSmooth(phase / .2f);
   for (uint16_t y = 0; y < MATRIX_HEIGHT; y++) {
     const float row = (y * 20.0f / MATRIX_HEIGHT - 18.5f) * ny + 2;
     for (uint16_t x = 0; x < MATRIX_WIDTH; x++) {
@@ -196,24 +189,18 @@ void drawSceneEntrance() {
       const uint16_t reflected = entranceMirror ? y * MATRIX_WIDTH + MATRIX_WIDTH - 1 - x : index;
       if (entranceMirror && pgm_read_byte(&ENTRANCE_FIXED[reflected])) continue;
       const float day = entranceSmooth(((x * 50.0f / MATRIX_WIDTH - 24.5f) * nx + row) / 4);
-      float visibility = 1 - gate * (phase >= 0 ? 1 - day : day);
+      float visibility = phase >= 0 ? 1 - gate * (1 - day) : 1;
       const float dx = x * 50.0f / MATRIX_WIDTH - 24.5f;
       const float dy = (18.5f - y * 20.0f / MATRIX_HEIGHT) * 1.85f;
       if (phase >= 0) {
         visibility *= entranceOriginVisibility(openingOrigin, dx, dy);
       }
-      const float bodyX = x * 50.0f / MATRIX_WIDTH - 24.5f;
-      const float bodyY = y * 20.0f / MATRIX_HEIGHT - 18.5f;
-      if (phase > -1 && phase < 0)
-        visibility += (1 - visibility) * entranceBodyVisibility(bodyX - 18 * nx, bodyY - 13 * ny / 1.85f);
-      if (phase > -1) {
-        const float closed = phase >= 0 ? 0 : (1 - day) * entranceSmooth(-phase / .2f) * entranceOriginVisibility(closingOrigin, dx, dy);
-        visibility += (closed - visibility) * closing * entranceSmooth((phase + 1) / .2f);
-      }
-      // Complete the authored celestial arc before the viewport clips it.
-      if (phase > -2 && phase < 0) {
-        visibility += (1 - visibility) * entranceBodyVisibility(bodyX + 18 * nx, bodyY + 13 * ny / 1.85f);
-      }
+      // Let the complete night edge rotate below the last matrix row.
+      const float closed = phase >= 0 ? 0 : phase <= -1 ? 1 :
+          entranceSmooth(-((x * 50.0f / MATRIX_WIDTH - 24.5f) * nx +
+              (y * 20.0f / MATRIX_HEIGHT - 20) * ny) /
+              (1.5f * min(50.0f / MATRIX_WIDTH, 20.0f / MATRIX_HEIGHT)));
+      visibility += (closed - visibility) * closing;
       const uint8_t *rgb = &entrancePixels[reflected * 3];
       strip.setPixelColor(physicalIndex(x, y), strip.Color(
           uint8_t(rgb[0] * visibility + .5f), uint8_t(rgb[1] * visibility + .5f),

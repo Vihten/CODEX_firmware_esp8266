@@ -20,6 +20,17 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792394198807` frames the minute-of-silence clock and candle inside
+a blue-and-gold outline of Ukraine, including Crimea. The 50 x 20 composition
+accounts for the physical LED spacing: the clock and border remain steady,
+while only the small flame moves. Scheduling, persistence, manual controls,
+normal-scene colors, brightness and 30 FPS output are unchanged.
+
+Validation: ESP32-S3 PlatformIO build, native exact-pixel/containment and
+full-minute continuity tests, scheduler/network tests and targeted analysis.
+
+## Previous Candle Release
+
 Version `1792392780201` adds an optional daily minute of silence at 09:00
 Kyiv time. The matrix displays a steady warm `9:00` above a shaded candle
 with a gently leaning flame, then returns to its previous scene after 60 seconds.

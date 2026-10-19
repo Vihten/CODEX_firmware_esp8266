@@ -4,8 +4,24 @@
 #include <cstdint>
 
 namespace memorial {
-constexpr int kTextWidth = 42;
-constexpr int kTextHeight = 7;
+constexpr int kTextWidth = 20;
+constexpr int kTextHeight = 5;
+
+// Ukraine including Crimea, rasterized for the physical 7 mm x 12 mm LED pitch.
+// Outline reference: johan/world.geo.json, countries/UKR.geo.json (Unlicense).
+constexpr uint64_t kUkraineOutline[20] = {
+    0x0000000000000ULL, 0x00000F0000000ULL, 0x000030F803F00ULL,
+    0x0000100FFC0C0ULL, 0x0000600000040ULL, 0x00198000000C0ULL,
+    0x01E6000000030ULL, 0x0E00000000008ULL, 0x0800000000018ULL,
+    0x0400000000004ULL, 0x080000003F00CULL, 0x07000001C1FF0ULL,
+    0x00C0000180000ULL, 0x0070000200000ULL, 0x000F007780000ULL,
+    0x0000C7CAC0000ULL, 0x00064F0460000ULL, 0x00078F03C0000ULL,
+    0x0001C80000000ULL, 0x00003C0000000ULL};
+
+inline bool outline(int x, int y) {
+  return x >= 0 && x < 50 && y >= 0 && y < 20 &&
+      (kUkraineOutline[y] & (uint64_t(1) << x)) != 0;
+}
 
 inline bool active(uint32_t now, uint32_t startedAt, uint32_t durationMs) {
   return uint32_t(now - startedAt) < durationMs;
@@ -17,6 +33,7 @@ struct Pixel {
 struct Palette {
   Pixel background, text;
   Pixel wax, waxShade, waxHighlight, wick, core, edge;
+  Pixel borderUpper, borderLower;
   float lean;
 };
 
@@ -39,6 +56,7 @@ inline Palette palette(uint32_t elapsedMs, uint32_t durationMs) {
           color(232, 219, 190), color(184, 170, 135),
           color(118, 104, 78), color(218, 205, 173), color(95, 53, 20),
           color(255, 191, 66), color(229, 89, 14),
+          color(63, 121, 184), color(173, 141, 57),
           .5f * std::sin(float(elapsedMs % 4000) * .0015707963267948966f)};
 }
 
@@ -54,33 +72,36 @@ inline Pixel blend(Pixel under, Pixel over, float coverage) {
 // Logical coordinates; wiring and the user's global brightness belong to the caller.
 inline Pixel pixel(int x, int y, int width, int height, const Palette &colors) {
   if (x < 0 || x >= width || y < 0 || y >= height) return colors.background;
-  const int candleX = x - (width / 2 - 3);
-  if (y >= 14 && y <= 18 && candleX >= 0 && candleX < 6) {
-    if (candleX == 0 || candleX == 5 || y == 18) return colors.waxShade;
-    return candleX == 2 || candleX == 3 ? colors.waxHighlight : colors.wax;
+  const int sourceX = x + 25 - width / 2;
+  if (outline(sourceX, y)) return y < 10 ? colors.borderUpper : colors.borderLower;
+  const int candleX = sourceX - 33;
+  if (y >= 11 && y <= 13 && candleX >= 0 && candleX < 4) {
+    if (candleX == 0 || candleX == 3 || y == 13) return colors.waxShade;
+    return colors.waxHighlight;
   }
-  if (y == 13 && candleX >= 2 && candleX <= 3) return colors.wick;
-  if (y >= 9 && y <= 12) {
+  if (y == 10 && candleX >= 1 && candleX <= 2) return colors.wick;
+  if (y >= 7 && y <= 9) {
     // Horizontal radii compensate for the taller physical LED pitch. Only the
-    // flame leans; soft coverage is clipped to these four rows, clear of text.
-    constexpr float radius[] = {1, 2, 3, 2};
-    constexpr float coreRadius[] = {.25f, .75f, 1.5f, 1};
-    const int flameRow = y - 9;
-    const float center = 2.5f + colors.lean * (4 - flameRow) * .25f;
+    // flame leans; soft coverage stays beside the fixed clock and off the border.
+    constexpr float radius[] = {1, 2, 1.5f};
+    constexpr float coreRadius[] = {.25f, 1, .75f};
+    const int flameRow = y - 7;
+    const float center = 1.5f + colors.lean * (3 - flameRow) / 3;
     const float distance = std::fabs(float(candleX) - center);
     const Pixel flame = blend(colors.edge, colors.core, coreRadius[flameRow] + .5f - distance);
-    return blend(colors.background, flame, radius[flameRow] + .5f - distance);
+    if (distance < radius[flameRow] + .5f)
+      return blend(colors.background, flame, radius[flameRow] + .5f - distance);
   }
-  const int localX = x - (width - kTextWidth) / 2;
-  const int row = y - 1;
+  const int localX = sourceX - 12;
+  const int row = y - 5;
   if (row < 0 || row >= kTextHeight) return colors.background;
-  constexpr uint8_t nine[7] = {14, 17, 17, 15, 1, 1, 14};
-  constexpr uint8_t zero[7] = {14, 17, 17, 17, 17, 17, 14};
+  constexpr uint8_t nine[5] = {14, 17, 15, 1, 14};
+  constexpr uint8_t zero[5] = {14, 17, 17, 17, 14};
   bool lit = false;
-  if (localX >= 0 && localX < 10) lit = nine[row] & (1U << (4 - localX / 2));
-  else if (localX >= 14 && localX < 16) lit = row == 2 || row == 4;
-  else if (localX >= 20 && localX < 30) lit = zero[row] & (1U << (4 - (localX - 20) / 2));
-  else if (localX >= 32 && localX < 42) lit = zero[row] & (1U << (4 - (localX - 32) / 2));
+  if (localX >= 0 && localX < 5) lit = nine[row] & (1U << (4 - localX));
+  else if (localX == 7) lit = row == 1 || row == 3;
+  else if (localX >= 9 && localX < 14) lit = zero[row] & (1U << (4 - (localX - 9)));
+  else if (localX >= 15 && localX < 20) lit = zero[row] & (1U << (4 - (localX - 15)));
   return lit ? colors.text : colors.background;
 }
 

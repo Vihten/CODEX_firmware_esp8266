@@ -20,6 +20,25 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792419738139` restores the night background palette from before
+the last darkening, while retaining the sixteen added stars, faster spin,
+two smooth opening oscillations and one closing excursion.
+
+The dark-blue safeguard no longer divides by configured brightness. Eligible
+moving background pixels use a fixed raw blue floor of 5, then the normal LED
+brightness scaling applies. Thus brightness 51/102/153/204/255 produces blue
+PWM levels 1/2/3/4/5 rather than holding the night at a constant visible level.
+At settings below 51/255, these very dark pixels can quantize to zero; brightness
+zero remains fully off. Black masks, fixed artwork and bright objects are exempt.
+
+Raw artwork caches remain unmodified, and memorial reference matching uses the
+same fixed-floor transform. Physical output stays at 30 FPS, with no new heap
+allocation or changes to saved settings. Validation covers the PlatformIO
+build, Dart analysis, palette preservation and native brightness-response,
+idempotency, shutdown-mask and memorial-reference tests.
+
+## Previous Faster Starry Night Release
+
 Version `1792418320059` speeds up the opening spin from 3000 to 2400 ms and
 the closing spin from 3400 to 2800 ms. Pyramid movement and the smooth damped
 settles retain their timing: two opening oscillations, one closing excursion.

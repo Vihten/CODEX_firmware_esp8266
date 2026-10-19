@@ -102,11 +102,11 @@ float entranceOriginVisibility(const EntranceOrigin &origin, float dx, float dy)
   const float radial = entranceSmooth((origin.reach * origin.reach - dx * dx - dy * dy) / max(2.0f, 4 * origin.reach));
   return (angular + (1 - angular) * origin.complete) * radial;
 }
-// Preserve a visible dark-blue sky when global PWM scaling would erase it.
+// Keep dark blue visible at the usual 20% setting without cancelling dimming.
 void preserveNightSkyPixel(uint8_t *rgb, uint16_t index, uint8_t effectType, uint8_t brightness) {
   if (!brightness || effectType || pgm_read_byte(&ENTRANCE_FIXED[index]) ||
       rgb[2] < 2 || rgb[2] > 4 || rgb[1] >= rgb[2] || rgb[0] > rgb[1]) return;
-  const uint16_t minimumBlue = (256U + brightness) / (uint16_t(brightness) + 1U);
+  const uint8_t minimumBlue = 5;
   if (rgb[2] < minimumBlue) rgb[2] = uint8_t(minimumBlue);
 }
 float entranceClosingFrom = 0, entranceClosingTo = 0;

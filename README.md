@@ -20,6 +20,22 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792404806928` anchors the first sky pixels beside the pyramid in
+the lower-left sector, rather than revealing the whole left edge. A bounded
+radial/sector mask follows the physical LED spacing and opens into the existing
+day/night orbit without changing the settled animation.
+
+Closing now contracts the lunar sky toward the same pyramid origin and hides
+the redundant initial-day pass. A retargetable 160 ms mask blend prevents a
+hard flash when an entrance, shutdown or memorial transition is interrupted.
+Physical 30 FPS, colors, brightness and persistent settings remain unchanged.
+
+Validation: ESP32-S3 PlatformIO build, 280 regression tests, targeted Dart
+analysis and native captured frames passed; two existing tests remain skipped.
+Mask geometry is cached per frame, uses no heap, and adds 16 bytes of static RAM.
+
+## Previous Ordered Sky Release
+
 Version `1792402513472` separates the startup sky into ordered day and night
 passes. Unfilled areas are black: daylight is hidden during the lunar reveal
 and returns only after the full-night position. The continuous trajectory has

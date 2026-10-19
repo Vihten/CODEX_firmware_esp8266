@@ -87,6 +87,36 @@ float entranceSmooth(float value) {
 float entranceStrength() {
   return entranceSmooth((4600.0f - sceneProgress) / 800.0f);
 }
+struct EntranceOrigin {
+  float rayX, rayY, complete, reach;
+};
+EntranceOrigin entranceOrigin(float value) {
+  const float progress = constrain(value, 0.0f, 1.0f);
+  const float ray = PI * (1 - progress);
+  return {cosf(ray), sinf(ray), entranceSmooth((progress - .8f) / .2f), progress * 100};
+}
+float entranceOriginVisibility(const EntranceOrigin &origin, float dx, float dy) {
+  const float cross = origin.rayX * max(0.0f, dy) - origin.rayY * dx;
+  const float angular = entranceSmooth((cross - .25f) / 1.5f);
+  const float radial = entranceSmooth((origin.reach * origin.reach - dx * dx - dy * dy) / max(2.0f, 4 * origin.reach));
+  return (angular + (1 - angular) * origin.complete) * radial;
+}
+float entranceClosingFrom = 0, entranceClosingTo = 0;
+uint32_t entranceClosingAt = 0;
+bool entranceClosingTarget = false;
+float entranceClosingAmount() {
+  const uint32_t now = millis();
+  const float amount = entranceSmooth((now - entranceClosingAt) / 160.0f);
+  const float current = entranceClosingFrom + (entranceClosingTo - entranceClosingFrom) * amount;
+  const bool target = !sceneTargetOn;
+  if (target != entranceClosingTarget) {
+    entranceClosingTarget = target;
+    entranceClosingFrom = current;
+    entranceClosingTo = target ? 1 : 0;
+    entranceClosingAt = now;
+  }
+  return current;
+}
 const int32_t ENTRANCE_ANCHOR = 65000;
 const int32_t ENTRANCE_PHASE[139] PROGMEM = {
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,37,148,332,587,913,1309,1773,2306,2905,3570,4300,5094,5951,6869,7849,8889,9988,11145,12358,13628,14954,16333,17765,19250,20786,22372,24007,25691,27422,29199,31022,32889,34799,36752,38746,40781,42856,44968,47119,49306,51528,53785,56076,58399,60754,63140,65556,68000,70472,72971,75496,78045,80619,83215,85833,88472,91131,93809,96506,99219,101948,104692,107451,110222,113006,115801,118606,121420,124243,127072,129909,132750,135596,138445,141296,144149,147003,149855,152707,155556,158401,161242,164077,166906,169728,172541,175345,178139,180921,183691,186448,189191,191918,194630,197324,200000,202477,204593,206375,207852,209051,210000,210727,211259,211625,211852,211968,212000,211764,211111,210125,208889,207486,206000,204514,203111,201875,200889,200236,200000
@@ -149,6 +179,9 @@ void drawSceneEntrance() {
   const float phase = entrancePhasePosition;
   const float nx = sinf(-PI * phase);
   const float ny = -1.85f * cosf(-PI * phase);
+  const float closing = entranceClosingAmount();
+  const EntranceOrigin openingOrigin = entranceOrigin((.65f - phase) / .65f);
+  const EntranceOrigin closingOrigin = entranceOrigin(-phase);
   const float gate = entranceStrength() * (phase >= 0 ? entranceSmooth(phase / .2f) :
       entranceSmooth(-phase / .2f) * (1 - entranceSmooth((-phase - 1) / .2f)));
   for (uint16_t y = 0; y < MATRIX_HEIGHT; y++) {
@@ -159,7 +192,16 @@ void drawSceneEntrance() {
       const uint16_t reflected = entranceMirror ? y * MATRIX_WIDTH + MATRIX_WIDTH - 1 - x : index;
       if (entranceMirror && pgm_read_byte(&ENTRANCE_FIXED[reflected])) continue;
       const float day = entranceSmooth(((x * 50.0f / MATRIX_WIDTH - 24.5f) * nx + row) / 4);
-      const float visibility = 1 - gate * (phase >= 0 ? 1 - day : day);
+      float visibility = 1 - gate * (phase >= 0 ? 1 - day : day);
+      const float dx = x * 50.0f / MATRIX_WIDTH - 24.5f;
+      const float dy = (18.5f - y * 20.0f / MATRIX_HEIGHT) * 1.85f;
+      if (phase >= 0) {
+        visibility *= entranceOriginVisibility(openingOrigin, dx, dy);
+      }
+      if (phase > -1) {
+        const float closed = phase >= 0 ? 0 : (1 - day) * entranceSmooth(-phase / .2f) * entranceOriginVisibility(closingOrigin, dx, dy);
+        visibility += (closed - visibility) * closing * entranceSmooth((phase + 1) / .2f);
+      }
       const uint8_t *rgb = &entrancePixels[reflected * 3];
       strip.setPixelColor(physicalIndex(x, y), strip.Color(
           uint8_t(rgb[0] * visibility + .5f), uint8_t(rgb[1] * visibility + .5f),

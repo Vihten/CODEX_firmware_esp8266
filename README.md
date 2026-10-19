@@ -20,6 +20,24 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792402513472` separates the startup sky into ordered day and night
+passes. Unfilled areas are black: daylight is hidden during the lunar reveal
+and returns only after the full-night position. The continuous trajectory has
+no added night-zenith pause. Fixed space corners and the pyramid
+remain intact; masking fades away before the unchanged quota-dependent frame.
+
+The spin now flows into one short settling excursion with continuous velocity,
+instead of a fast rotation followed by a slow swing. Reverse playback retraces
+the same lower-left path, including interrupted memorial transitions.
+Palette, brightness, persistent settings and physical 30 FPS remain unchanged.
+
+Validation: ESP32-S3 PlatformIO build, 276 regression tests, targeted Dart
+analysis and captured renderer frames passed. Two existing skipped tests remain
+excluded, including the optional legacy ESP8266 build. Rendering uses bounded
+per-pixel arithmetic and no new allocations.
+
+## Previous Lower-Left Transition Release
+
 Version `1792400561623` removes the memorial's blue background: only the
 Ukraine outline, clock, candle and flame remain lit. The main sky transition
 now uses a fixed lower-left entry/exit anchor independent of quota, with day

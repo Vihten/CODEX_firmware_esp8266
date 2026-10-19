@@ -6,6 +6,7 @@
 namespace memorial {
 constexpr int kTextWidth = 20;
 constexpr int kTextHeight = 5;
+constexpr uint8_t kTextBlue = 190;
 
 // Ukraine including Crimea, rasterized for the physical 7 mm x 12 mm LED pitch.
 // Outline reference: johan/world.geo.json, countries/UKR.geo.json (Unlicense).
@@ -53,7 +54,7 @@ inline Palette palette(uint32_t elapsedMs, uint32_t durationMs) {
     return uint8_t(std::ceil(channel * fade));
   };
   return {{background(1), background(3), background(9)},
-          color(232, 219, 190), color(184, 170, 135),
+          color(232, 219, kTextBlue), color(184, 170, 135),
           color(118, 104, 78), color(218, 205, 173), color(95, 53, 20),
           color(255, 191, 66), color(229, 89, 14),
           color(63, 121, 184), color(173, 141, 57),
@@ -67,6 +68,32 @@ inline Pixel blend(Pixel under, Pixel over, float coverage) {
   };
   return {channel(under.red, over.red), channel(under.green, over.green),
           channel(under.blue, over.blue)};
+}
+
+inline uint32_t luminance(Pixel color) {
+  return uint32_t(color.red) * 54 + uint32_t(color.green) * 183 + uint32_t(color.blue) * 19;
+}
+
+inline uint8_t matchingGain(uint32_t reference, uint32_t scene) {
+  if (!scene || reference >= scene) return 255;
+  return uint8_t((uint64_t(reference) * 255 + scene / 2) / scene);
+}
+
+inline Pixel scalePixel(Pixel color, uint8_t gain) {
+  const auto channel = [gain](uint8_t value) {
+    return uint8_t((uint16_t(value) * gain + 127) / 255);
+  };
+  return {channel(color.red), channel(color.green), channel(color.blue)};
+}
+
+inline uint8_t readableGain(uint8_t gain, uint8_t brightness) {
+  if (!gain || !brightness) return gain;
+  // At very low global brightness, prevent the ivory text from quantizing
+  // entirely to black. The shared LED brightness still supplies the final gain.
+  const unsigned minimumChannel = (256U + brightness) / (unsigned(brightness) + 1);
+  const unsigned floor = (minimumChannel * 255 + kTextBlue - 1) / kTextBlue;
+  const unsigned bounded = floor > 255 ? 255 : floor;
+  return uint8_t(gain > bounded ? gain : bounded);
 }
 
 // Logical coordinates; wiring and the user's global brightness belong to the caller.

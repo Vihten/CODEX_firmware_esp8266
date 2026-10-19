@@ -20,6 +20,21 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792398844425` matches the memorial panel's average weighted RGB
+brightness to the current base animation. A uniform palette gain is captured
+once from the settled sky, or a validated source-frame fallback, excluding
+meteors and global brightness. Entry, exit and replay retain that gain so
+twinkling and telemetry cannot cause brightness pumping. The existing global
+brightness setting remains live and is applied exactly once by the LED driver.
+A bounded low-brightness visibility floor keeps the text from quantizing away.
+Normal animation colors, timing, 30 FPS and persistent settings are unchanged.
+
+Validation: ESP32-S3 PlatformIO build, all 184 ESP32-S3 tests and targeted
+analysis passed. Coverage includes day/night references, live
+dimming, minimum brightness, invalid assets and frozen gain through replay.
+
+## Previous Reverse Transition Release
+
 Version `1792397625522` adds the reverse memorial transition on natural expiry
 and early stop: the entire memorial panel slides upward, then the saved sky
 reopens along the original entrance curve. Interruptions reverse from the last

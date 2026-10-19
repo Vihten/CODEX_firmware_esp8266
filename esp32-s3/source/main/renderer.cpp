@@ -697,6 +697,25 @@ void stopMemorialMeteors() {
   meteorTouchedCount = 0;
 }
 
+uint8_t calculateMemorialBrightnessGain() {
+  if (!status.assetsReady) return 255;
+  const unsigned referenceFrame = min(unsigned(FRAME_COUNT - 1), unsigned(100 - min(control.remainingPercent, uint8_t(100))));
+  const uint8_t *reference = sceneVisible && sceneProgress == 4600
+      ? entrancePixels : assets.animation + referenceFrame * FRAME_BYTES;
+  const auto colors = memorial::palette(4000, 10000);
+  uint32_t referenceLight = 0, memorialLight = 0;
+  for (int y = 0; y < MATRIX_HEIGHT; ++y) {
+    for (int x = 0; x < MATRIX_WIDTH; ++x) {
+      const uint8_t *rgb = reference + (y * MATRIX_WIDTH + x) * 3;
+      referenceLight += memorial::luminance({rgb[0], rgb[1], rgb[2]});
+      memorialLight += memorial::luminance(memorial::pixel(x, y, MATRIX_WIDTH, MATRIX_HEIGHT, colors));
+    }
+  }
+  // Match the base scene, excluding meteor overlays and the user's global
+  // brightness. Capture once so twinkling or new telemetry cannot pump the gain.
+  return memorial::matchingGain(referenceLight, memorialLight);
+}
+
 void smoothMeteorPixel(float x, float y, const uint8_t *normal, const uint8_t *dark,
                        uint8_t opacity = 100, bool wake = false) {
   const auto sample = subpixel::footprint(x, y);
@@ -1050,6 +1069,7 @@ void renderTask(void *) {
   uint32_t memorialExitAt = 0, memorialExitFrom = 0;
   uint32_t memorialParkedAt = 0;
   bool memorialForceOff = false;
+  uint8_t memorialPaletteGain = 255;
   uint32_t previousRenderAt = millis();
   int64_t effectOrigin = esp_timer_get_time();
   int64_t deadline = effectOrigin;
@@ -1094,6 +1114,7 @@ void renderTask(void *) {
           memorialSceneTargetOn = sceneTargetOn;
           memorialSceneProgress = sceneProgress;
           memorialQuota = quotaFrameMilli;
+          memorialPaletteGain = calculateMemorialBrightnessGain();
           // Reserve at least half the remaining minute for the settled scene.
           memorialSlideMs = min(uint32_t(900), control.memorialDurationMs / 4);
           const uint32_t closeBudget = control.memorialDurationMs / 2 - memorialSlideMs;
@@ -1173,8 +1194,10 @@ void renderTask(void *) {
           const float offset = memorial::slideOffset(slide, memorialSlideMs, MATRIX_HEIGHT);
           // Movement now owns disappearance. Keep the palette fully lit, with
           // its original flame phase, instead of fading to black before exit.
+          const uint8_t paletteGain = memorial::readableGain(memorialPaletteGain, control.brightness);
           memorial::drawSliding(MATRIX_WIDTH, MATRIX_HEIGHT, 4000 + elapsed % 4000,
-                               10000, offset, [](int x, int y, memorial::Pixel color) {
+                               10000, offset, [paletteGain](int x, int y, memorial::Pixel color) {
+            color = memorial::scalePixel(color, paletteGain);
             strip.setPixelColor(physicalIndex(x, y), strip.Color(color.red, color.green, color.blue));
           });
         }

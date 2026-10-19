@@ -20,6 +20,20 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792392780201` adds an optional daily minute of silence at 09:00
+Kyiv time. The matrix displays a steady warm `9:00` above a shaded candle
+with a gently leaning flame, then returns to its previous scene after 60 seconds.
+Meteors pause during the commemoration. Settings include enable/save, manual
+preview and stop; the preference survives reboot in a separate NVS record.
+The feature is initially disabled. Automatic playback requires synchronized time
+and respects matrix power and schedule. Manual preview does not require NTP.
+
+Validation: ESP32-S3 PlatformIO build, native scheduler/network/renderer tests,
+portal script tests and web-bundle tests passed. The normal animation remains
+30 FPS with unchanged colors, brightness, Wi-Fi, agent and ranking settings.
+
+## Previous Online-First Release
+
 Version `1792157021571` lists connected agents before disconnected agents in
 both the management list and overview summary, including initial server-side
 rendering. Status polls update ordering without reload. Stable partitioning keeps

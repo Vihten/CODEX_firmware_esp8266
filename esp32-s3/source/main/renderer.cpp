@@ -3,6 +3,7 @@
 #include "led_output.hpp"
 #include "subpixel.hpp"
 #include "preview.hpp"
+#include "memorial_draw.hpp"
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
 #include "esp_log.h"
@@ -683,6 +684,18 @@ subpixel::Pixel meteorLayer[NUM_LEDS];
 uint16_t meteorTouched[128];
 uint16_t meteorTouchedCount = 0;
 
+void stopMemorialMeteors() {
+  // Discard flights and pending bursts; nothing observed during silence is queued.
+  for (auto &meteor : meteors) meteor = {};
+  for (auto &agent : directAgents) agent.schedule = {};
+  legacyMeteorSchedule = {};
+  meteorPairPrimed = false;
+  meteorMaintenancePending = false;
+  for (unsigned index = 0; index < meteorTouchedCount; ++index)
+    meteorLayer[meteorTouched[index]] = {};
+  meteorTouchedCount = 0;
+}
+
 void smoothMeteorPixel(float x, float y, const uint8_t *normal, const uint8_t *dark,
                        uint8_t opacity = 100, bool wake = false) {
   const auto sample = subpixel::footprint(x, y);
@@ -1027,6 +1040,8 @@ void renderTask(void *) {
   bool previousConnected = false;
   uint32_t acknowledgedEpoch = 0;
   bool parked = false;
+  bool memorialWasActive = false;
+  uint32_t previousRenderAt = millis();
   int64_t effectOrigin = esp_timer_get_time();
   int64_t deadline = effectOrigin;
   for (;;) {
@@ -1047,13 +1062,29 @@ void renderTask(void *) {
       status.maintenanceEpoch = acknowledgedEpoch;
     } else if (outputReady) {
       if (fresh) applyControlAgents();
+      const uint32_t now = millis();
+      const bool memorialActive = control.on && control.memorialActive &&
+          memorial::active(now, control.memorialStartedAt, control.memorialDurationMs);
+      const bool memorialTransition = memorialActive || memorialWasActive;
+      if (memorialActive && !memorialWasActive) stopMemorialMeteors();
+      if (memorialTransition) {
+        // Rebase through the exit frame too: neither scene nor effects catch up.
+        sceneTimelineAt = skySampleAt = now;
+        effectOrigin = started - (int64_t(effectTick) * 256 + effectSubTick) * 1000000 / (EVENT_FPS * 256);
+        if (ipHold && ipPresented) holdStarted += uint32_t(now - previousRenderAt);
+        lastMeteorMaintenanceAt = now;
+      }
+      previousRenderAt = now;
       const uint32_t previousTick = effectTick;
-      effectTick = uint64_t(started - effectOrigin) * EVENT_FPS / 1000000;
-      effectSubTick = (uint64_t(started - effectOrigin) * EVENT_FPS % 1000000) * 256 / 1000000;
+      if (!memorialTransition) {
+        effectTick = uint64_t(started - effectOrigin) * EVENT_FPS / 1000000;
+        effectSubTick = (uint64_t(started - effectOrigin) * EVENT_FPS % 1000000) * 256 / 1000000;
+      }
       effectFrameTicks = effectTick - previousTick;
       const bool maintenance = control.maintenance != Maintenance::None;
       const bool flying = meteorFlightInProgress();
-      if (maintenance && !flying && !sceneEntranceActive()) {
+      const bool maintenanceReady = maintenance && !flying && !sceneEntranceActive();
+      if (maintenanceReady || (maintenance && !flying && memorialTransition)) {
         // Persist freezes the last completed frame. OTA and restart ACK only
         // after a synchronous black transfer has completed successfully.
         bool complete = strip.isQuiescent();
@@ -1068,6 +1099,19 @@ void renderTask(void *) {
           status.quiescent = true;
           status.maintenanceEpoch = acknowledgedEpoch;
         }
+      } else if (memorialActive && !maintenance) {
+        strip.setBrightness(control.brightness);
+        memorial::draw(MATRIX_WIDTH, MATRIX_HEIGHT, uint32_t(now - control.memorialStartedAt),
+                       control.memorialDurationMs, [](int x, int y, memorial::Pixel color) {
+          strip.setPixelColor(physicalIndex(x, y), strip.Color(color.red, color.green, color.blue));
+        });
+        showFrame();
+      } else if (memorialWasActive && !control.on && !maintenance) {
+        sceneVisible = false;
+        sceneTargetOn = false;
+        sceneProgress = 0;
+        strip.clear();
+        showFrame();
       } else if (!status.assetsReady) {
         strip.clear();
         showFrame();
@@ -1114,6 +1158,7 @@ void renderTask(void *) {
           }
         }
       }
+      memorialWasActive = memorialActive;
     } else if (control.maintenance != Maintenance::None && strip.isQuiescent()) {
       // Failed initialization can ACK only when the adapter confirms no DMA.
       parked = true;

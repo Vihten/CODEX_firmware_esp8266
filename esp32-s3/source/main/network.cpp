@@ -4,6 +4,7 @@
 #include "weekly.hpp"
 #include "agent_update.hpp"
 #include "agent_release.hpp"
+#include "memorial.hpp"
 
 #include <algorithm>
 #include <array>
@@ -101,6 +102,7 @@ struct View {
   uint16_t start = 0, end = 0, disconnectReason = 0;
   uint8_t power = 0, days = 0;
   bool scheduleEnabled = false, dirty = false, nvsReady = false, restarting = false;
+  bool memorialEnabled = false, memorialManual = false, memorialSaveFailed = false;
   bool overrideColor[kAgentCapacity] = {};
   ColorOverride savedColors[kAgentCapacity] = {};
 };
@@ -111,6 +113,8 @@ struct Model {
   bool weeklyDirty = false, weeklySaveFailed = false;
   uint32_t weeklySavedAt = 0;
   Settings settings;
+  memorial::State memorial;
+  bool memorialEnabled = false, memorialDirty = false, memorialSaveFailed = false;
   ControlFrame control;
   RenderStatus render;
   Manifest manifest;
@@ -251,6 +255,46 @@ bool saveWeekly() {
   model.weeklyDirty = false;
   model.weeklySavedAt = uptimeMs();
   return true;
+}
+void loadMemorialSettings() {
+  if (!model.nvsReady) return;
+  nvs_handle_t handle;
+  const esp_err_t opened = nvs_open("led_forge_s3", NVS_READONLY, &handle);
+  if (opened == ESP_ERR_NVS_NOT_FOUND) return;
+  if (opened != ESP_OK) { model.memorialSaveFailed = true; return; }
+  uint32_t stored = 0; size_t size = sizeof(stored);
+  const esp_err_t result = nvs_get_blob(handle, "memorial", &stored, &size);
+  nvs_close(handle);
+  if (result == ESP_ERR_NVS_NOT_FOUND) return;
+  if (result == ESP_OK && size == sizeof(stored) && (stored & ~1U) == 0x4d450100U)
+    model.memorialEnabled = (stored & 1U) != 0;
+  else model.memorialSaveFailed = true;
+}
+bool saveMemorialSettings() {
+  if (!model.memorialDirty) return true;
+  if (!model.nvsReady) { model.memorialSaveFailed = true; return false; }
+  const uint32_t stored = 0x4d450100U | unsigned(model.memorialEnabled);
+  nvs_handle_t handle;
+  esp_err_t result = nvs_open("led_forge_s3", NVS_READWRITE, &handle);
+  if (result == ESP_OK) {
+    result = nvs_set_blob(handle, "memorial", &stored, sizeof(stored));
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  model.memorialSaveFailed = result != ESP_OK;
+  if (result != ESP_OK) return false;
+  model.memorialDirty = false;
+  return true;
+}
+memorial::Clock memorialClock() {
+  memorial::Clock clock;
+  const time_t now = std::time(nullptr);
+  if (now < 1700000000) return clock;
+  tm local{}; localtime_r(&now, &local);
+  clock.date = uint32_t((local.tm_year + 1900) * 10000 + (local.tm_mon + 1) * 100 + local.tm_mday);
+  clock.hour = uint8_t(local.tm_hour); clock.minute = uint8_t(local.tm_min); clock.second = uint8_t(local.tm_sec);
+  clock.valid = true;
+  return clock;
 }
 uint32_t currentWeek() {
   const time_t now = std::time(nullptr);
@@ -548,6 +592,10 @@ void updateControl() {
   if (remaining <= 100) model.control.remainingPercent = uint8_t(remaining);
   model.control.connected = model.connected; model.control.accountLinked = model.linked;
   model.control.brightness = model.settings.brightness; model.control.on = scheduledOn();
+  model.memorial.update(now, memorialClock(), model.memorialEnabled, model.control.on);
+  model.control.memorialActive = model.memorial.active;
+  model.control.memorialStartedAt = model.memorial.startedAt;
+  model.control.memorialDurationMs = model.memorial.durationMs;
   // Maintenance and its epoch are deliberately retained in every overwritten snapshot.
   xQueueOverwrite(controlQueue, &model.control);
 }
@@ -589,6 +637,8 @@ void publishView() {
   view.start = model.settings.start; view.end = model.settings.end; view.days = model.settings.days;
   view.scheduleEnabled = model.settings.scheduleEnabled; view.dirty = model.dirty; view.nvsReady = model.nvsReady;
   view.restarting = model.restarting; view.maintenanceTimeouts = model.maintenanceTimeouts; view.udpPackets = model.udpPackets;
+  view.memorialEnabled = model.memorialEnabled; view.memorialManual = model.memorial.manual;
+  view.memorialSaveFailed = model.memorialSaveFailed; view.dirty = view.dirty || model.memorialDirty;
   view.otaDone = model.otaDone; view.otaTotal = model.otaTotal; view.netStack = uxTaskGetStackHighWaterMark(nullptr);
   view.networkLoops = model.loops; view.disconnects = model.disconnects; view.disconnectReason = model.disconnectReason;
   for (size_t i = 0; i < kAgentCapacity; ++i) {
@@ -907,6 +957,7 @@ unsigned portalAgentCount(const View &view) {
 const char *portalMatrixState(const View &view) {
   if (!view.render.assetsReady || view.render.ledError) return "Помилка відмальовування";
   if (!view.control.on) return view.render.sceneVisible && view.render.sceneProgress ? "Вимикається" : "Вимкнено";
+  if (view.control.memorialActive) return "Хвилина мовчання";
   if (!view.render.sceneVisible) return "Показ IP-адреси";
   return view.render.sceneProgress < 4600 ? "Запускається" : "Увімкнено";
 }
@@ -1065,6 +1116,18 @@ void writeSettings(Html &html, const View &view) {
     }
   });
   html.file("templates/settings/ota-actions.html");
+  html.render("templates/settings/memorial.html", [&](unsigned token) {
+    if (token == 0) html.attribute(view.memorialEnabled ? "@checked" : "");
+    else if (token == 1) html.text(view.control.memorialActive ? "Відтворюється" : "Не відтворюється");
+    else if (token == 2) html.attribute(!view.control.on || view.control.memorialActive || view.restarting ||
+        view.control.maintenance != Maintenance::None ? "@disabled" : "");
+    else if (token == 3) html.attribute(!view.control.memorialActive || view.restarting ||
+        view.control.maintenance != Maintenance::None ? "@disabled" : "");
+    else if (token == 4) html.text(view.memorialSaveFailed ? "Не вдалося зберегти. Спробуйте ще раз." :
+        view.dirty ? "Збереження…" : "");
+    else if (token == 5) html.text(!view.control.on ? "Матриця вимкнена. Для відтворення ввімкніть її." :
+        std::time(nullptr) < 1700000000 ? "Очікування часу NTP. Ручне відтворення доступне." : "");
+  });
   html.file("templates/settings/system-open.html");
   html.render("templates/settings/device-id.html", [&](unsigned token) {
     switch (token) {
@@ -1321,6 +1384,19 @@ esp_err_t portalStatus(httpd_req_t *request) {
   else if (!cJSON_AddNullToObject(root, "remaining")) okay = false;
   boolean(root, "wifi", view.control.connected); boolean(root, "on", view.control.on);
   boolean(root, "maintenance", view.restarting || view.control.maintenance == Maintenance::Ota || view.control.maintenance == Maintenance::Restart);
+  cJSON *memorialStatus = cJSON_AddObjectToObject(root, "memorial");
+  if (!memorialStatus) okay = false;
+  else {
+    boolean(memorialStatus, "enabled", view.memorialEnabled);
+    boolean(memorialStatus, "active", view.control.memorialActive);
+    boolean(memorialStatus, "manual", view.memorialManual);
+    boolean(memorialStatus, "time_ready", std::time(nullptr) >= 1700000000);
+    boolean(memorialStatus, "saving", view.dirty);
+    boolean(memorialStatus, "save_failed", view.memorialSaveFailed);
+    const uint32_t elapsed = uptimeMs() - view.control.memorialStartedAt;
+    number(memorialStatus, "remaining_seconds", view.control.memorialActive && elapsed < view.control.memorialDurationMs
+        ? (view.control.memorialDurationMs - elapsed + 999) / 1000 : 0);
+  }
   string(root, "matrix", portalMatrixState(view)); string(root, "ota", view.ota); string(root, "ota_label", portalOtaLabel(view.ota));
   string(root, "power", view.power == 0 ? "auto" : view.power == 1 ? "on" : "off");
   char id[16], version[24]; std::snprintf(id, sizeof(id), "%06lX", (unsigned long)view.deviceId);
@@ -1690,6 +1766,17 @@ esp_err_t commandPost(httpd_req_t *request) {
     command.automatic = !std::strcmp(mode, "auto");
     if (!hexValue(form.get("client"), 8, 8, command.clientId) || (!command.automatic && std::strcmp(mode, "manual")) ||
         (!command.automatic && (color[0] != '#' || !hexValue(color + 1, 6, 6, command.rgb)))) return error(request, "400 Bad Request", "Invalid agent color.");
+  } else if (!std::strcmp(uri, "/memorial")) {
+    const char *mode = form.get("mode");
+    if (!std::strcmp(mode, "save")) {
+      const char *enabled = form.get("enabled");
+      if (enabled[0] && std::strcmp(enabled, "1")) return error(request, "400 Bad Request", "Invalid memorial setting.");
+      command.kind = CommandKind::MemorialSave; command.enabled = enabled[0] != 0;
+    } else if (!std::strcmp(mode, "play")) {
+      if (!view.control.on) return error(request, "409 Conflict", "Матриця вимкнена. Спочатку ввімкніть її.");
+      command.kind = CommandKind::MemorialPlay;
+    } else if (!std::strcmp(mode, "stop")) command.kind = CommandKind::MemorialStop;
+    else return error(request, "400 Bad Request", "Invalid memorial action.");
   } else if (!std::strcmp(uri, "/restart")) command.kind = CommandKind::Restart;
   else if (!std::strcmp(uri, "/update")) command.kind = CommandKind::Update;
   else return error(request, "404 Not Found", "Unknown command.");
@@ -1703,13 +1790,14 @@ esp_err_t commandPost(httpd_req_t *request) {
   if (!queued) return error(request, "503 Service Unavailable", unavailable ? "Controller maintenance; retry." : "Command queue full; retry.");
   httpd_resp_set_status(request, "303 See Other");
   httpd_resp_set_hdr(request, "Location", command.kind == CommandKind::Color ? "/agents" :
-      command.kind == CommandKind::Wifi || command.kind == CommandKind::Update || command.kind == CommandKind::Restart ? "/settings" : "/");
+      command.kind == CommandKind::Wifi || command.kind == CommandKind::Update || command.kind == CommandKind::Restart ||
+      command.kind == CommandKind::MemorialSave || command.kind == CommandKind::MemorialPlay || command.kind == CommandKind::MemorialStop ? "/settings" : "/");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store"); httpd_resp_set_hdr(request, "Connection", "close");
   return httpd_resp_send(request, nullptr, 0);
 }
 bool initializeHttp() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG(); config.core_id = 0; config.stack_size = 16384;
-  config.max_uri_handlers = 32; config.max_open_sockets = 4; config.lru_purge_enable = true;
+  config.max_uri_handlers = 36; config.max_open_sockets = 4; config.lru_purge_enable = true;
   config.recv_wait_timeout = 2; config.send_wait_timeout = 2;
   if (httpd_start(&model.http, &config) != ESP_OK) return false;
   const auto failed = []() { httpd_stop(model.http); model.http = nullptr; return false; };
@@ -1724,7 +1812,7 @@ bool initializeHttp() {
       !registerRoute("/device.png", HTTP_GET, deviceImage) ||
       !registerRoute("/favicon.svg", HTTP_GET, favicon) ||
       !registerRoute("/health", HTTP_GET, health) || !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
-  for (const char *uri : {"/save", "/power", "/brightness", "/schedule", "/agent-color", "/restart", "/update"})
+  for (const char *uri : {"/save", "/power", "/brightness", "/schedule", "/agent-color", "/restart", "/update", "/memorial"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();
   for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js", "/assets/js/boot.js"})
     if (!registerRoute(uri, HTTP_GET, staticAsset)) return failed();
@@ -1744,6 +1832,18 @@ void serviceCommands() {
   NetworkCommand command;
   for (unsigned count = 0; count < 8 && xQueueReceive(commandQueue, &command, 0) == pdTRUE; ++count) {
     switch (command.kind) {
+      case CommandKind::MemorialSave:
+        if (model.memorialEnabled != command.enabled || model.memorialSaveFailed) {
+          model.memorialEnabled = command.enabled; model.memorialDirty = true;
+        }
+        break;
+      case CommandKind::MemorialPlay:
+        if (!scheduledOn()) message("Матриця вимкнена. Спочатку ввімкніть її.");
+        else if (!model.memorial.start(uptimeMs())) message("Хвилина мовчання вже відтворюється.");
+        break;
+      case CommandKind::MemorialStop:
+        model.memorial.update(uptimeMs(), memorialClock(), model.memorialEnabled, scheduledOn());
+        model.memorial.stop(); break;
       case CommandKind::AgentPoll:
         if (knownAgent(model.control, command.clientId) || (command.agentActionAck && uninstallAcknowledgmentWindow(model.agentUpdates, command.clientId, uptimeMs())))
           model.agentUpdates.poll(command.clientId, command.agentVersion, uptimeMs(), command.agentNonceCounter,
@@ -2057,6 +2157,7 @@ void serviceMaintenance() {
         bool saved = !model.dirty || saveSettings();
         if (saved) refreshStationAfterSave();
         saved = saveWeekly() && saved;
+        saved = saveMemorialSettings() && saved;
         if (model.confirmationPending && std::strcmp(webFilesVersion(), "unavailable") && model.render.watchdogReady && model.render.assetsReady && model.render.frames && model.render.ledError == 0 && model.wifiReady && model.httpReady && model.udp >= 0) {
           if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) model.confirmationPending = false;
           else { message("Boot confirmation could not be persisted."); saved = false; }
@@ -2064,7 +2165,7 @@ void serviceMaintenance() {
         model.persistRetryAt = now + (saved ? 0 : 5000); releaseMaintenance(); break;
       }
       case Maintenance::Ota:
-        if (model.dirty || model.weeklyDirty || model.restarting) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.restarting || model.control.memorialActive) { releaseMaintenance(); break; }
         if (!model.render.assetsReady || model.render.ledError) {
           otaMessage("OTA refused: renderer unhealthy"); model.manifestReady = false; releaseMaintenance(); break;
         }
@@ -2073,7 +2174,7 @@ void serviceMaintenance() {
         installFirmware(); discardBlockedTelemetry();
         model.manifestReady = false; model.otaAt = uptimeMs() + 60000; releaseMaintenance(); break;
       case Maintenance::Restart:
-        if (model.dirty || model.weeklyDirty) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.memorialDirty) { releaseMaintenance(); break; }
         if (!activeHandlers.load() && !uxQueueMessagesWaiting(commandQueue)) esp_restart();
         else if (now - model.maintenanceAt >= kMaintenanceTimeout) {
           model.restarting = false; ++model.maintenanceTimeouts;
@@ -2092,16 +2193,17 @@ void serviceMaintenance() {
     return;
   }
   if ((model.dirty && now - model.dirtyAt >= 300 && due(now, model.persistRetryAt)) ||
+      (model.memorialDirty && due(now, model.persistRetryAt)) ||
       (model.weeklyDirty && (now - model.weeklySavedAt >= 300000 || model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
       (model.confirmationPending && std::strcmp(webFilesVersion(), "unavailable") && model.wifiReady && model.httpReady && model.udp >= 0 &&
        model.render.watchdogReady && model.render.assetsReady && model.render.frames && !model.render.ledError && due(now, model.persistRetryAt))) {
     requestMaintenance(Maintenance::Persist); return;
   }
   if (model.restarting) {
-    if (!model.dirty && !model.weeklyDirty && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
+    if (!model.dirty && !model.weeklyDirty && !model.memorialDirty && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
     return;
   }
-  if (model.manifestReady && !model.dirty && !model.weeklyDirty) { requestMaintenance(Maintenance::Ota); return; }
+  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.control.memorialActive) { requestMaintenance(Maintenance::Ota); return; }
   if (!model.connected || model.dirty || model.confirmationPending || !model.render.assetsReady || model.render.ledError) return;
   if (model.updateRequested || due(now, model.otaAt)) queueManifestCheck();
 }
@@ -2119,6 +2221,7 @@ void networkTask(void *) {
   loadSettings();
   loadAgentUpdateKey();
   loadWeekly();
+  loadMemorialSettings();
   const bool webReady = initializeWebFiles();
   if (!webReady) { message("Web filesystem initialization failed."); ESP_LOGE(kTag, "Web filesystem unavailable"); }
   model.wifiReady = initializeWifi();

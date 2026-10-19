@@ -27,6 +27,9 @@ struct ControlFrame {
   bool connected = false;
   bool accountLinked = false;
   bool on = true;
+  bool memorialActive = false;
+  uint32_t memorialStartedAt = 0;
+  uint32_t memorialDurationMs = 60000;
   Maintenance maintenance = Maintenance::None;
   uint32_t maintenanceEpoch = 0;
   char ip[16] = "192.168.4.1";
@@ -48,7 +51,7 @@ struct RenderStatus {
   bool sceneVisible = false;
 };
 
-enum class CommandKind : uint8_t { Wifi, Power, Brightness, Schedule, Color, Restart, Update, AgentPoll, AgentUpgrade, AgentRename, AgentUninstall };
+enum class CommandKind : uint8_t { Wifi, Power, Brightness, Schedule, Color, Restart, Update, AgentPoll, AgentUpgrade, AgentRename, AgentUninstall, MemorialSave, MemorialPlay, MemorialStop };
 struct NetworkCommand {
   uint64_t agentVersion = 0;
   uint64_t agentNonceCounter = 0;

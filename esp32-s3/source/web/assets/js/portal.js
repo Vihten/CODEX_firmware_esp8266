@@ -5,6 +5,7 @@
     const all = (selector, root = document) => Array.from(root.querySelectorAll(selector));
     const one = (selector, root = document) => root.querySelector(selector);
     const dirtyForms = new WeakSet();
+    const memorialForm = one('#memorial-settings');
     const liveNodes = new Map();
     all('[data-live]').forEach(node => {
       const key = node.dataset.live;
@@ -330,6 +331,25 @@
       if (range && !dirtyForms.has(range.closest('form')) && Number.isInteger(status.brightness) && status.brightness >= 0 && status.brightness <= 255) {
         range.value = String(status.brightness);
         text('#brightnessValue', `${Math.round(status.brightness * 100 / 255)}%`);
+      }
+      const memorial = status.memorial;
+      if (memorial && typeof memorial === 'object' && !Array.isArray(memorial) &&
+          ['enabled', 'active', 'manual', 'time_ready', 'saving', 'save_failed'].every(key => typeof memorial[key] === 'boolean') &&
+          Number.isInteger(memorial.remaining_seconds) && memorial.remaining_seconds >= 0 && memorial.remaining_seconds <= 60) {
+        const checkbox = memorialForm && one('input[name=enabled]', memorialForm);
+        if (checkbox && !dirtyForms.has(memorialForm)) checkbox.checked = memorial.enabled;
+        text('[data-memorial-state]', memorial.active ?
+          `${memorial.manual ? 'Перевірка' : 'Хвилина мовчання'} · ${memorial.remaining_seconds} с` : 'Не відтворюється');
+        all('[data-memorial-play]').forEach(button => {
+          button.disabled = status.on !== true || memorial.active || status.maintenance === true;
+        });
+        all('[data-memorial-stop]').forEach(button => {
+          button.disabled = !memorial.active || status.maintenance === true;
+        });
+        text('[data-memorial-save]', memorial.save_failed ? 'Не вдалося зберегти. Спробуйте ще раз.' :
+          memorial.saving ? 'Збереження…' : '');
+        text('[data-memorial-note]', status.on !== true ? 'Матриця вимкнена. Для відтворення ввімкніть її.' :
+          !memorial.time_ready ? 'Очікування часу NTP. Ручне відтворення доступне.' : '');
       }
       updateAgents(status.agents);
       updateWeekly(status.weekly, status.agents);

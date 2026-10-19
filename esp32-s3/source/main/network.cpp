@@ -960,7 +960,7 @@ const char *portalMatrixState(const View &view) {
   if (view.control.memorialActive) return "Хвилина мовчання";
   if (view.render.memorialTransition) return "Повернення до неба";
   if (!view.render.sceneVisible) return "Показ IP-адреси";
-  return view.render.sceneProgress < 4600 ? "Запускається" : "Увімкнено";
+  return view.render.sceneProgress < PROJECT_SCENE_DURATION_MS ? "Запускається" : "Увімкнено";
 }
 const char *portalOtaLabel(const char *value) {
   if (!std::strcmp(value, "Up to date")) return "Встановлено актуальну версію";

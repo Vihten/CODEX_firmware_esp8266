@@ -70,6 +70,7 @@ uint32_t effectFrameTicks = 1;
 uint8_t effectMask[NUM_LEDS];
 uint16_t physicalIndex(uint8_t x, uint8_t y);
 #if EVENT_MODE
+constexpr uint32_t SCENE_DURATION_MS = 4000UL;
 bool sceneVisible = false;
 bool sceneTargetOn = false;
 uint32_t sceneTimelineAt = 0;
@@ -85,7 +86,7 @@ float entranceSmooth(float value) {
   return t * t * (3 - 2 * t);
 }
 float entranceStrength() {
-  return entranceSmooth((4600.0f - sceneProgress) / 1000.0f);
+  return entranceSmooth((float(SCENE_DURATION_MS) - sceneProgress) / 1000.0f);
 }
 struct EntranceOrigin {
   float rayX, rayY, complete, reach;
@@ -115,7 +116,7 @@ float entranceClosingAmount() {
   const uint32_t now = millis();
   const bool target = !sceneTargetOn;
   // Both trajectories share their endpoints: no crossfade is needed there.
-  if (sceneProgress == 0 || sceneProgress >= 4600UL) {
+  if (sceneProgress == 0 || sceneProgress >= SCENE_DURATION_MS) {
     entranceClosingTarget = target;
     entranceClosingFrom = entranceClosingTo = target ? 1 : 0;
     entranceClosingAt = now;
@@ -132,16 +133,16 @@ float entranceClosingAmount() {
   return current;
 }
 const int32_t ENTRANCE_ANCHOR = 65000;
-const int32_t ENTRANCE_PHASE[139] PROGMEM = {
-0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,42,168,377,667,1037,1486,2013,2617,3296,4049,4876,5774,6743,7782,8889,10063,11303,12608,13976,15407,16900,18452,20063,21732,23457,25237,27072,28960,30899,32889,34928,37016,39150,41331,43556,45824,48135,50487,52878,55309,57777,60281,62820,65394,68000,70638,73306,76004,78729,81481,84260,87062,89888,92736,95605,98494,101401,104326,107266,110222,113192,116174,119168,122172,125185,128206,131234,134267,137305,140346,143388,146432,149475,152517,155556,158590,161620,164644,167659,170667,173664,176650,179624,182585,185531,188461,191374,194269,197145,200000,202781,205262,207258,208682,209538,209920,210000,209893,208999,206978,204078,200898,198133,196332,195647,195613,196019,197192,198876,200499,201522,201798,201718,201167,200297,199648,199500,199605,199895,200000
+const int32_t ENTRANCE_PHASE[121] PROGMEM = {
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,66,262,587,1037,1611,2306,3119,4049,5094,6250,7516,8889,10367,11948,13628,15407,17282,19250,21309,23457,25691,28009,30409,32889,35446,38077,40781,43556,46398,49306,52277,55309,58399,61546,64747,68000,71302,74651,78045,81481,84958,88472,92022,95605,99219,102861,106530,110222,113936,117670,121420,125185,128963,132750,136545,140346,144149,147954,151757,155556,159348,163133,166906,170667,174412,178139,181846,185531,189191,192824,196428,200000,203418,206223,208178,209316,209832,209984,210000,209893,208999,206978,204078,200898,198133,196332,195647,195613,196019,197192,198876,200499,201522,201798,201718,201167,200297,199648,199500,199605,199895,200000
 };
-const int32_t EXIT_PHASE[139] PROGMEM = {
-0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,33,131,294,520,810,1161,1574,2047,2579,3171,3820,4527,5290,6108,6981,7909,8889,9921,11005,12140,13325,14558,15840,17169,18545,19966,21433,22944,24498,26094,27732,29411,31130,32889,34686,36520,38392,40299,42241,44218,46229,48272,50347,52453,54590,56756,58951,61173,63423,65699,68000,70326,72676,75048,77443,79859,82296,84752,87228,89721,92232,94759,97302,99860,102431,105016,107613,110222,112842,115471,118110,120757,123412,126073,128740,131412,134089,136769,139451,142135,144821,147506,150191,152874,155556,158234,160908,163577,166241,168899,171549,174192,176826,179450,182063,184666,187256,189834,192398,194948,197482,200000,202460,204684,206538,207960,208952,209563,209874,209985,210000,209885,209236,207901,206033,203967,202099,200764,200115,200000
+const int32_t EXIT_PHASE[121] PROGMEM = {
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,49,193,432,764,1188,1703,2306,2996,3772,4632,5576,6601,7705,8889,10149,11486,12896,14379,15933,17557,19250,21009,22834,24723,26674,28687,30759,32889,35076,37318,39614,41962,44361,46809,49306,51848,54436,57068,59741,62455,65209,68000,70827,73690,76585,79513,82471,85458,88472,91513,94578,97666,100776,103907,107056,110222,113405,116601,119811,123032,126263,129503,132750,136003,139259,142519,145780,149040,152300,155556,158807,162052,165290,168520,171738,174945,178139,181318,184480,187626,190751,193857,196940,200000,202952,205475,207388,208679,209442,209821,209965,209998,210000,209885,209236,207901,206033,203967,202099,200764,200115,200000
 };
 
 int32_t entranceMotionPhase(uint32_t elapsed) {
   const float direction = entranceClosingAmount();
-  if (elapsed >= 4600UL) return 200000L;
+  if (elapsed >= SCENE_DURATION_MS) return 200000L;
   const uint32_t phaseTime = elapsed * 30;
   const uint16_t key = phaseTime / 1000;
   const int32_t fraction = phaseTime % 1000;
@@ -156,7 +157,7 @@ int32_t entranceMotionPhase(uint32_t elapsed) {
 }
 
 bool sceneEntranceActive() {
-  return sceneVisible && (sceneTargetOn ? sceneProgress < 4600UL : sceneProgress > 0);
+  return sceneVisible && (sceneTargetOn ? sceneProgress < SCENE_DURATION_MS : sceneProgress > 0);
 }
 
 void advanceSceneTimeline(bool targetOn) {
@@ -170,7 +171,7 @@ void advanceSceneTimeline(bool targetOn) {
   }
   entranceClosingAmount();
   if (targetOn) {
-    const uint32_t left = 4600UL - sceneProgress;
+    const uint32_t left = SCENE_DURATION_MS - sceneProgress;
     sceneProgress += delta < left ? delta : left;
   } else {
     sceneProgress -= delta < sceneProgress ? delta : sceneProgress;
@@ -208,7 +209,7 @@ void drawSceneVisibility() {
 }
 
 void drawSceneEntrance() {
-  if (sceneProgress >= 4600UL) return;
+  if (sceneProgress >= SCENE_DURATION_MS) return;
   memcpy(entranceMask, effectMask, sizeof(effectMask));
   const float phase = entrancePhasePosition;
   const float nx = sinf(-PI * phase);
@@ -748,7 +749,7 @@ uint32_t updateSkySample(uint16_t target, bool frozen) {
   skySampleAt = now;
   if (status.memorialTransition) return quotaFrameMilli;
   const uint32_t wanted = uint32_t(target) * 1000;
-  if (!skySampleReady || sceneProgress < 4600) {
+  if (!skySampleReady || sceneProgress < SCENE_DURATION_MS) {
     skySampleReady = true; quotaFrameMilli = wanted;
   } else if (!frozen) {
     const uint32_t distance = quotaFrameMilli > wanted ? quotaFrameMilli - wanted : wanted - quotaFrameMilli;
@@ -796,7 +797,7 @@ void stopMemorialMeteors() {
 uint8_t calculateMemorialBrightnessGain() {
   if (!status.assetsReady) return 255;
   const unsigned referenceFrame = min(unsigned(FRAME_COUNT - 1), unsigned(100 - min(control.remainingPercent, uint8_t(100))));
-  const uint8_t *reference = sceneVisible && sceneProgress == 4600
+  const uint8_t *reference = sceneVisible && sceneProgress == SCENE_DURATION_MS
       ? entrancePixels : assets.animation + referenceFrame * FRAME_BYTES;
   const auto colors = memorial::palette(4000, 10000);
   uint32_t referenceLight = 0, memorialLight = 0;
@@ -925,7 +926,7 @@ void drawEventEffects() {
   // The legacy network maintenance interval is now an explicit IPC request.
   lastMeteorMaintenanceAt = millis();
   meteorMaintenancePending = false;
-  updateMeteorScheduler(!status.memorialTransition && sceneProgress == 4600UL && matrixRequestsLight() && !otaCheckPending());
+  updateMeteorScheduler(!status.memorialTransition && sceneProgress == SCENE_DURATION_MS && matrixRequestsLight() && !otaCheckPending());
   for (const auto &meteor : meteors) if (meteor.active) drawSmoothMeteorWake(meteor);
   for (const auto &meteor : meteors) if (meteor.active) drawSmoothMeteor(meteor);
 }
@@ -1014,7 +1015,7 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
   frame = sceneFrameMilli / 1000;
   const uint32_t entranceElapsed = sceneProgress;
   const int32_t phase = entranceMotionPhase(entranceElapsed);
-  if (entranceElapsed < 4600UL) {
+  if (entranceElapsed < SCENE_DURATION_MS) {
     const int64_t unwrapped = ENTRANCE_ANCHOR + int64_t(int32_t(sceneFrameMilli) - 200000L - ENTRANCE_ANCHOR) * phase / 200000L;
     entrancePhasePosition = unwrapped / 100000.0f;
     int32_t position = (unwrapped % 200000L + 200000L) % 200000L;
@@ -1330,7 +1331,7 @@ void renderTask(void *) {
         if (ipHold && ipPresented && millis() - holdStarted >= 5000UL) ipHold = false;
         const bool requestedOn = control.on;
         if (sceneVisible) advanceSceneTimeline(maintenance ? sceneTargetOn
-            : requestedOn || (flying && sceneProgress == 4600UL));
+            : requestedOn || (flying && sceneProgress == SCENE_DURATION_MS));
         if (!requestedOn && (!sceneVisible || sceneProgress == 0)) {
           sceneVisible = false;
           strip.clear();

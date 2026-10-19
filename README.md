@@ -20,6 +20,28 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792418320059` speeds up the opening spin from 3000 to 2400 ms and
+the closing spin from 3400 to 2800 ms. Pyramid movement and the smooth damped
+settles retain their timing: two opening oscillations, one closing excursion.
+The complete transition now lasts 4000 ms rather than 4600 ms. Renderer,
+maintenance, memorial transitions and web status share the updated duration.
+
+The night background uses a darker deep-blue palette. Sixteen new isolated
+star positions join the existing artwork, with varied brightness and the
+existing independent twinkle effect. The exported full-night frame has 25
+star pixels. Exact background matching preserves the moon, sun, clouds,
+existing stars, pyramid and full daylight palette.
+
+The minimum visible blue PWM floor remains: at low configured brightness,
+the darkest night pixels may already be at the lowest nonzero LED output.
+No temporal dithering or new per-frame allocations are introduced.
+
+Validation: ESP32-S3 PlatformIO build, 295 regression tests, targeted Dart
+analysis and rendered artwork inspection passed; two existing tests remain
+skipped. Physical output stays at 30 FPS and saved settings are unchanged.
+
+## Previous Directional Settle Release
+
 Version `1792417273550` separates opening and closing motion. Opening settles
 through two damped oscillations with progressively smaller amplitudes; closing
 uses just one excursion. Quintic settle segments match velocity and acceleration

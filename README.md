@@ -20,6 +20,15 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792501600000` enables ESP-IDF's cross-signed certificate bundle
+verification for NEPTUN's Google Trust Services chain. The controller reported
+`MBEDTLS_ERR_X509_FATAL_ERROR` before receiving HTTP data with this SDK option
+disabled. Trusted CA and hostname checks remain enabled. The PSRAM allocation
+and bounded transport diagnostics are retained. PlatformIO build and 410
+firmware tests passed (two existing skips). Hardware verification follows OTA.
+
+## Previous TLS Diagnostic Release
+
 Version `1792501365000` adds the ESP-TLS error code, underlying mbedTLS code
 and certificate-verification flags to alert diagnostics. The PSRAM change
 is installed on the controller, but its HTTPS connection still fails before

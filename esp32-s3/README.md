@@ -117,6 +117,10 @@ an applicable whole-oblast alert (`вінницька`). No personal API token,
 LAN agent, running PC, phone or user-operated relay is required. Successful
 polls are spaced 15 seconds apart; failures back off and HTTP 429 respects
 Retry-After. Networking runs on core 0, separate from the 30 FPS renderer.
+ESP-IDF cross-signed certificate bundle verification is enabled for NEPTUN's
+Google Trust Services certificate chain. The full trusted CA bundle and
+hostname validation remain required; certificate verification is not bypassed.
+
 The bounded 64 KiB response buffer is allocated explicitly in PSRAM, not
 internal RAM needed by mbedTLS. TLS resources are released before JSON parsing.
 No internal-RAM fallback is attempted if PSRAM allocation fails. The status

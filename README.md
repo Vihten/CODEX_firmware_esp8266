@@ -20,6 +20,21 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792500934859` fixes the NEPTUN response buffer competing with TLS
+for internal RAM on the real S3 configuration (`SPIRAM_USE_CAPS_ALLOC`, not
+generic malloc). The bounded 64 KiB body now explicitly uses PSRAM, leaving
+internal memory for certificate-verified HTTPS. TLS resources are released
+before cJSON allocations; allocation failure never falls back to consuming
+the internal heap. HTTP/parser/deadline limits and retained active warnings
+are unchanged. The status API adds failure stage, HTTP status and poll time;
+the portal distinguishes memory, DNS, TLS and timeout failures.
+Validation: PlatformIO build, native export, 408 firmware tests (two existing
+skips) and targeted Dart analysis passed. Native cases check PSRAM capability
+flags, allocation failure/recovery, TLS destruction before JSON allocation,
+JSON OOM cleanup and failure telemetry. Hardware verification follows OTA.
+
+## Previous Tokenless NEPTUN Release
+
 Version `1792499622473` receives Vinnytskyi district air-alert data directly
 from NEPTUN, without a personal API token, running PC, phone or LAN relay.
 Certificate-verified HTTPS polling runs on the network core every 15 seconds

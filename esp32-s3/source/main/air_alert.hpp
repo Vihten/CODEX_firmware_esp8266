@@ -6,6 +6,22 @@
 namespace air_alert {
 
 enum class Level : uint8_t { Clear = 0, Yellow = 1, Red = 2, Unknown = 3, Unspecified = 4 };
+enum class Failure : uint8_t { None, Memory, Dns, Tls, Write, Read, Http, Payload, Timeout };
+
+constexpr const char *failureName(Failure failure) {
+  switch (failure) {
+    case Failure::None: return "none";
+    case Failure::Memory: return "memory";
+    case Failure::Dns: return "dns";
+    case Failure::Tls: return "tls";
+    case Failure::Write: return "write";
+    case Failure::Read: return "read";
+    case Failure::Http: return "http";
+    case Failure::Payload: return "payload";
+    case Failure::Timeout: return "timeout";
+  }
+  return "unknown";
+}
 
 struct PollJob {
   uint32_t generation = 0;
@@ -16,6 +32,8 @@ struct PollResult {
   Level level = Level::Unknown;
   int httpStatus = 0;
   bool valid = false;
+  Failure failure = Failure::None;
+  uint32_t elapsedMs = 0;
   uint32_t retryAfterMs = 30000;
 };
 

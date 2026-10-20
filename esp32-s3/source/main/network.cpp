@@ -113,6 +113,9 @@ struct View {
   bool memorialEnabled = false, memorialManual = false, memorialSaveFailed = false;
   bool airEnabled = false, airManual = false, airFresh = false, airSaveFailed = false;
   uint8_t airLevel = 0;
+  air_alert::Failure airFailure = air_alert::Failure::None;
+  int airHttpStatus = 0;
+  uint32_t airPollMs = 0;
   uint32_t airAge = UINT32_MAX, airRemaining = 0;
   char airStatus[96] = {}, airDetails[160] = {}, airSource[96] = {};
   bool overrideColor[kAgentCapacity] = {};
@@ -132,6 +135,8 @@ struct Model {
   bool airDirty = false, airSaveFailed = false, airWorkerReady = false, airFetchFailed = false;
   uint32_t airGeneration = 1, airNextAt = 0;
   int airHttpStatus = 0;
+  air_alert::Failure airFailure = air_alert::Failure::None;
+  uint32_t airPollMs = 0;
   ControlFrame control;
   RenderStatus render;
   Manifest manifest;
@@ -345,6 +350,8 @@ void serviceAirAlert() {
     if (result.generation != model.airGeneration) continue;
     model.air.accept(result.level, result.valid, now);
     model.airHttpStatus = result.httpStatus;
+    model.airFailure = result.failure;
+    model.airPollMs = result.elapsedMs;
     model.airFetchFailed = !result.valid;
     model.airNextAt = now + std::min(uint32_t(86400000), std::max(kAirPollIntervalMs, result.retryAfterMs));
   }
@@ -365,6 +372,9 @@ void fillAirAlertView(View &view) {
   view.airFresh = model.air.fresh(now, model.connected, !model.airFetchFailed);
   view.airSaveFailed = model.airSaveFailed;
   view.airLevel = model.control.airAlertLevel;
+  view.airFailure = model.airFailure;
+  view.airHttpStatus = model.airHttpStatus;
+  view.airPollMs = model.airPollMs;
   view.airRemaining = model.air.remainingSeconds(now);
   view.airAge = model.air.seen ? (now - model.air.checkedAt) / 1000 : UINT32_MAX;
   copy(view.airStatus, !view.airEnabled && !view.airManual ? "Вимкнено" :
@@ -375,7 +385,12 @@ void fillAirAlertView(View &view) {
       !model.connected ? "Немає Wi-Fi" :
       !model.airWorkerReady ? "Сервіс перевірки недоступний" :
       model.airHttpStatus == 401 || model.airHttpStatus == 403 ? "NEPTUN: доступ тимчасово недоступний" :
-      model.airHttpStatus == 429 ? "Ліміт запитів: очікування повтору" : model.airFetchFailed ? "Помилка оновлення" :
+      model.airHttpStatus == 429 ? "Ліміт запитів: очікування повтору" :
+      model.airFetchFailed && model.airFailure == air_alert::Failure::Memory ? "Недостатньо пам’яті для перевірки" :
+      model.airFetchFailed && model.airFailure == air_alert::Failure::Tls ? "Помилка захищеного з’єднання HTTPS" :
+      model.airFetchFailed && model.airFailure == air_alert::Failure::Dns ? "Не вдалося знайти сервер NEPTUN" :
+      model.airFetchFailed && model.airFailure == air_alert::Failure::Timeout ? "Перевищено час очікування NEPTUN" :
+      model.airFetchFailed ? "Помилка оновлення" :
       view.airFresh ? "Дані NEPTUN отримано" : model.air.seen ? "Дані застаріли" : "Очікування NEPTUN");
   copy(view.airDetails, model.airSaveFailed ? "Налаштування не збережено. Спробуйте ще раз." :
       model.airDirty ? "Збереження…" : !model.control.on ? "Матриця вимкнена за розкладом або вручну." :
@@ -1526,6 +1541,9 @@ esp_err_t portalStatus(httpd_req_t *request) {
     string(airStatus, "status", view.airStatus);
     string(airStatus, "source_status", view.airSource);
     string(airStatus, "details", view.airDetails);
+    string(airStatus, "failure", air_alert::failureName(view.airFailure));
+    number(airStatus, "http_status", view.airHttpStatus);
+    number(airStatus, "poll_ms", view.airPollMs);
     number(airStatus, "remaining_seconds", view.airRemaining);
     if (view.airAge == UINT32_MAX) { if (!cJSON_AddNullToObject(airStatus, "updated_age_seconds")) okay = false; }
     else number(airStatus, "updated_age_seconds", view.airAge);

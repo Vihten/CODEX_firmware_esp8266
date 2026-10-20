@@ -10,6 +10,7 @@
 
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_tls.h"
 #include "freertos/FreeRTOS.h"
@@ -91,8 +92,8 @@ bool resolve(char *address, size_t capacity, int64_t deadline) {
 }
 
 struct Response {
-  char *body = static_cast<char *>(std::malloc(kBodyLimit + 1));
-  ~Response() { std::free(body); }
+  char *body = static_cast<char *>(heap_caps_malloc(kBodyLimit + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  ~Response() { heap_caps_free(body); }
   Response() = default;
   Response(const Response &) = delete;
   Response &operator=(const Response &) = delete;
@@ -195,13 +196,21 @@ bool wantsIo(int result) {
 PollResult poll(const PollJob &job) {
   PollResult result;
   result.generation = job.generation;
-  const int64_t deadline = esp_timer_get_time() + kDeadlineUs;
+  const int64_t started = esp_timer_get_time();
+  const int64_t deadline = started + kDeadlineUs;
+  const auto finish = [&]() {
+    result.elapsedMs = uint32_t((esp_timer_get_time() - started) / 1000);
+    return result;
+  };
   Response r;
-  if (!r.body) return result;
+  if (!r.body) { result.failure = Failure::Memory; return finish(); }
   char address[48] = {};
-  if (!resolve(address, sizeof(address), deadline)) return result;
+  if (!resolve(address, sizeof(address), deadline)) {
+    result.failure = esp_timer_get_time() >= deadline ? Failure::Timeout : Failure::Dns;
+    return finish();
+  }
   esp_tls_t *tls = esp_tls_init();
-  if (!tls) return result;
+  if (!tls) { result.failure = Failure::Memory; return finish(); }
   esp_tls_cfg_t config{};
   config.non_block = true;
   config.timeout_ms = 4000;
@@ -217,8 +226,9 @@ PollResult poll(const PollJob &job) {
     vTaskDelay(1);
   }
   if (connected != 1 || esp_timer_get_time() >= deadline) {
+    result.failure = esp_timer_get_time() >= deadline ? Failure::Timeout : Failure::Tls;
     esp_tls_conn_destroy(tls);
-    return result;
+    return finish();
   }
   constexpr size_t requestSize = sizeof(kRequest) - 1;
   size_t sent = 0;
@@ -257,6 +267,8 @@ PollResult poll(const PollJob &job) {
   }
   result.httpStatus = int(r.status);
   if (r.status == 429) result.retryAfterMs = r.retry;
+  // TLS owns sizable internal buffers: release them before allocating cJSON nodes.
+  esp_tls_conn_destroy(tls);
   if (parsed && r.complete && !r.bad && r.status == 200 && esp_timer_get_time() < deadline)
     result.valid = parseBody(r.body, r.used, result.level);
   if (result.valid && esp_timer_get_time() >= deadline) {
@@ -264,8 +276,10 @@ PollResult poll(const PollJob &job) {
     result.level = Level::Unknown;
   }
   if (result.valid) result.retryAfterMs = 15000;
-  esp_tls_conn_destroy(tls);
-  return result;
+  else result.failure = esp_timer_get_time() >= deadline ? Failure::Timeout :
+      sent != requestSize ? Failure::Write : r.status && r.status != 200 ? Failure::Http :
+      !parsed || !r.complete ? Failure::Read : Failure::Payload;
+  return finish();
 }
 
 void worker(void *) {

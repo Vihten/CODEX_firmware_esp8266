@@ -117,6 +117,10 @@ an applicable whole-oblast alert (`вінницька`). No personal API token,
 LAN agent, running PC, phone or user-operated relay is required. Successful
 polls are spaced 15 seconds apart; failures back off and HTTP 429 respects
 Retry-After. Networking runs on core 0, separate from the 30 FPS renderer.
+The bounded 64 KiB response buffer is allocated explicitly in PSRAM, not
+internal RAM needed by mbedTLS. TLS resources are released before JSON parsing.
+No internal-RAM fallback is attempted if PSRAM allocation fails. The status
+object exposes `failure`, `http_status` and `poll_ms` for transport diagnosis.
 
 The Settings page enables the feature and offers bounded manual previews.
 Explicit drone/missile reasons select the existing yellow drone/red rocket;

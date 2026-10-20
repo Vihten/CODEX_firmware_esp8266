@@ -20,6 +20,24 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792491351127` replaces solid corner fill with compact mirrored
+pixel-art glyphs: a yellow delta-wing drone for yellow level, a red rocket
+for red level and a grey question mark for unknown data. These are symbolic
+level labels, not independent confirmation of a weapon type; the web settings
+state this explicitly. Provider polling and real-alert/demo priority are unchanged.
+
+Glyphs and their dark backdrop remain strictly inside the existing 44 corner
+pixels. The sky and all foreground artwork remain untouched. The last glyph
+is retained during the 600 ms clear fade so its body cannot disappear before
+the fade finishes. The original corner artwork returns after clear/disable.
+Brightness, off/schedule gating and physical 30 FPS output are unchanged.
+Validation: PlatformIO build, 384 firmware tests (two existing skips),
+56 browser-script checks, targeted Dart analysis, allocation/mask/fade
+regressions and native frame inspection passed. Physical appearance and
+installation remain separate on-device checks.
+
+## Previous Corner Indicator Release
+
 Version `1792487114081` restores the original day/night scene and moves
 air-alert indication entirely into both upper rounded corner regions.
 Each corner follows the fixed hemisphere boundary (row widths 7, 5, 4, 3,

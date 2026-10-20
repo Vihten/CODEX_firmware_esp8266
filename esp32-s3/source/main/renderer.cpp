@@ -1019,10 +1019,12 @@ void drawAirAlertIndicator(bool /* alternateScreen */) {
       if (!air_alert::cornerPixel(x, y, MATRIX_WIDTH, MATRIX_HEIGHT)) continue;
       const unsigned index = y * MATRIX_WIDTH + x;
       if (!pgm_read_byte(&ENTRANCE_FIXED[index])) continue;
+      const unsigned localX = x < MATRIX_WIDTH / 2 ? x : MATRIX_WIDTH - 1 - x;
+      const bool ink = air_alert::iconPixel(airAlertVisual.glyphLevel(), localX, y);
       uint8_t *grb = pixels + physicalIndex(x, y) * 3;
-      grb[0] = air_alert::composite(grb[0], overlay.green, overlay.amount, control.brightness);
-      grb[1] = air_alert::composite(grb[1], overlay.red, overlay.amount, control.brightness);
-      grb[2] = air_alert::composite(grb[2], overlay.blue, overlay.amount, control.brightness);
+      grb[0] = air_alert::composite(grb[0], ink ? overlay.green : 0, overlay.amount, control.brightness);
+      grb[1] = air_alert::composite(grb[1], ink ? overlay.red : 0, overlay.amount, control.brightness);
+      grb[2] = air_alert::composite(grb[2], ink ? overlay.blue : 0, overlay.amount, control.brightness);
     }
 }
 

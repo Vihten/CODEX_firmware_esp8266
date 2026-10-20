@@ -24,6 +24,7 @@ class Visual {
     level = level <= 3 ? level : 3;
     if (level != level_) {
       level_ = level;
+      if (level) glyphLevel_ = level;
       from_ = to_ = current_;
       to_.amount = level ? 1.0f : 0.0f;
       if (level == 1) { to_.red = 96; to_.green = 67; to_.blue = 0; }
@@ -34,11 +35,13 @@ class Visual {
     return current_;
   }
   Overlay overlay() const { return current_; }
+  uint8_t glyphLevel() const { return glyphLevel_; }
 
  private:
   Overlay from_, to_, current_;
   uint32_t startedAt_ = 0;
   uint8_t level_ = 0;
+  uint8_t glyphLevel_ = 0;
 };
 
 inline bool cornerPixel(unsigned x, unsigned y, unsigned width, unsigned height) {
@@ -50,6 +53,19 @@ inline bool cornerPixel(unsigned x, unsigned y, unsigned width, unsigned height)
 
 inline bool indicatorVisible(float amount, bool on, bool maintenance, uint8_t brightness) {
   return amount > 0 && on && !maintenance && brightness;
+}
+
+inline bool iconPixel(uint8_t level, unsigned x, unsigned y) {
+  if (x >= 7 || y >= 6 || !cornerPixel(x, y, 50, 20)) return false;
+  // Local coordinates face outward; the renderer mirrors the right glyph.
+  constexpr uint8_t drone[] = {
+      0b0010001, 0b0001010, 0b0001100, 0b0000110, 0b0000001, 0};
+  constexpr uint8_t rocket[] = {
+      0b0100000, 0b0011000, 0b0001101, 0b0000110, 0b0000011, 0b0000001};
+  constexpr uint8_t unknown[] = {
+      0b0000111, 0b0000100, 0b0000010, 0, 0b0000010, 0};
+  const uint8_t *glyph = level == 1 ? drone : level == 2 ? rocket : level == 3 ? unknown : nullptr;
+  return glyph && (glyph[y] & (1U << x));
 }
 
 // The background is already brightness-scaled GRB. Never rescale the scene.

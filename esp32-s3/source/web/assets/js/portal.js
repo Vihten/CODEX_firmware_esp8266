@@ -6,6 +6,7 @@
     const one = (selector, root = document) => root.querySelector(selector);
     const dirtyForms = new WeakSet();
     const memorialForm = one('#memorial-settings');
+    const airAlertForm = one('#air-alert-settings');
     const liveNodes = new Map();
     all('[data-live]').forEach(node => {
       const key = node.dataset.live;
@@ -351,6 +352,34 @@
         text('[data-memorial-note]', status.on !== true ? 'Матриця вимкнена. Для відтворення ввімкніть її.' :
           !memorial.time_ready ? 'Очікування часу NTP. Ручне відтворення доступне.' : '');
       }
+      const airAlert = status.air_alert;
+      if (airAlertForm && airAlert && typeof airAlert === 'object' && !Array.isArray(airAlert) &&
+          ['enabled', 'token_configured', 'manual', 'fresh', 'save_failed'].every(key => typeof airAlert[key] === 'boolean') &&
+          ['clear', 'yellow', 'red', 'unknown'].includes(airAlert.level) &&
+          Number.isInteger(airAlert.remaining_seconds) && airAlert.remaining_seconds >= 0 && airAlert.remaining_seconds <= 60 &&
+          (airAlert.updated_age_seconds === null || (finite(airAlert.updated_age_seconds) && airAlert.updated_age_seconds >= 0)) &&
+          ['source_status', 'status', 'details'].every(key => typeof airAlert[key] === 'string')) {
+        const checkbox = airAlertForm && one('input[name=enabled]', airAlertForm);
+        if (checkbox && !dirtyForms.has(airAlertForm)) checkbox.checked = airAlert.enabled;
+        // A stale clear response must never read as an all-clear.
+        const labels = {clear: 'Тривоги не зафіксовано', yellow: 'Жовтий рівень', red: 'Червоний рівень', unknown: 'Немає даних'};
+        const unknown = airAlert.level === 'unknown' || (airAlert.enabled === true && !airAlert.fresh && airAlert.level === 'clear');
+        text('[data-air-alert-state]', unknown ? 'Немає актуальних даних' : airAlert.status || labels[airAlert.level]);
+        text('[data-air-alert-token]', airAlert.token_configured ? 'Токен збережено' : 'Токен не налаштовано');
+        text('[data-air-alert-note]', [airAlert.save_failed ? 'Не вдалося зберегти. Спробуйте ще раз.' : '',
+          airAlert.source_status, airAlert.details,
+          status.maintenance === true ? 'Контролер зайнятий. Тест недоступний.' :
+          status.on !== true ? 'Матриця вимкнена. Для тесту ввімкніть її.' : ''].filter(Boolean).join(' · '));
+        text('[data-air-alert-updated]', airAlert.updated_age_seconds === null ? 'Оновлення: ще немає даних' :
+          `Оновлено ${integer.format(Math.floor(airAlert.updated_age_seconds))} с тому${airAlert.fresh ? '' : ' · дані застаріли'}`);
+        text('[data-air-alert-manual]', airAlert.manual ? `Ручний тест · ${airAlert.remaining_seconds} с` : 'Ручний тест не активний');
+        all('[data-air-alert-play]').forEach(button => { button.disabled = status.on !== true || status.maintenance === true; });
+        all('[data-air-alert-stop]').forEach(button => { button.disabled = !airAlert.manual || status.maintenance === true; });
+      } else if (airAlertForm) {
+        text('[data-air-alert-state]', 'Немає актуальних даних');
+        text('[data-air-alert-updated]', 'Очікування коректних даних контролера');
+        all('[data-air-alert-play],[data-air-alert-stop]').forEach(button => { button.disabled = true; });
+      }
       updateAgents(status.agents);
       updateWeekly(status.weekly, status.agents);
     };
@@ -400,6 +429,8 @@
           baseline = null;
           live('fps', missing);
           text('[data-weekly-state]', 'Не вдалося оновити рейтинг. Спробуйте ще раз.');
+          text('[data-air-alert-state]', 'Немає актуальних даних');
+          text('[data-air-alert-updated]', 'Зв’язок із контролером втрачено');
           connection(request.reason === 'timeout' ? 'Контролер не відповів вчасно' : 'Не вдалося оновити дані', 'error');
         }
       } finally {

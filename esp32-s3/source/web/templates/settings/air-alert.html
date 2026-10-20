@@ -1,0 +1,28 @@
+<section class='section' aria-labelledby='air-alert-heading'>
+  <div class='section-head'><h2 id='air-alert-heading'>Повітряна тривога</h2></div>
+  <p class='muted'>Вінниця та Вінницька громада · Джерело: <a href='https://alerts.in.ua/' target='_blank' rel='noopener noreferrer'>alerts.in.ua</a></p>
+  <form id='air-alert-settings' method='post' action='/air-alert'>
+    <label class='checkbox-label'><input type='checkbox' name='enabled' value='1' {{0}}>Показувати тривоги на матриці</label>
+    <div class='field'>
+      <label for='air-alert-token'>API-токен<input id='air-alert-token' type='password' name='api_token' maxlength='128' autocomplete='off' spellcheck='false' aria-describedby='air-alert-token-help air-alert-token-state'></label>
+      <p id='air-alert-token-help' class='muted'>Порожнє поле залишає збережений токен. <a href='https://alerts.in.ua/api-request' target='_blank' rel='noopener noreferrer'>Отримати токен</a></p>
+      <p class='muted'>Вводьте токен лише у довіреній локальній мережі: вебсторінка використовує HTTP без шифрування.</p>
+      <p id='air-alert-token-state' class='muted' data-air-alert-token>{{2}}</p>
+    </div>
+    <label class='checkbox-label'><input type='checkbox' name='clear_token' value='1'>Видалити збережений токен</label>
+    <button type='submit' name='mode' value='save'>Зберегти</button>
+  </form>
+  <p class='muted' data-air-alert-note role='status'>{{3}}</p>
+  <p data-air-alert-state role='status'>{{1}}</p>
+  <p class='muted' data-air-alert-updated>{{6}}</p>
+  <form method='post' action='/air-alert'>
+    <div class='actions'>
+      <button type='submit' name='mode' value='yellow' data-air-alert-play {{4}}>Жовтий тест · 60 с</button>
+      <button type='submit' name='mode' value='red' data-air-alert-play {{4}}>Червоний тест · 60 с</button>
+      <button type='submit' name='mode' value='stop' class='secondary' data-air-alert-stop {{5}}>Зупинити тест</button>
+    </div>
+  </form>
+  <p class='muted' data-air-alert-manual>{{7}}</p>
+  <p class='muted'>Ручний тест не знижує рівень реальної червоної тривоги.</p>
+  <p class='muted'>Допоміжна індикація не замінює офіційні сповіщення. Відсутність даних не означає відбій.</p>
+</section>

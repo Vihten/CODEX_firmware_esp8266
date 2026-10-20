@@ -5,6 +5,7 @@
 #include "agent_update.hpp"
 #include "agent_release.hpp"
 #include "memorial.hpp"
+#include "air_alert.hpp"
 
 #include <algorithm>
 #include <array>
@@ -54,6 +55,11 @@ constexpr uint32_t kOtaInterval = 15 * 60 * 1000;
 constexpr uint16_t kUdpPort = 4210;
 constexpr uint32_t kSettingsMagic = 0x4c465333;
 struct ColorOverride { uint32_t clientId; uint32_t rgb; uint8_t used; uint8_t reserved[3]; };
+struct AirAlertSettings {
+  uint32_t magic = 0x414c0100;
+  uint8_t enabled = 0;
+  char token[129] = {};
+};
 struct Settings {
   uint32_t magic = kSettingsMagic;
   uint16_t schema = 1;
@@ -103,6 +109,10 @@ struct View {
   uint8_t power = 0, days = 0;
   bool scheduleEnabled = false, dirty = false, nvsReady = false, restarting = false;
   bool memorialEnabled = false, memorialManual = false, memorialSaveFailed = false;
+  bool airEnabled = false, airTokenConfigured = false, airManual = false, airFresh = false, airSaveFailed = false;
+  uint8_t airLevel = 0;
+  uint32_t airAge = UINT32_MAX, airRemaining = 0;
+  char airStatus[96] = {}, airDetails[160] = {}, airSource[96] = {};
   bool overrideColor[kAgentCapacity] = {};
   ColorOverride savedColors[kAgentCapacity] = {};
 };
@@ -115,6 +125,11 @@ struct Model {
   Settings settings;
   memorial::State memorial;
   bool memorialEnabled = false, memorialDirty = false, memorialSaveFailed = false;
+  AirAlertSettings airSettings;
+  air_alert::State air;
+  bool airDirty = false, airSaveFailed = false, airWorkerReady = false, airFetchFailed = false;
+  uint32_t airGeneration = 1, airNextAt = 0;
+  int airHttpStatus = 0;
   ControlFrame control;
   RenderStatus render;
   Manifest manifest;
@@ -285,6 +300,90 @@ bool saveMemorialSettings() {
   if (result != ESP_OK) return false;
   model.memorialDirty = false;
   return true;
+}
+bool validAirToken(const char *value) {
+  const size_t length = std::strlen(value);
+  if (length > 128) return false;
+  for (size_t i = 0; i < length; ++i)
+    if (uint8_t(value[i]) < 33 || uint8_t(value[i]) > 126) return false;
+  return true;
+}
+void loadAirAlertSettings() {
+  if (!model.nvsReady) return;
+  nvs_handle_t handle;
+  const auto opened = nvs_open("led_forge_s3", NVS_READONLY, &handle);
+  if (opened == ESP_ERR_NVS_NOT_FOUND) return;
+  if (opened != ESP_OK) { model.airSaveFailed = true; return; }
+  AirAlertSettings stored; size_t size = sizeof(stored);
+  const auto result = nvs_get_blob(handle, "air_alert", &stored, &size);
+  nvs_close(handle);
+  if (result == ESP_ERR_NVS_NOT_FOUND) return;
+  if (result != ESP_OK || size != sizeof(stored) || stored.magic != 0x414c0100 ||
+      stored.enabled > 1 || !std::memchr(stored.token, 0, sizeof(stored.token)) || !validAirToken(stored.token)) {
+    model.airSaveFailed = true; return;
+  }
+  model.airSettings = stored;
+}
+bool saveAirAlertSettings() {
+  if (!model.airDirty) return true;
+  if (!model.nvsReady) { model.airSaveFailed = true; return false; }
+  nvs_handle_t handle;
+  esp_err_t result = nvs_open("led_forge_s3", NVS_READWRITE, &handle);
+  if (result == ESP_OK) {
+    result = nvs_set_blob(handle, "air_alert", &model.airSettings, sizeof(model.airSettings));
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  model.airSaveFailed = result != ESP_OK;
+  if (result != ESP_OK) return false;
+  model.airDirty = false;
+  return true;
+}
+void serviceAirAlert() {
+  const uint32_t now = uptimeMs();
+  model.air.expire(now);
+  air_alert::PollResult result;
+  while (air_alert::receive(result)) {
+    if (result.generation != model.airGeneration) continue;
+    model.air.accept(result.level, result.valid, now);
+    model.airHttpStatus = result.httpStatus;
+    model.airFetchFailed = !result.valid;
+    model.airNextAt = now + std::min(uint32_t(86400000), std::max(uint32_t(30000), result.retryAfterMs));
+  }
+  if (!model.airWorkerReady || !model.airSettings.enabled || !model.airSettings.token[0] ||
+      !model.connected || model.airDirty || model.restarting || model.manifestBusy || model.manifestReady ||
+      model.control.maintenance != Maintenance::None || air_alert::busy() || !due(now, model.airNextAt)) return;
+  air_alert::PollJob job{};
+  job.generation = model.airGeneration;
+  copy(job.token, model.airSettings.token);
+  if (air_alert::submit(job)) model.airNextAt = now + 30000;
+}
+const char *airLevelName(uint8_t level) {
+  return level == 1 ? "yellow" : level == 2 ? "red" : level == 3 ? "unknown" : "clear";
+}
+void fillAirAlertView(View &view) {
+  const uint32_t now = uptimeMs();
+  view.airEnabled = model.airSettings.enabled;
+  view.airTokenConfigured = model.airSettings.token[0] != 0;
+  view.airManual = model.air.manual(now);
+  view.airFresh = model.air.fresh(now, model.connected, view.airTokenConfigured);
+  view.airSaveFailed = model.airSaveFailed;
+  view.airLevel = model.control.airAlertLevel;
+  view.airRemaining = model.air.remainingSeconds(now);
+  view.airAge = model.air.seen ? (now - model.air.checkedAt) / 1000 : UINT32_MAX;
+  copy(view.airStatus, !view.airEnabled && !view.airManual ? "Вимкнено" :
+      view.airLevel == 2 ? "Червоний рівень" : view.airLevel == 1 ? "Жовтий рівень" :
+      view.airLevel == 0 ? "Тривогу не оголошено" : "Немає актуальних даних");
+  copy(view.airSource, !view.airEnabled ? "Автоперевірку вимкнено" :
+      !view.airTokenConfigured ? "Потрібен API-токен" : !model.connected ? "Немає Wi-Fi" :
+      !model.airWorkerReady ? "Сервіс перевірки недоступний" :
+      model.airHttpStatus == 401 ? "Токен не прийнято" : model.airHttpStatus == 403 ? "Доступ до API заборонено" :
+      model.airHttpStatus == 429 ? "Ліміт запитів: очікування повтору" : model.airFetchFailed ? "Помилка оновлення" :
+      view.airFresh ? "Дані актуальні" : model.air.seen ? "Дані застаріли" : "Очікування даних");
+  copy(view.airDetails, model.airSaveFailed ? "Налаштування не збережено. Спробуйте ще раз." :
+      model.airDirty ? "Збереження…" : !model.control.on ? "Матриця вимкнена за розкладом або вручну." :
+      view.airEnabled && !view.airFresh ? "Немає актуальних даних. Це не відбій тривоги." :
+      view.airManual ? "Тимчасова перевірка. Реальна тривога має пріоритет." : "");
 }
 memorial::Clock memorialClock() {
   memorial::Clock clock;
@@ -592,6 +691,8 @@ void updateControl() {
   if (remaining <= 100) model.control.remainingPercent = uint8_t(remaining);
   model.control.connected = model.connected; model.control.accountLinked = model.linked;
   model.control.brightness = model.settings.brightness; model.control.on = scheduledOn();
+  model.control.airAlertLevel = uint8_t(model.air.effective(now, model.airSettings.enabled,
+      model.connected, model.airSettings.token[0] != 0));
   model.memorial.update(now, memorialClock(), model.memorialEnabled, model.control.on);
   model.control.memorialActive = model.memorial.active;
   model.control.memorialStartedAt = model.memorial.startedAt;
@@ -639,6 +740,7 @@ void publishView() {
   view.restarting = model.restarting; view.maintenanceTimeouts = model.maintenanceTimeouts; view.udpPackets = model.udpPackets;
   view.memorialEnabled = model.memorialEnabled; view.memorialManual = model.memorial.manual;
   view.memorialSaveFailed = model.memorialSaveFailed; view.dirty = view.dirty || model.memorialDirty;
+  fillAirAlertView(view); view.dirty = view.dirty || model.airDirty;
   view.otaDone = model.otaDone; view.otaTotal = model.otaTotal; view.netStack = uxTaskGetStackHighWaterMark(nullptr);
   view.networkLoops = model.loops; view.disconnects = model.disconnects; view.disconnectReason = model.disconnectReason;
   for (size_t i = 0; i < kAgentCapacity; ++i) {
@@ -1129,6 +1231,23 @@ void writeSettings(Html &html, const View &view) {
     else if (token == 5) html.text(!view.control.on ? "Матриця вимкнена. Для відтворення ввімкніть її." :
         std::time(nullptr) < 1700000000 ? "Очікування часу NTP. Ручне відтворення доступне." : "");
   });
+  html.render("templates/settings/air-alert.html", [&](unsigned token) {
+    if (token == 0) html.attribute(view.airEnabled ? "@checked" : "");
+    else if (token == 1) html.text(view.airStatus);
+    else if (token == 2) html.text(view.airTokenConfigured ? "Токен збережено" : "Токен не налаштовано");
+    else if (token == 3) { html.text(view.airSource); html.text(". "); html.text(view.airDetails); }
+    else if (token == 4) html.attribute(!view.control.on || view.restarting ||
+        view.control.maintenance != Maintenance::None ? "@disabled" : "");
+    else if (token == 5) html.attribute(!view.airManual || view.restarting ||
+        view.control.maintenance != Maintenance::None ? "@disabled" : "");
+    else if (token == 6) {
+      if (view.airAge == UINT32_MAX) html.text("Оновлення: ще немає даних");
+      else html.format("Оновлено %lu с тому%s", (unsigned long)view.airAge, view.airFresh ? "" : " · дані застаріли");
+    } else if (token == 7) {
+      if (view.airManual) html.format("Ручний тест · %lu с", (unsigned long)view.airRemaining);
+      else html.text("Ручний тест не активний");
+    }
+  });
   html.file("templates/settings/system-open.html");
   html.render("templates/settings/device-id.html", [&](unsigned token) {
     switch (token) {
@@ -1398,6 +1517,22 @@ esp_err_t portalStatus(httpd_req_t *request) {
     number(memorialStatus, "remaining_seconds", view.control.memorialActive && elapsed < view.control.memorialDurationMs
         ? (view.control.memorialDurationMs - elapsed + 999) / 1000 : 0);
   }
+  cJSON *airStatus = cJSON_AddObjectToObject(root, "air_alert");
+  if (!airStatus) okay = false;
+  else {
+    boolean(airStatus, "enabled", view.airEnabled);
+    boolean(airStatus, "token_configured", view.airTokenConfigured);
+    boolean(airStatus, "manual", view.airManual);
+    boolean(airStatus, "fresh", view.airFresh);
+    boolean(airStatus, "save_failed", view.airSaveFailed);
+    string(airStatus, "level", airLevelName(view.airLevel));
+    string(airStatus, "status", view.airStatus);
+    string(airStatus, "source_status", view.airSource);
+    string(airStatus, "details", view.airDetails);
+    number(airStatus, "remaining_seconds", view.airRemaining);
+    if (view.airAge == UINT32_MAX) { if (!cJSON_AddNullToObject(airStatus, "updated_age_seconds")) okay = false; }
+    else number(airStatus, "updated_age_seconds", view.airAge);
+  }
   string(root, "matrix", portalMatrixState(view)); string(root, "ota", view.ota); string(root, "ota_label", portalOtaLabel(view.ota));
   string(root, "power", view.power == 0 ? "auto" : view.power == 1 ? "on" : "off");
   char id[16], version[24]; std::snprintf(id, sizeof(id), "%06lX", (unsigned long)view.deviceId);
@@ -1506,7 +1641,7 @@ bool decode(const char *begin, const char *end, char *output, size_t capacity) {
   output[size] = 0; return true;
 }
 struct Form {
-  struct Field { char key[16]; char value[97]; } fields[16] = {};
+  struct Field { char key[16]; char value[129]; } fields[16] = {};
   size_t count = 0;
   bool parse(const char *body) {
     const char *p = body;
@@ -1767,6 +1902,20 @@ esp_err_t commandPost(httpd_req_t *request) {
     command.automatic = !std::strcmp(mode, "auto");
     if (!hexValue(form.get("client"), 8, 8, command.clientId) || (!command.automatic && std::strcmp(mode, "manual")) ||
         (!command.automatic && (color[0] != '#' || !hexValue(color + 1, 6, 6, command.rgb)))) return error(request, "400 Bad Request", "Invalid agent color.");
+  } else if (!std::strcmp(uri, "/air-alert")) {
+    const char *mode = form.get("mode");
+    if (!std::strcmp(mode, "save")) {
+      const char *enabled = form.get("enabled"), *clear = form.get("clear_token"), *token = form.get("api_token");
+      if ((enabled[0] && std::strcmp(enabled, "1")) || (clear[0] && std::strcmp(clear, "1")) ||
+          !validAirToken(token) || (clear[0] && token[0]))
+        return error(request, "400 Bad Request", "Некоректні налаштування тривоги або API-токен.");
+      command.kind = CommandKind::AirAlertSave; command.enabled = enabled[0] != 0;
+      command.clearToken = clear[0] != 0; copy(command.apiToken, token);
+    } else if (!std::strcmp(mode, "yellow") || !std::strcmp(mode, "red")) {
+      if (!view.control.on) return error(request, "409 Conflict", "Матриця вимкнена. Спочатку ввімкніть її.");
+      command.kind = CommandKind::AirAlertTest; command.value = !std::strcmp(mode, "red") ? 2 : 1;
+    } else if (!std::strcmp(mode, "stop")) command.kind = CommandKind::AirAlertStop;
+    else return error(request, "400 Bad Request", "Некоректна дія перевірки тривоги.");
   } else if (!std::strcmp(uri, "/memorial")) {
     const char *mode = form.get("mode");
     if (!std::strcmp(mode, "save")) {
@@ -1792,6 +1941,7 @@ esp_err_t commandPost(httpd_req_t *request) {
   httpd_resp_set_status(request, "303 See Other");
   httpd_resp_set_hdr(request, "Location", command.kind == CommandKind::Color ? "/agents" :
       command.kind == CommandKind::Wifi || command.kind == CommandKind::Update || command.kind == CommandKind::Restart ||
+      command.kind == CommandKind::AirAlertSave || command.kind == CommandKind::AirAlertTest || command.kind == CommandKind::AirAlertStop ||
       command.kind == CommandKind::MemorialSave || command.kind == CommandKind::MemorialPlay || command.kind == CommandKind::MemorialStop ? "/settings" : "/");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store"); httpd_resp_set_hdr(request, "Connection", "close");
   return httpd_resp_send(request, nullptr, 0);
@@ -1813,7 +1963,7 @@ bool initializeHttp() {
       !registerRoute("/device.png", HTTP_GET, deviceImage) ||
       !registerRoute("/favicon.svg", HTTP_GET, favicon) ||
       !registerRoute("/health", HTTP_GET, health) || !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
-  for (const char *uri : {"/save", "/power", "/brightness", "/schedule", "/agent-color", "/restart", "/update", "/memorial"})
+  for (const char *uri : {"/save", "/power", "/brightness", "/schedule", "/agent-color", "/restart", "/update", "/memorial", "/air-alert"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();
   for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js", "/assets/js/boot.js"})
     if (!registerRoute(uri, HTTP_GET, staticAsset)) return failed();
@@ -1833,6 +1983,23 @@ void serviceCommands() {
   NetworkCommand command;
   for (unsigned count = 0; count < 8 && xQueueReceive(commandQueue, &command, 0) == pdTRUE; ++count) {
     switch (command.kind) {
+      case CommandKind::AirAlertSave: {
+        AirAlertSettings next = model.airSettings;
+        next.enabled = command.enabled;
+        if (command.clearToken) std::memset(next.token, 0, sizeof(next.token));
+        else if (command.apiToken[0]) copy(next.token, command.apiToken);
+        if (next.enabled != model.airSettings.enabled || std::strcmp(next.token, model.airSettings.token) || model.airSaveFailed) {
+          model.airSettings = next; model.airDirty = true;
+          ++model.airGeneration; model.airNextAt = uptimeMs();
+          model.air.reset(); model.airHttpStatus = 0; model.airFetchFailed = false;
+        }
+        break;
+      }
+      case CommandKind::AirAlertTest:
+        if (model.control.on) model.air.startDemo(air_alert::Level(command.value), uptimeMs());
+        else message("Матриця вимкнена. Перевірку тривоги не запущено.");
+        break;
+      case CommandKind::AirAlertStop: model.air.stopDemo(); break;
       case CommandKind::MemorialSave:
         if (model.memorialEnabled != command.enabled || model.memorialSaveFailed) {
           model.memorialEnabled = command.enabled; model.memorialDirty = true;
@@ -2159,6 +2326,7 @@ void serviceMaintenance() {
         if (saved) refreshStationAfterSave();
         saved = saveWeekly() && saved;
         saved = saveMemorialSettings() && saved;
+        saved = saveAirAlertSettings() && saved;
         if (model.confirmationPending && std::strcmp(webFilesVersion(), "unavailable") && model.render.watchdogReady && model.render.assetsReady && model.render.frames && model.render.ledError == 0 && model.wifiReady && model.httpReady && model.udp >= 0) {
           if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) model.confirmationPending = false;
           else { message("Boot confirmation could not be persisted."); saved = false; }
@@ -2166,7 +2334,7 @@ void serviceMaintenance() {
         model.persistRetryAt = now + (saved ? 0 : 5000); releaseMaintenance(); break;
       }
       case Maintenance::Ota:
-        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
         if (!model.render.assetsReady || model.render.ledError) {
           otaMessage("OTA refused: renderer unhealthy"); model.manifestReady = false; releaseMaintenance(); break;
         }
@@ -2175,7 +2343,7 @@ void serviceMaintenance() {
         installFirmware(); discardBlockedTelemetry();
         model.manifestReady = false; model.otaAt = uptimeMs() + 60000; releaseMaintenance(); break;
       case Maintenance::Restart:
-        if (model.dirty || model.weeklyDirty || model.memorialDirty) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty) { releaseMaintenance(); break; }
         if (!activeHandlers.load() && !uxQueueMessagesWaiting(commandQueue)) esp_restart();
         else if (now - model.maintenanceAt >= kMaintenanceTimeout) {
           model.restarting = false; ++model.maintenanceTimeouts;
@@ -2193,18 +2361,20 @@ void serviceMaintenance() {
     releaseMaintenance();
     return;
   }
+  if (air_alert::busy()) return;
   if ((model.dirty && now - model.dirtyAt >= 300 && due(now, model.persistRetryAt)) ||
       (model.memorialDirty && due(now, model.persistRetryAt)) ||
+      (model.airDirty && due(now, model.persistRetryAt)) ||
       (model.weeklyDirty && (now - model.weeklySavedAt >= 300000 || model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
       (model.confirmationPending && std::strcmp(webFilesVersion(), "unavailable") && model.wifiReady && model.httpReady && model.udp >= 0 &&
        model.render.watchdogReady && model.render.assetsReady && model.render.frames && !model.render.ledError && due(now, model.persistRetryAt))) {
     requestMaintenance(Maintenance::Persist); return;
   }
   if (model.restarting) {
-    if (!model.dirty && !model.weeklyDirty && !model.memorialDirty && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
+    if (!model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
     return;
   }
-  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
+  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
   if (!model.connected || model.dirty || model.confirmationPending || !model.render.assetsReady || model.render.ledError) return;
   if (model.updateRequested || due(now, model.otaAt)) queueManifestCheck();
 }
@@ -2223,11 +2393,13 @@ void networkTask(void *) {
   loadAgentUpdateKey();
   loadWeekly();
   loadMemorialSettings();
+  loadAirAlertSettings();
   const bool webReady = initializeWebFiles();
   if (!webReady) { message("Web filesystem initialization failed."); ESP_LOGE(kTag, "Web filesystem unavailable"); }
   model.wifiReady = initializeWifi();
   if (!model.wifiReady) { message("Wi-Fi initialization failed."); ESP_LOGE(kTag, "Wi-Fi initialization failed"); }
   initializeUdp();
+  model.airWorkerReady = air_alert::startPolling();
   esp_ota_img_states_t state;
   model.confirmationPending = esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY;
   if (!webReady && model.confirmationPending) {
@@ -2253,7 +2425,7 @@ void networkTask(void *) {
         renderReported = true;
       }
     }
-    serviceWifi(); serviceCommands(); serviceWeekly(); serviceTelemetry(); discover(); serviceManifestResults();
+    serviceWifi(); serviceCommands(); serviceWeekly(); serviceTelemetry(); discover(); serviceManifestResults(); serviceAirAlert();
     updateControl(); publishView(); serviceMaintenance();
     // A blocking flash transfer must not leave thousands of overdue polling ticks.
     if (xTaskGetTickCount() - wake > pdMS_TO_TICKS(100)) wake = xTaskGetTickCount();

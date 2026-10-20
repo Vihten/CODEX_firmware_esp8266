@@ -20,6 +20,38 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792484044073` adds optional air-alert sky tinting for Vinnytsia
+and its territorial community. Configure it under Settings > Air alert;
+obtain a personal API token at https://alerts.in.ua/api-request and enter it
+directly in the device's web page, on a trusted LAN only: the local web
+interface uses plain HTTP, not HTTPS. The token is stored in a separate local
+NVS record, never returned in web status or embedded in this repository.
+
+The controller polls the authenticated alerts.in.ua v2 IoT endpoint every
+30 seconds over certificate-verified HTTPS. It checks city UID 155, raion
+UID 36 and oblast UID 4. Explicit whole-scope red/yellow warnings cover the
+city; partial parent scope is not interpreted as a city warning. Colors
+represent the provider's alert levels, not independently detected weapons.
+Provider documentation: https://devs.alerts.in.ua/.
+
+Only the moving sky changes color, with a 600 ms transition. Celestial
+objects, stars, clouds, pyramid and meteors keep their colors. Physical
+output remains at 30 FPS. Schedule and manual matrix-off remain authoritative.
+Manual yellow/red previews last 60 seconds and cannot lower a real red alert.
+Missing/stale data never fabricates an all-clear: a previous active warning
+is retained, otherwise an unknown marker is shown. Freshness expires after
+two minutes. During memorial/IP screens a small corner indicator is used.
+This is supplementary indication, not a replacement for official warnings.
+
+The bounded network worker runs separately from rendering and coordinates
+with flash maintenance. Expiry is latched so old demos and stale clears
+cannot revive after the 32-bit uptime wraps. Validation: PlatformIO build, 379 firmware tests
+(two existing skips), 56 browser-script checks, targeted Dart analysis and
+desktop/mobile UI inspection passed. Live authenticated provider responses
+require the owner's token and were not tested as part of this release.
+
+## Previous Night Palette Release
+
 Version `1792419738139` restores the night background palette from before
 the last darkening, while retaining the sixteen added stars, faster spin,
 two smooth opening oscillations and one closing excursion.

@@ -4,6 +4,7 @@
 #include "subpixel.hpp"
 #include "preview.hpp"
 #include "memorial_draw.hpp"
+#include "air_alert_visual.hpp"
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
 #include "esp_log.h"
@@ -39,6 +40,7 @@ uint16_t effectSubTick = 0;
 uint32_t sceneFrameMilli = 0;
 uint32_t quotaFrameMilli = 0, skySampleAt = 0;
 bool skySampleReady = false;
+air_alert::Visual airAlertVisual;
 
 enum SeekMode { SeekSet };
 class FrameReader {
@@ -1006,6 +1008,23 @@ void drawIpAddress() {
   if (second[0]) drawIpLine(second, 11);
 }
 
+void drawAirAlertIndicator(bool alternateScreen) {
+  if (!air_alert::indicatorVisible(control.airAlertLevel, alternateScreen,
+          control.on, control.maintenance != Maintenance::None, control.brightness)) return;
+  const auto color = air_alert::indicatorColor(control.airAlertLevel);
+  for (unsigned y = 0; y < 5 && y < MATRIX_HEIGHT; ++y)
+    for (unsigned x = 0; x < 3 && x < MATRIX_WIDTH; ++x)
+      if (air_alert::indicatorPixel(control.airAlertLevel, x, y))
+        strip.setPixelColor(physicalIndex((MATRIX_WIDTH >= 3 ? MATRIX_WIDTH - 3 : 0) + x, y),
+            strip.Color(color.red, color.green, color.blue));
+}
+
+void tintAirAlertSky(uint8_t *rgb, uint16_t index) {
+  if (!status.memorialTransition)
+    air_alert::tintSky(rgb, effectMask[index],
+        pgm_read_byte(&ENTRANCE_FIXED[index]) != 0, airAlertVisual.tint());
+}
+
 bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
                  uint16_t &frame, bool finishingMeteorFlight) {
 #if EVENT_MODE
@@ -1079,6 +1098,7 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
         }
       }
       const uint16_t entranceIndex = (y * MATRIX_WIDTH + x) * 3;
+      tintAirAlertSky(rgb, pixelIndex);
       memcpy(&entrancePixels[entranceIndex], rgb, 3);
       preserveNightSkyPixel(rgb, pixelIndex, effectMask[pixelIndex], strip.getBrightness());
       #endif
@@ -1195,6 +1215,7 @@ void renderTask(void *) {
     } else if (outputReady) {
       if (fresh) applyControlAgents();
       const uint32_t now = millis();
+      airAlertVisual.update(control.airAlertLevel, now);
       const bool memorialActive = control.on && control.memorialActive &&
           memorial::active(now, control.memorialStartedAt, control.memorialDurationMs);
       const bool previousMemorialTransition = status.memorialTransition;
@@ -1303,6 +1324,7 @@ void renderTask(void *) {
             strip.setPixelColor(physicalIndex(x, y), strip.Color(color.red, color.green, color.blue));
           });
         }
+        drawAirAlertIndicator(true);
         const bool shown = showFrame();
         if (memorialExiting && memorialPosition == 0 && shown) {
           memorialExiting = false;
@@ -1339,6 +1361,7 @@ void renderTask(void *) {
         } else if (!flying && requestedOn && (!control.connected || !control.accountLinked || ipHold)) {
           sceneVisible = false;
           drawIpAddress();
+          drawAirAlertIndicator(true);
           if (showFrame()) {
             std::memcpy(displayedIp, control.ip, sizeof(displayedIp));
             if (control.connected && ipHold && !ipPresented) {
@@ -1353,7 +1376,10 @@ void renderTask(void *) {
             sceneProgress = 0;
             sceneTimelineAt = millis();
           }
-          if (renderScene(animationFile, effectMaskFile, frame, flying)) showFrame();
+          if (renderScene(animationFile, effectMaskFile, frame, flying)) {
+            drawAirAlertIndicator(false);
+            showFrame();
+          }
           else {
             status.assetsReady = false;
             sceneVisible = false;

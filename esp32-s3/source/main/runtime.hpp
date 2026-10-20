@@ -24,6 +24,7 @@ struct ControlFrame {
   uint8_t remainingPercent = 100;
   uint8_t activityPercent = 0;
   uint8_t brightness = PROJECT_BRIGHTNESS;
+  uint8_t airAlertLevel = 0;
   bool connected = false;
   bool accountLinked = false;
   bool on = true;
@@ -52,7 +53,7 @@ struct RenderStatus {
   bool memorialTransition = false;
 };
 
-enum class CommandKind : uint8_t { Wifi, Power, Brightness, Schedule, Color, Restart, Update, AgentPoll, AgentUpgrade, AgentRename, AgentUninstall, MemorialSave, MemorialPlay, MemorialStop };
+enum class CommandKind : uint8_t { Wifi, Power, Brightness, Schedule, Color, Restart, Update, AgentPoll, AgentUpgrade, AgentRename, AgentUninstall, MemorialSave, MemorialPlay, MemorialStop, AirAlertSave, AirAlertTest, AirAlertStop };
 struct NetworkCommand {
   uint64_t agentVersion = 0;
   uint64_t agentNonceCounter = 0;
@@ -70,6 +71,8 @@ struct NetworkCommand {
   uint8_t days = 0;
   bool enabled = false;
   bool automatic = false;
+  bool clearToken = false;
+  char apiToken[129] = {};
   char ssid[33] = {};
   char password[65] = {};
 };

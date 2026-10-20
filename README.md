@@ -20,6 +20,25 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792494797309` removes the grey/white unknown-data symbol from
+the LED matrix. Only yellow/red alert levels and deliberately started
+manual previews activate the matrix overlay. Enabling automatic alerts,
+waiting for the first response, a missing token or unknown data does not
+draw a question mark, corner fill or dark backdrop.
+
+Unknown remains a distinct web/API state, not a fabricated all-clear.
+Previously confirmed active warnings still remain active if updates fail;
+only an explicit clear, disabling the feature or ending a manual-only test
+returns the overlay to its normal 600 ms fade-out. No white transition is
+introduced. Polling, schedule, brightness and 30 FPS output are unchanged.
+Validation: PlatformIO build, 389 firmware tests (two existing skips),
+targeted Dart analysis and native export passed. Inline state/renderer tests
+cover silent startup for missing credentials/unknown data, confirmed clear,
+retained stale active warnings, and manual test stop/expiry without white
+glyphs or residual backdrops. On-device installation remains unverified.
+
+## Previous Inward Rotation Release
+
 Version `1792493328356` keeps alert glyphs in their existing upper-corner
 locations and rotates their noses toward the pyramid at the bottom center.
 The left glyph points down-right; the right glyph mirrors it and points

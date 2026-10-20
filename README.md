@@ -20,6 +20,28 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792487114081` restores the original day/night scene and moves
+air-alert indication entirely into both upper rounded corner regions.
+Each corner follows the fixed hemisphere boundary (row widths 7, 5, 4, 3,
+2, 1), for 44 indicator pixels total. Yellow/red identify the respective
+alert level; grey identifies unknown data, never an all-clear.
+
+The original sky, sun, moon, clouds, stars, pyramid, meteor rendering and
+night-blue safeguard are restored without grading or edge recoloring.
+Corners transition over 600 ms and return to their original artwork after
+all-clear or disabling the feature. Brightness, schedule, manual-off and
+maintenance gating remain authoritative. Physical output stays at 30 FPS.
+
+Native full-pipeline comparisons at 20% and 100% brightness confirm that
+every output byte outside these corners is identical with and without an
+alert across sampled day/night frames. The overlay edits already scaled
+GRB only in those corners, with no extra allocation or scene rescaling.
+Validation: PlatformIO build, 383 firmware tests (two existing skips),
+56 browser-script checks, targeted Dart analysis and native output inspection
+passed. On-device installation and physical appearance are separate checks.
+
+## Previous Sky Tint Release
+
 Version `1792486005042` softens the air-alert sky treatment. A 35% color
 grade replaces the former opaque tint and removes the absolute brightness
 lift. Original sky gradients and darkness remain visible; black stays black.

@@ -109,6 +109,32 @@ geometry and the original physical row spacing remain unchanged. Output is still
 
 ## Controller Portal
 
+### Autonomous Air-Alert Indication
+
+The controller polls `https://neptun.in.ua/api/v1/alerts` directly over
+certificate-verified HTTPS for Vinnytskyi district (`вінницький`), including
+an applicable whole-oblast alert (`вінницька`). No personal API token,
+LAN agent, running PC, phone or user-operated relay is required. Successful
+polls are spaced 15 seconds apart; failures back off and HTTP 429 respects
+Retry-After. Networking runs on core 0, separate from the 30 FPS renderer.
+
+The Settings page enables the feature and offers bounded manual previews.
+Explicit drone/missile reasons select the existing yellow drone/red rocket;
+a verified active alert with an unspecified cause has a separate generic
+indicator. A color level alone is not treated as proof of a weapon type.
+Only a complete, validated alert snapshot may clear a warning. Wi-Fi, DNS,
+TLS, HTTP, payload and rate-limit failures retain the last active warning;
+the portal reports missing/stale data separately. Empty threat-track lists
+are never used to infer an all-clear. Schedule and manual matrix-off remain
+authoritative, and disabling the feature is an explicit user override.
+
+The old provider's saved enabled preference is retained. Its retired API-token
+bytes are cleared in RAM and rewritten empty in the existing NVS record;
+Wi-Fi credentials, agent metadata, colors and weekly statistics are unchanged.
+NEPTUN attribution remains visible beside the alert controls. It is a third-party
+information aggregator, without availability or accuracy guarantees, and this
+display does not replace official air-alert notifications or sirens.
+
 The Ukrainian portal has Overview (`/`), Agents (`/agents`) and Settings
 (`/settings`) views. Power, brightness and the single weekly schedule stay on
 Overview. Agents retain native color controls and add connected/active filters.

@@ -354,18 +354,19 @@
       }
       const airAlert = status.air_alert;
       if (airAlertForm && airAlert && typeof airAlert === 'object' && !Array.isArray(airAlert) &&
-          ['enabled', 'token_configured', 'manual', 'fresh', 'save_failed'].every(key => typeof airAlert[key] === 'boolean') &&
-          ['clear', 'yellow', 'red', 'unknown'].includes(airAlert.level) &&
+          ['enabled', 'manual', 'fresh', 'save_failed'].every(key => typeof airAlert[key] === 'boolean') &&
+          ['clear', 'yellow', 'red', 'untyped', 'unknown'].includes(airAlert.level) &&
           Number.isInteger(airAlert.remaining_seconds) && airAlert.remaining_seconds >= 0 && airAlert.remaining_seconds <= 60 &&
           (airAlert.updated_age_seconds === null || (finite(airAlert.updated_age_seconds) && airAlert.updated_age_seconds >= 0)) &&
           ['source_status', 'status', 'details'].every(key => typeof airAlert[key] === 'string')) {
         const checkbox = airAlertForm && one('input[name=enabled]', airAlertForm);
         if (checkbox && !dirtyForms.has(airAlertForm)) checkbox.checked = airAlert.enabled;
         // A stale clear response must never read as an all-clear.
-        const labels = {clear: 'Тривоги не зафіксовано', yellow: 'Жовтий рівень', red: 'Червоний рівень', unknown: 'Немає даних'};
+        const labels = {clear: 'Тривоги не зафіксовано', yellow: 'Жовтий рівень', red: 'Червоний рівень',
+          untyped: 'Тривога активна · тип загрози не уточнено', unknown: 'Немає даних'};
         const unknown = airAlert.level === 'unknown' || (airAlert.enabled === true && !airAlert.fresh && airAlert.level === 'clear');
-        text('[data-air-alert-state]', unknown ? 'Немає актуальних даних' : airAlert.status || labels[airAlert.level]);
-        text('[data-air-alert-token]', airAlert.token_configured ? 'Токен збережено' : 'Токен не налаштовано');
+        text('[data-air-alert-state]', unknown ? 'Немає актуальних даних' :
+          airAlert.level === 'untyped' ? labels.untyped : airAlert.status || labels[airAlert.level]);
         text('[data-air-alert-note]', [airAlert.save_failed ? 'Не вдалося зберегти. Спробуйте ще раз.' : '',
           airAlert.source_status, airAlert.details,
           status.maintenance === true ? 'Контролер зайнятий. Тест недоступний.' :

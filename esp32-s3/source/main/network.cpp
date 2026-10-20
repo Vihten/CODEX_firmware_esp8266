@@ -52,13 +52,15 @@ constexpr char kTag[] = "network";
 constexpr char kFirmwareUrl[] = "https://api.github.com/repos/Vihten/CODEX_firmware_esp8266/contents/esp32-s3/firmware.bin?ref=main";
 constexpr uint32_t kAgentTimeout = 7000, kMaintenanceTimeout = 10000;
 constexpr uint32_t kOtaInterval = 15 * 60 * 1000;
+constexpr uint32_t kAirPollIntervalMs = 15000;
 constexpr uint16_t kUdpPort = 4210;
 constexpr uint32_t kSettingsMagic = 0x4c465333;
 struct ColorOverride { uint32_t clientId; uint32_t rgb; uint8_t used; uint8_t reserved[3]; };
 struct AirAlertSettings {
   uint32_t magic = 0x414c0100;
   uint8_t enabled = 0;
-  char token[129] = {};
+  // Retain the existing NVS layout; retire and erase the former provider secret.
+  char retiredToken[129] = {};
 };
 struct Settings {
   uint32_t magic = kSettingsMagic;
@@ -109,7 +111,7 @@ struct View {
   uint8_t power = 0, days = 0;
   bool scheduleEnabled = false, dirty = false, nvsReady = false, restarting = false;
   bool memorialEnabled = false, memorialManual = false, memorialSaveFailed = false;
-  bool airEnabled = false, airTokenConfigured = false, airManual = false, airFresh = false, airSaveFailed = false;
+  bool airEnabled = false, airManual = false, airFresh = false, airSaveFailed = false;
   uint8_t airLevel = 0;
   uint32_t airAge = UINT32_MAX, airRemaining = 0;
   char airStatus[96] = {}, airDetails[160] = {}, airSource[96] = {};
@@ -301,13 +303,6 @@ bool saveMemorialSettings() {
   model.memorialDirty = false;
   return true;
 }
-bool validAirToken(const char *value) {
-  const size_t length = std::strlen(value);
-  if (length > 128) return false;
-  for (size_t i = 0; i < length; ++i)
-    if (uint8_t(value[i]) < 33 || uint8_t(value[i]) > 126) return false;
-  return true;
-}
 void loadAirAlertSettings() {
   if (!model.nvsReady) return;
   nvs_handle_t handle;
@@ -319,10 +314,13 @@ void loadAirAlertSettings() {
   nvs_close(handle);
   if (result == ESP_ERR_NVS_NOT_FOUND) return;
   if (result != ESP_OK || size != sizeof(stored) || stored.magic != 0x414c0100 ||
-      stored.enabled > 1 || !std::memchr(stored.token, 0, sizeof(stored.token)) || !validAirToken(stored.token)) {
+      stored.enabled > 1) {
     model.airSaveFailed = true; return;
   }
   model.airSettings = stored;
+  for (char value : stored.retiredToken) if (value) { model.airDirty = true; break; }
+  std::memset(model.airSettings.retiredToken, 0, sizeof(model.airSettings.retiredToken));
+  std::memset(stored.retiredToken, 0, sizeof(stored.retiredToken));
 }
 bool saveAirAlertSettings() {
   if (!model.airDirty) return true;
@@ -348,38 +346,37 @@ void serviceAirAlert() {
     model.air.accept(result.level, result.valid, now);
     model.airHttpStatus = result.httpStatus;
     model.airFetchFailed = !result.valid;
-    model.airNextAt = now + std::min(uint32_t(86400000), std::max(uint32_t(30000), result.retryAfterMs));
+    model.airNextAt = now + std::min(uint32_t(86400000), std::max(kAirPollIntervalMs, result.retryAfterMs));
   }
-  if (!model.airWorkerReady || !model.airSettings.enabled || !model.airSettings.token[0] ||
-      !model.connected || model.airDirty || model.restarting || model.manifestBusy || model.manifestReady ||
+  if (!model.airWorkerReady || !model.airSettings.enabled ||
+      !model.connected || model.restarting || model.manifestBusy || model.manifestReady ||
       model.control.maintenance != Maintenance::None || air_alert::busy() || !due(now, model.airNextAt)) return;
   air_alert::PollJob job{};
   job.generation = model.airGeneration;
-  copy(job.token, model.airSettings.token);
-  if (air_alert::submit(job)) model.airNextAt = now + 30000;
+  if (air_alert::submit(job)) model.airNextAt = now + kAirPollIntervalMs;
 }
 const char *airLevelName(uint8_t level) {
-  return level == 1 ? "yellow" : level == 2 ? "red" : level == 3 ? "unknown" : "clear";
+  return level == 1 ? "yellow" : level == 2 ? "red" : level == 4 ? "untyped" : level == 0 ? "clear" : "unknown";
 }
 void fillAirAlertView(View &view) {
   const uint32_t now = uptimeMs();
   view.airEnabled = model.airSettings.enabled;
-  view.airTokenConfigured = model.airSettings.token[0] != 0;
   view.airManual = model.air.manual(now);
-  view.airFresh = model.air.fresh(now, model.connected, view.airTokenConfigured);
+  view.airFresh = model.air.fresh(now, model.connected, !model.airFetchFailed);
   view.airSaveFailed = model.airSaveFailed;
   view.airLevel = model.control.airAlertLevel;
   view.airRemaining = model.air.remainingSeconds(now);
   view.airAge = model.air.seen ? (now - model.air.checkedAt) / 1000 : UINT32_MAX;
   copy(view.airStatus, !view.airEnabled && !view.airManual ? "Вимкнено" :
-      view.airLevel == 2 ? "Червоний рівень" : view.airLevel == 1 ? "Жовтий рівень" :
+      view.airLevel == 2 ? "Ракетна загроза" : view.airLevel == 1 ? "Дронова загроза" :
+      view.airLevel == 4 ? "Тривога: тип загрози невідомий" :
       view.airLevel == 0 ? "Тривогу не оголошено" : "Немає актуальних даних");
   copy(view.airSource, !view.airEnabled ? "Автоперевірку вимкнено" :
-      !view.airTokenConfigured ? "Потрібен API-токен" : !model.connected ? "Немає Wi-Fi" :
+      !model.connected ? "Немає Wi-Fi" :
       !model.airWorkerReady ? "Сервіс перевірки недоступний" :
-      model.airHttpStatus == 401 ? "Токен не прийнято" : model.airHttpStatus == 403 ? "Доступ до API заборонено" :
+      model.airHttpStatus == 401 || model.airHttpStatus == 403 ? "NEPTUN: доступ тимчасово недоступний" :
       model.airHttpStatus == 429 ? "Ліміт запитів: очікування повтору" : model.airFetchFailed ? "Помилка оновлення" :
-      view.airFresh ? "Дані актуальні" : model.air.seen ? "Дані застаріли" : "Очікування даних");
+      view.airFresh ? "Дані NEPTUN отримано" : model.air.seen ? "Дані застаріли" : "Очікування NEPTUN");
   copy(view.airDetails, model.airSaveFailed ? "Налаштування не збережено. Спробуйте ще раз." :
       model.airDirty ? "Збереження…" : !model.control.on ? "Матриця вимкнена за розкладом або вручну." :
       view.airEnabled && !view.airFresh ? "Немає актуальних даних. Це не відбій тривоги." :
@@ -692,7 +689,7 @@ void updateControl() {
   model.control.connected = model.connected; model.control.accountLinked = model.linked;
   model.control.brightness = model.settings.brightness; model.control.on = scheduledOn();
   model.control.airAlertLevel = uint8_t(model.air.effective(now, model.airSettings.enabled,
-      model.connected, model.airSettings.token[0] != 0));
+      model.connected, !model.airFetchFailed));
   model.memorial.update(now, memorialClock(), model.memorialEnabled, model.control.on);
   model.control.memorialActive = model.memorial.active;
   model.control.memorialStartedAt = model.memorial.startedAt;
@@ -1234,7 +1231,6 @@ void writeSettings(Html &html, const View &view) {
   html.render("templates/settings/air-alert.html", [&](unsigned token) {
     if (token == 0) html.attribute(view.airEnabled ? "@checked" : "");
     else if (token == 1) html.text(view.airStatus);
-    else if (token == 2) html.text(view.airTokenConfigured ? "Токен збережено" : "Токен не налаштовано");
     else if (token == 3) { html.text(view.airSource); html.text(". "); html.text(view.airDetails); }
     else if (token == 4) html.attribute(!view.control.on || view.restarting ||
         view.control.maintenance != Maintenance::None ? "@disabled" : "");
@@ -1521,7 +1517,8 @@ esp_err_t portalStatus(httpd_req_t *request) {
   if (!airStatus) okay = false;
   else {
     boolean(airStatus, "enabled", view.airEnabled);
-    boolean(airStatus, "token_configured", view.airTokenConfigured);
+    string(airStatus, "provider", "neptun");
+    string(airStatus, "scope", "Вінницький район");
     boolean(airStatus, "manual", view.airManual);
     boolean(airStatus, "fresh", view.airFresh);
     boolean(airStatus, "save_failed", view.airSaveFailed);
@@ -1905,12 +1902,10 @@ esp_err_t commandPost(httpd_req_t *request) {
   } else if (!std::strcmp(uri, "/air-alert")) {
     const char *mode = form.get("mode");
     if (!std::strcmp(mode, "save")) {
-      const char *enabled = form.get("enabled"), *clear = form.get("clear_token"), *token = form.get("api_token");
-      if ((enabled[0] && std::strcmp(enabled, "1")) || (clear[0] && std::strcmp(clear, "1")) ||
-          !validAirToken(token) || (clear[0] && token[0]))
-        return error(request, "400 Bad Request", "Некоректні налаштування тривоги або API-токен.");
+      const char *enabled = form.get("enabled");
+      if ((enabled[0] && std::strcmp(enabled, "1")) || form.get("api_token")[0] || form.get("clear_token")[0])
+        return error(request, "400 Bad Request", "NEPTUN не потребує API-токена. Оновіть сторінку.");
       command.kind = CommandKind::AirAlertSave; command.enabled = enabled[0] != 0;
-      command.clearToken = clear[0] != 0; copy(command.apiToken, token);
     } else if (!std::strcmp(mode, "yellow") || !std::strcmp(mode, "red")) {
       if (!view.control.on) return error(request, "409 Conflict", "Матриця вимкнена. Спочатку ввімкніть її.");
       command.kind = CommandKind::AirAlertTest; command.value = !std::strcmp(mode, "red") ? 2 : 1;
@@ -1986,12 +1981,10 @@ void serviceCommands() {
       case CommandKind::AirAlertSave: {
         AirAlertSettings next = model.airSettings;
         next.enabled = command.enabled;
-        if (command.clearToken) std::memset(next.token, 0, sizeof(next.token));
-        else if (command.apiToken[0]) copy(next.token, command.apiToken);
-        if (next.enabled != model.airSettings.enabled || std::strcmp(next.token, model.airSettings.token) || model.airSaveFailed) {
+        if (next.enabled != model.airSettings.enabled || model.airSaveFailed) {
           model.airSettings = next; model.airDirty = true;
           ++model.airGeneration; model.airNextAt = uptimeMs();
-          model.air.reset(); model.airHttpStatus = 0; model.airFetchFailed = false;
+          model.air.stopDemo();
         }
         break;
       }

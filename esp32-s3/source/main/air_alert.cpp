@@ -2,6 +2,9 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
+#include <cmath>
+#include <initializer_list>
 #include <cstring>
 #include <ctime>
 
@@ -18,14 +21,15 @@
 
 namespace air_alert {
 namespace {
-constexpr size_t kBodyLimit = 8192;
+constexpr size_t kBodyLimit = 64 * 1024;
+constexpr size_t kWireLimit = 96 * 1024;
 constexpr int64_t kDeadlineUs = 4000000;
 constexpr uint32_t kMaximumRetryMs = 86400000;  // Fits main's signed wrap-safe due comparison.
-constexpr char kHost[] = "api.alerts.in.ua";
-constexpr char kRequestPrefix[] =
-    "GET /v2/iot/active_air_raid_alerts.json HTTP/1.1\r\n"
-    "Host: api.alerts.in.ua\r\nAccept: application/json\r\n"
-    "Accept-Encoding: identity\r\nConnection: close\r\nAuthorization: Bearer ";
+constexpr char kHost[] = "neptun.in.ua";
+constexpr char kRequest[] =
+    "GET /api/v1/alerts HTTP/1.1\r\nHost: neptun.in.ua\r\n"
+    "Accept: application/json\r\nAccept-Encoding: identity\r\n"
+    "User-Agent: Codex-Matrix\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
 
 bool whitespace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
 
@@ -40,16 +44,6 @@ bool sameHeader(const char *a, const char *b) {
 void erase(void *data, size_t length) {
   auto *bytes = static_cast<volatile unsigned char *>(data);
   while (length--) *bytes++ = 0;
-}
-
-bool tokenValid(const char (&token)[129]) {
-  size_t length = 0;
-  while (length < sizeof(token) && token[length]) {
-    if (static_cast<unsigned char>(token[length]) < 33 ||
-        static_cast<unsigned char>(token[length]) > 126) return false;
-    ++length;
-  }
-  return length > 0 && length < sizeof(token);
 }
 
 StaticQueue_t jobsStorage, resultsStorage;
@@ -97,7 +91,11 @@ bool resolve(char *address, size_t capacity, int64_t deadline) {
 }
 
 struct Response {
-  char body[kBodyLimit + 1] = {};
+  char *body = static_cast<char *>(std::malloc(kBodyLimit + 1));
+  ~Response() { std::free(body); }
+  Response() = default;
+  Response(const Response &) = delete;
+  Response &operator=(const Response &) = delete;
   size_t used = 0, fieldSize = 0, valueSize = 0;
   char field[64] = {}, value[256] = {};
   bool inValue = false, complete = false, bad = false;
@@ -106,9 +104,37 @@ struct Response {
 
   void header() {
     if (!fieldSize) return;
+    while (valueSize && whitespace(value[valueSize - 1])) value[--valueSize] = 0;
     if (sameHeader(field, "Retry-After")) {
       const uint32_t parsed = retryAfterMs(value);
       if (parsed > retry) retry = parsed;
+    }
+    if (sameHeader(field, "Age")) {
+      const char *p = value;
+      while (whitespace(*p)) ++p;
+      unsigned seconds = 0;
+      if (*p < '0' || *p > '9') bad = true;
+      while (*p >= '0' && *p <= '9') {
+        seconds = seconds > 120 ? 121 : seconds * 10 + unsigned(*p - '0');
+        ++p;
+      }
+      while (whitespace(*p)) ++p;
+      if (*p || seconds > 120) bad = true;
+    }
+    if (sameHeader(field, "Warning")) {
+      // Split warning-values without treating commas inside quoted warning text as separators.
+      bool quoted = false, escaped = false, start = true;
+      for (const char *p = value; *p; ++p) {
+        if (escaped) { escaped = false; continue; }
+        if (quoted && *p == '\\') { escaped = true; continue; }
+        if (*p == '"') { quoted = !quoted; continue; }
+        if (!quoted && *p == ',') { start = true; continue; }
+        if (start && !whitespace(*p)) {
+          if (std::strlen(p) >= 4 && p[0] == '1' && p[1] == '1' &&
+              (p[2] == '0' || p[2] == '1') && whitespace(p[3])) bad = true;
+          start = false;
+        }
+      }
     }
     if (sameHeader(field, "Content-Encoding") && !sameHeader(value, "identity")) bad = true;
     fieldSize = valueSize = 0;
@@ -170,6 +196,8 @@ PollResult poll(const PollJob &job) {
   PollResult result;
   result.generation = job.generation;
   const int64_t deadline = esp_timer_get_time() + kDeadlineUs;
+  Response r;
+  if (!r.body) return result;
   char address[48] = {};
   if (!resolve(address, sizeof(address), deadline)) return result;
   esp_tls_t *tls = esp_tls_init();
@@ -192,17 +220,14 @@ PollResult poll(const PollJob &job) {
     esp_tls_conn_destroy(tls);
     return result;
   }
-  char request[sizeof(kRequestPrefix) + 129 + 4] = {};
-  const int requestSize = std::snprintf(request, sizeof(request), "%s%s\r\n\r\n", kRequestPrefix, job.token);
+  constexpr size_t requestSize = sizeof(kRequest) - 1;
   size_t sent = 0;
   while (sent < size_t(requestSize) && esp_timer_get_time() < deadline) {
-    const int count = int(esp_tls_conn_write(tls, request + sent, size_t(requestSize) - sent));
+    const int count = int(esp_tls_conn_write(tls, kRequest + sent, requestSize - sent));
     if (count > 0) sent += size_t(count);
     else if (!wantsIo(count)) break;
     vTaskDelay(1);
   }
-  erase(request, sizeof(request));
-  Response r;
   http_parser parser{};
   http_parser_init(&parser, HTTP_RESPONSE);
   parser.data = &r;
@@ -220,7 +245,7 @@ PollResult poll(const PollJob &job) {
     if (count > 0) {
       wireBytes += size_t(count);
       // Includes framing and headers, so endless tiny chunks cannot consume unbounded work.
-      if (wireBytes > 32768) { parsed = false; break; }
+      if (wireBytes > kWireLimit) { parsed = false; break; }
       const size_t consumed = http_parser_execute(&parser, &settings, chunk, size_t(count));
       parsed = consumed == size_t(count) || (r.complete && HTTP_PARSER_ERRNO(&parser) == HPE_PAUSED);
     } else if (count == 0) {
@@ -234,6 +259,11 @@ PollResult poll(const PollJob &job) {
   if (r.status == 429) result.retryAfterMs = r.retry;
   if (parsed && r.complete && !r.bad && r.status == 200 && esp_timer_get_time() < deadline)
     result.valid = parseBody(r.body, r.used, result.level);
+  if (result.valid && esp_timer_get_time() >= deadline) {
+    result.valid = false;
+    result.level = Level::Unknown;
+  }
+  if (result.valid) result.retryAfterMs = 15000;
   esp_tls_conn_destroy(tls);
   return result;
 }
@@ -250,43 +280,201 @@ void worker(void *) {
 }
 }  // namespace
 
-bool parseBody(const char *body, size_t length, Level &level) {
-  level = Level::Unknown;
-  if (!body || !length || length > kBodyLimit || std::memchr(body, 0, length)) return false;
-  size_t begin = 0;
-  while (begin < length && whitespace(body[begin])) ++begin;
-  if (begin == length || body[begin++] != '"') return false;
-  bool closed = false;
-  for (size_t i = begin; i < length; ++i) {
-    if (static_cast<unsigned char>(body[i]) < 32) return false;
-    if (body[i] == '\\') {
-      if (++i == length) return false;
-      if (body[i] == 'u' && i + 4 < length && !std::memcmp(body + i + 1, "0000", 4)) return false;
-    } else if (body[i] == '"') {
-      closed = true;
-      for (++i; i < length; ++i) if (!whitespace(body[i])) return false;
-      break;
+namespace {
+// Validate grammar and depth before cJSON's recursive parser sees untrusted input.
+class JsonPreflight {
+ public:
+  JsonPreflight(const char *data, size_t size) : cursor(data), end(data + size) {}
+  bool valid() { skip(); return value(0) && (skip(), cursor == end); }
+ private:
+  const char *cursor, *end;
+  void skip() { while (cursor != end && whitespace(*cursor)) ++cursor; }
+  bool take(char c) {
+    if (cursor == end || *cursor != c) return false;
+    ++cursor; return true;
+  }
+  static bool digit(char c) { return c >= '0' && c <= '9'; }
+  bool hex(unsigned &code) {
+    code = 0;
+    for (unsigned i = 0; i < 4; ++i) {
+      if (cursor == end) return false;
+      const char c = *cursor++;
+      const int n = c >= '0' && c <= '9' ? c - '0' :
+          c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+      if (n < 0) return false;
+      code = code * 16 + unsigned(n);
+    }
+    return true;
+  }
+  bool string() {
+    if (!take('"')) return false;
+    while (cursor != end) {
+      const auto c = static_cast<unsigned char>(*cursor++);
+      if (c == '"') return true;
+      if (c < 32) return false;
+      if (c == '\\') {
+        if (cursor == end) return false;
+        const char escape = *cursor++;
+        if (escape == 'u') {
+          unsigned code = 0;
+          if (!hex(code) || code == 0 || (code >= 0xdc00 && code <= 0xdfff)) return false;
+          if (code >= 0xd800 && code <= 0xdbff) {
+            unsigned low = 0;
+            if (!take('\\') || !take('u') || !hex(low) || low < 0xdc00 || low > 0xdfff) return false;
+          }
+        } else if (!std::strchr("\"\\/bfnrt", escape)) return false;
+      } else if (c >= 128) {
+        unsigned count = 0, code = 0, minimum = 0;
+        if (c >= 0xc2 && c <= 0xdf) { count = 1; code = c & 31; minimum = 0x80; }
+        else if (c >= 0xe0 && c <= 0xef) { count = 2; code = c & 15; minimum = 0x800; }
+        else if (c >= 0xf0 && c <= 0xf4) { count = 3; code = c & 7; minimum = 0x10000; }
+        else return false;
+        while (count--) {
+          if (cursor == end) return false;
+          const auto next = static_cast<unsigned char>(*cursor++);
+          if ((next & 0xc0) != 0x80) return false;
+          code = (code << 6) | (next & 63);
+        }
+        if (code < minimum || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return false;
+      }
+    }
+    return false;
+  }
+  bool value(unsigned depth) {
+    skip();
+    if (cursor == end) return false;
+    if (*cursor == '{' || *cursor == '[') {
+      if (depth == 16) return false;
+      const bool object = *cursor++ == '{';
+      const char close = object ? '}' : ']';
+      skip();
+      if (take(close)) return true;
+      do {
+        skip();
+        if (object) { if (!string()) return false; skip(); if (!take(':')) return false; }
+        if (!value(depth + 1)) return false;
+        skip();
+        if (take(close)) return true;
+      } while (take(','));
+      return false;
+    }
+    if (*cursor == '"') return string();
+    for (const char *literal : {"true", "false", "null"}) {
+      const size_t size = std::strlen(literal);
+      if (size_t(end - cursor) >= size && !std::memcmp(cursor, literal, size)) {
+        cursor += size; return true;
+      }
+    }
+    take('-');
+    if (cursor == end || !digit(*cursor)) return false;
+    if (!take('0')) while (cursor != end && digit(*cursor)) ++cursor;
+    if (take('.')) {
+      if (cursor == end || !digit(*cursor)) return false;
+      while (cursor != end && digit(*cursor)) ++cursor;
+    }
+    if (take('e') || take('E')) {
+      if (!take('+')) take('-');
+      if (cursor == end || !digit(*cursor)) return false;
+      while (cursor != end && digit(*cursor)) ++cursor;
+    }
+    return true;
+  }
+};
+
+bool uniqueKeys(const cJSON *object, const char *const *keys, size_t count) {
+  for (size_t i = 0; i < count; ++i) {
+    bool seen = false;
+    for (const cJSON *item = object->child; item; item = item->next) {
+      if (item->string && !std::strcmp(item->string, keys[i])) {
+        if (seen) return false;
+        seen = true;
+      }
     }
   }
-  if (!closed) return false;
+  return true;
+}
+const cJSON *field(const cJSON *object, const char *key) {
+  return cJSON_GetObjectItemCaseSensitive(object, key);
+}
+bool text(const cJSON *item) { return cJSON_IsString(item) && item->valuestring && *item->valuestring; }
+bool equals(const cJSON *item, const char *value) {
+  return cJSON_IsString(item) && item->valuestring && !std::strcmp(item->valuestring, value);
+}
+bool timestamp(const cJSON *item) {
+  if (!text(item)) return false;
+  const char *s = item->valuestring;
+  const size_t size = std::strlen(s);
+  if (size < 20 || s[4] != '-' || s[7] != '-' || s[10] != 'T' || s[13] != ':' ||
+      s[16] != ':' || s[size - 1] != 'Z') return false;
+  for (size_t i = 0; i < 19; ++i) {
+    if (i == 4 || i == 7 || i == 10 || i == 13 || i == 16) continue;
+    if (s[i] < '0' || s[i] > '9') return false;
+  }
+  if (size != 20) {
+    if (s[19] != '.' || size < 22 || size > 30) return false;
+    for (size_t i = 20; i + 1 < size; ++i) if (s[i] < '0' || s[i] > '9') return false;
+  }
+  const auto number = [s](size_t i) { return unsigned((s[i] - '0') * 10 + s[i + 1] - '0'); };
+  const unsigned year = number(0) * 100 + number(2), month = number(5), day = number(8);
+  constexpr unsigned days[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+  const bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+  return year > 0 && month >= 1 && month <= 12 && day >= 1 &&
+      day <= days[month - 1] + (month == 2 && leap ? 1u : 0u) &&
+      number(11) <= 23 && number(14) <= 59 && number(17) <= 59;
+}
+bool records(const cJSON *array, bool district, Level &strongest) {
+  constexpr const char *keys[] = {"key", "name", "oblast", "level", "reasons", "since"};
+  constexpr char districtKey[] = "вінницький", districtName[] = "Вінницький район";
+  constexpr char oblastKey[] = "вінницька", oblastName[] = "Вінницька область";
+  for (const cJSON *entry = array->child; entry; entry = entry->next) {
+    if (!cJSON_IsObject(entry) || !uniqueKeys(entry, keys, sizeof(keys) / sizeof(*keys))) return false;
+    const auto *key = field(entry, "key"), *name = field(entry, "name"), *oblast = field(entry, "oblast");
+    const auto *level = field(entry, "level"), *reasons = field(entry, "reasons"), *since = field(entry, "since");
+    if (!text(key) || !text(name) || !cJSON_IsString(oblast) ||
+        (district && !text(oblast)) || (!equals(level, "red") && !equals(level, "yellow")) ||
+        (since && !timestamp(since)) || (reasons && !cJSON_IsArray(reasons))) return false;
+    // A changed key format must not silently convert a matching name into all-clear.
+    const bool keyMatches = equals(key, district ? districtKey : oblastKey);
+    const bool nameMatches = equals(name, district ? districtName : oblastName);
+    if (keyMatches != nameMatches) return false;
+    if (district && keyMatches && !equals(oblast, oblastName)) return false;
+    if (!district && keyMatches && !equals(oblast, "") && !equals(oblast, oblastName)) return false;
+    const bool matches = keyMatches && (!district || equals(oblast, oblastName));
+    bool missile = false, drone = false;
+    if (reasons) for (const cJSON *reason = reasons->child; reason; reason = reason->next) {
+      if (!text(reason)) return false;
+      // Explicit cause only: red/yellow are provider severity, not weapon types.
+      missile |= equals(reason, "Ракетна загроза") ||
+          equals(reason, "Ракетна загроза (червоний рівень)");
+      drone |= equals(reason, "Дронова загроза") ||
+          equals(reason, "Дронова загроза (жовтий рівень)");
+    }
+    if (matches) {
+      const Level cause = missile ? Level::Red : drone ? Level::Yellow : Level::Unspecified;
+      if (priority(cause) > priority(strongest)) strongest = cause;
+    }
+  }
+  return true;
+}
+}  // namespace
+
+bool parseBody(const char *body, size_t length, Level &level) {
+  level = Level::Unknown;
+  if (!body || !length || length > kBodyLimit || std::memchr(body, 0, length) ||
+      !JsonPreflight(body, length).valid()) return false;
   const char *end = nullptr;
   cJSON *root = cJSON_ParseWithLengthOpts(body, length, &end, false);
   if (!root) return false;
-  bool valid = cJSON_IsString(root) && root->valuestring && std::strlen(root->valuestring) > 155;
-  if (valid) {
-    const char *statuses = root->valuestring;
-    const char scopes[] = {statuses[155], statuses[36], statuses[4]};
-    bool unknown = false;
-    Level strongest = Level::Unknown;
-    for (char status : scopes) {
-      if (status == 'R') strongest = Level::Red;
-      else if (status == 'Y' && strongest != Level::Red) strongest = Level::Yellow;
-      else if (status != 'N' && status != 'P' && status != 'Y') unknown = true;
-    }
-    if (active(strongest)) level = strongest;
-    else if (!unknown && scopes[0] == 'N') level = Level::Clear;
-    else valid = false;
-  }
+  constexpr const char *keys[] = {"version", "updatedAt", "raions", "oblasts"};
+  const auto *version = field(root, "version"), *updated = field(root, "updatedAt");
+  const auto *raions = field(root, "raions"), *oblasts = field(root, "oblasts");
+  bool valid = cJSON_IsObject(root) && uniqueKeys(root, keys, sizeof(keys) / sizeof(*keys)) &&
+      cJSON_IsNumber(version) && std::isfinite(version->valuedouble) && version->valuedouble > 0 &&
+      version->valuedouble <= 9007199254740991.0 && std::floor(version->valuedouble) == version->valuedouble &&
+      timestamp(updated) && cJSON_IsArray(raions) && cJSON_IsArray(oblasts);
+  Level strongest = Level::Clear;
+  if (valid) valid = records(raions, true, strongest) && records(oblasts, false, strongest);
+  if (valid) level = strongest;
   cJSON_Delete(root);
   return valid;
 }
@@ -342,7 +530,7 @@ bool startPolling() {
 }
 
 bool submit(const PollJob &job) {
-  if (!ready.load(std::memory_order_acquire) || !tokenValid(job.token)) return false;
+  if (!ready.load(std::memory_order_acquire)) return false;
   bool expected = false;
   if (!running.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) return false;
   if (xQueueSend(jobs, &job, 0) == pdTRUE) return true;

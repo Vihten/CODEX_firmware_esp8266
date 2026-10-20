@@ -20,6 +20,35 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792499622473` receives Vinnytskyi district air-alert data directly
+from NEPTUN, without a personal API token, running PC, phone or LAN relay.
+Certificate-verified HTTPS polling runs on the network core every 15 seconds
+after successful requests; errors back off and HTTP 429 respects Retry-After.
+The physical matrix remains on GPIO18 at 30 FPS.
+
+Only explicit drone/missile reasons select the existing weapon glyphs. A
+verified active alert with an unspecified cause uses a small amber exclamation
+mark; unavailable data alone remains silent. Only a complete validated snapshot
+covering both district and whole-oblast alerts may clear a warning. Failed
+Wi-Fi, DNS, TLS, HTTP, stale-cache and payload checks retain the last active
+warning and mark the portal data stale. Schedule and manual-off still apply.
+
+Settings now show the Vinnytskyi district scope, NEPTUN attribution and manual
+previews without token fields. Existing enabled settings are preserved; retired
+provider-token bytes are erased and persisted empty without resetting Wi-Fi,
+agent identities, colors or weekly statistics. NEPTUN is a third-party aggregator,
+not a replacement for official air-alert notifications or sirens.
+
+Validation: PlatformIO ESP32-S3 build and native export passed; 402 firmware
+tests passed with two existing skips, including the saved live NEPTUN payload.
+The 32 parser/transport/state cases, 57 network contract checks, 20 renderer
+checks, 57 browser-script checks and 34 filesystem-bundle checks passed.
+Targeted Dart analysis is clean. Root/compatibility OTA copies have matching
+version, size and SHA-256. Physical installation and soak testing remain
+separate on-device checks.
+
+## Previous Quiet Unknown-Data Release
+
 Version `1792494797309` removes the grey/white unknown-data symbol from
 the LED matrix. Only yellow/red alert levels and deliberately started
 manual previews activate the matrix overlay. Enabling automatic alerts,

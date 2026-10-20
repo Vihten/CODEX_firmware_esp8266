@@ -71,8 +71,6 @@ struct NetworkCommand {
   uint8_t days = 0;
   bool enabled = false;
   bool automatic = false;
-  bool clearToken = false;
-  char apiToken[129] = {};
   char ssid[33] = {};
   char password[65] = {};
 };

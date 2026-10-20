@@ -22,8 +22,8 @@ class Visual {
                   from_.blue + (to_.blue - from_.blue) * t,
                   from_.amount + (to_.amount - from_.amount) * t};
     }
-    // Unknown remains a distinct network/web state, never a matrix warning.
-    level = level == 1 || level == 2 ? level : 0;
+    // Verified active with unspecified cause is distinct from unavailable data.
+    level = level == 1 || level == 2 || level == 4 ? level : 0;
     if (level != level_) {
       level_ = level;
       if (level) glyphLevel_ = level;
@@ -31,6 +31,7 @@ class Visual {
       to_.amount = level ? 1.0f : 0.0f;
       if (level == 1) { to_.red = 96; to_.green = 67; to_.blue = 0; }
       if (level == 2) { to_.red = 96; to_.green = 6; to_.blue = 0; }
+      if (level == 4) { to_.red = 80; to_.green = 44; to_.blue = 0; }
       startedAt_ = now;
     }
     return current_;
@@ -65,7 +66,11 @@ inline bool iconPixel(uint8_t level, unsigned x, unsigned y) {
   static constexpr char rocket[kIconHeight][kIconWidth + 1] = {
       ".............", "....#.##.....", "...#####.....", "..######.....",
       "...#.####....", "......####...", ".........#...", "............."};
-  const auto *glyph = level == 1 ? drone : level == 2 ? rocket : nullptr;
+  static constexpr char unspecified[kIconHeight][kIconWidth + 1] = {
+      ".............", "......##.....", "......##.....", "......##.....",
+      "......##.....", ".............", "......##.....", "............."};
+  const auto *glyph = level == 1 ? drone : level == 2 ? rocket :
+      level == 4 ? unspecified : nullptr;
   return glyph && glyph[y][x] == '#';
 }
 

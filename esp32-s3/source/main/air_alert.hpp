@@ -5,11 +5,10 @@
 
 namespace air_alert {
 
-enum class Level : uint8_t { Clear = 0, Yellow = 1, Red = 2, Unknown = 3 };
+enum class Level : uint8_t { Clear = 0, Yellow = 1, Red = 2, Unknown = 3, Unspecified = 4 };
 
 struct PollJob {
   uint32_t generation = 0;
-  char token[129] = {};
 };
 
 struct PollResult {
@@ -21,7 +20,11 @@ struct PollResult {
 };
 
 constexpr bool active(Level level) {
-  return level == Level::Yellow || level == Level::Red;
+  return level == Level::Yellow || level == Level::Red || level == Level::Unspecified;
+}
+
+constexpr unsigned priority(Level level) {
+  return level == Level::Red ? 3 : level == Level::Unspecified ? 2 : level == Level::Yellow ? 1 : 0;
 }
 
 struct State {
@@ -73,11 +76,11 @@ struct State {
         (fresh(now, connected, configured) || active(last) ? last : Level::Unknown);
     if (!manual(now)) return real;
     const Level demo = static_cast<Level>(demoLevel);
-    return active(real) && uint8_t(real) > demoLevel ? real : demo;
+    return priority(real) > priority(demo) ? real : demo;
   }
 
   void startDemo(Level level, uint32_t now) {
-    if (!active(level)) return;
+    if (level != Level::Yellow && level != Level::Red) return;
     demoLevel = uint8_t(level);
     demoAt = now;
   }

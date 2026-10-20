@@ -1,15 +1,8 @@
 <section class='section' aria-labelledby='air-alert-heading'>
   <div class='section-head'><h2 id='air-alert-heading'>Повітряна тривога</h2></div>
-  <p class='muted'>Вінниця та Вінницька громада · Джерело: <a href='https://alerts.in.ua/' target='_blank' rel='noopener noreferrer'>alerts.in.ua</a></p>
+  <p class='muted'>Вінницький район · Джерело: <a href='https://neptun.in.ua/' target='_blank' rel='noopener noreferrer'>NEPTUN</a></p>
   <form id='air-alert-settings' method='post' action='/air-alert'>
     <label class='checkbox-label'><input type='checkbox' name='enabled' value='1' {{0}}>Індикація тривоги у верхніх кутах</label>
-    <div class='field'>
-      <label for='air-alert-token'>API-токен<input id='air-alert-token' type='password' name='api_token' maxlength='128' autocomplete='off' spellcheck='false' aria-describedby='air-alert-token-help air-alert-token-state'></label>
-      <p id='air-alert-token-help' class='muted'>Порожнє поле залишає збережений токен. <a href='https://alerts.in.ua/api-request' target='_blank' rel='noopener noreferrer'>Отримати токен</a></p>
-      <p class='muted'>Вводьте токен лише у довіреній локальній мережі: вебсторінка використовує HTTP без шифрування.</p>
-      <p id='air-alert-token-state' class='muted' data-air-alert-token>{{2}}</p>
-    </div>
-    <label class='checkbox-label'><input type='checkbox' name='clear_token' value='1'>Видалити збережений токен</label>
     <button type='submit' name='mode' value='save'>Зберегти</button>
   </form>
   <p class='muted' data-air-alert-note role='status'>{{3}}</p>
@@ -24,6 +17,5 @@
   </form>
   <p class='muted' data-air-alert-manual>{{7}}</p>
   <p class='muted'>Ручний тест не знижує рівень реальної червоної тривоги.</p>
-  <p class='muted'>Піктограми позначають рівень тривоги, а не підтверджений тип загрози.</p>
-  <p class='muted'>Допоміжна індикація не замінює офіційні сповіщення. Відсутність даних не означає відбій.</p>
+  <p class='muted'>NEPTUN: неофіційний агрегатор. Допоміжна індикація не замінює офіційні сповіщення. Відсутність даних не означає відбій.</p>
 </section>

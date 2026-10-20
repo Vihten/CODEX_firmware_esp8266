@@ -211,6 +211,11 @@ PollResult poll(const PollJob &job) {
   }
   esp_tls_t *tls = esp_tls_init();
   if (!tls) { result.failure = Failure::Memory; return finish(); }
+  const auto captureTlsError = [&]() {
+    esp_tls_error_handle_t handle = nullptr;
+    if (esp_tls_get_error_handle(tls, &handle) == ESP_OK)
+      result.tlsError = esp_tls_get_and_clear_last_error(handle, &result.tlsCode, &result.tlsFlags);
+  };
   esp_tls_cfg_t config{};
   config.non_block = true;
   config.timeout_ms = 4000;
@@ -227,6 +232,7 @@ PollResult poll(const PollJob &job) {
   }
   if (connected != 1 || esp_timer_get_time() >= deadline) {
     result.failure = esp_timer_get_time() >= deadline ? Failure::Timeout : Failure::Tls;
+    captureTlsError();
     esp_tls_conn_destroy(tls);
     return finish();
   }
@@ -268,6 +274,7 @@ PollResult poll(const PollJob &job) {
   result.httpStatus = int(r.status);
   if (r.status == 429) result.retryAfterMs = r.retry;
   // TLS owns sizable internal buffers: release them before allocating cJSON nodes.
+  captureTlsError();
   esp_tls_conn_destroy(tls);
   if (parsed && r.complete && !r.bad && r.status == 200 && esp_timer_get_time() < deadline)
     result.valid = parseBody(r.body, r.used, result.level);

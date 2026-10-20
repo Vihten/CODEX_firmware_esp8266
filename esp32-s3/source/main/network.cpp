@@ -116,6 +116,7 @@ struct View {
   air_alert::Failure airFailure = air_alert::Failure::None;
   int airHttpStatus = 0;
   uint32_t airPollMs = 0;
+  int airTlsError = 0, airTlsCode = 0, airTlsFlags = 0;
   uint32_t airAge = UINT32_MAX, airRemaining = 0;
   char airStatus[96] = {}, airDetails[160] = {}, airSource[96] = {};
   bool overrideColor[kAgentCapacity] = {};
@@ -137,6 +138,7 @@ struct Model {
   int airHttpStatus = 0;
   air_alert::Failure airFailure = air_alert::Failure::None;
   uint32_t airPollMs = 0;
+  int airTlsError = 0, airTlsCode = 0, airTlsFlags = 0;
   ControlFrame control;
   RenderStatus render;
   Manifest manifest;
@@ -352,6 +354,7 @@ void serviceAirAlert() {
     model.airHttpStatus = result.httpStatus;
     model.airFailure = result.failure;
     model.airPollMs = result.elapsedMs;
+    model.airTlsError = result.tlsError; model.airTlsCode = result.tlsCode; model.airTlsFlags = result.tlsFlags;
     model.airFetchFailed = !result.valid;
     model.airNextAt = now + std::min(uint32_t(86400000), std::max(kAirPollIntervalMs, result.retryAfterMs));
   }
@@ -375,6 +378,7 @@ void fillAirAlertView(View &view) {
   view.airFailure = model.airFailure;
   view.airHttpStatus = model.airHttpStatus;
   view.airPollMs = model.airPollMs;
+  view.airTlsError = model.airTlsError; view.airTlsCode = model.airTlsCode; view.airTlsFlags = model.airTlsFlags;
   view.airRemaining = model.air.remainingSeconds(now);
   view.airAge = model.air.seen ? (now - model.air.checkedAt) / 1000 : UINT32_MAX;
   copy(view.airStatus, !view.airEnabled && !view.airManual ? "Вимкнено" :
@@ -1544,6 +1548,9 @@ esp_err_t portalStatus(httpd_req_t *request) {
     string(airStatus, "failure", air_alert::failureName(view.airFailure));
     number(airStatus, "http_status", view.airHttpStatus);
     number(airStatus, "poll_ms", view.airPollMs);
+    number(airStatus, "tls_error", view.airTlsError);
+    number(airStatus, "tls_code", view.airTlsCode);
+    number(airStatus, "tls_flags", view.airTlsFlags);
     number(airStatus, "remaining_seconds", view.airRemaining);
     if (view.airAge == UINT32_MAX) { if (!cJSON_AddNullToObject(airStatus, "updated_age_seconds")) okay = false; }
     else number(airStatus, "updated_age_seconds", view.airAge);

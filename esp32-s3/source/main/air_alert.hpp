@@ -34,6 +34,7 @@ struct PollResult {
   bool valid = false;
   Failure failure = Failure::None;
   uint32_t elapsedMs = 0;
+  int tlsError = 0, tlsCode = 0, tlsFlags = 0;
   uint32_t retryAfterMs = 30000;
 };
 

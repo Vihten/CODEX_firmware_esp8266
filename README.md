@@ -20,6 +20,15 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792501365000` adds the ESP-TLS error code, underlying mbedTLS code
+and certificate-verification flags to alert diagnostics. The PSRAM change
+is installed on the controller, but its HTTPS connection still fails before
+receiving an HTTP response; this release collects the precise cause without
+weakening certificate verification. PlatformIO build and 91 targeted
+state/transport/network tests passed. Further hardware diagnosis is in progress.
+
+## Previous PSRAM Correction
+
 Version `1792500934859` fixes the NEPTUN response buffer competing with TLS
 for internal RAM on the real S3 configuration (`SPIRAM_USE_CAPS_ALLOC`, not
 generic malloc). The bounded 64 KiB body now explicitly uses PSRAM, leaving

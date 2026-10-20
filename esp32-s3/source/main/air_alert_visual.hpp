@@ -5,6 +5,7 @@
 namespace air_alert {
 
 constexpr uint32_t kTransitionMs = 600;
+constexpr float kSkyTintStrength = .35f;
 
 struct Tint {
   float red = 0, green = 0, blue = 0, amount = 0;
@@ -33,9 +34,9 @@ class Visual {
     if (level != level_) {
       level_ = level;
       from_ = to_ = current_;
-      to_.amount = level == 1 || level == 2 ? 1.0f : 0.0f;
-      if (level == 1) { to_.red = 1; to_.green = .70f; to_.blue = 0; }
-      if (level == 2) { to_.red = 1; to_.green = .06f; to_.blue = 0; }
+      to_.amount = level == 1 || level == 2 ? kSkyTintStrength : 0.0f;
+      if (level == 1) { to_.red = 1.8f; to_.green = 1.2f; to_.blue = 0; }
+      if (level == 2) { to_.red = 1.8f; to_.green = .06f; to_.blue = 0; }
       startedAt_ = now;
     }
     return current_;
@@ -55,20 +56,40 @@ inline void tintSky(uint8_t *rgb, uint8_t effectMask, bool fixed,
   unsigned peak = rgb[0];
   if (rgb[1] > peak) peak = rgb[1];
   if (rgb[2] > peak) peak = rgb[2];
-  // A bounded source-space lift keeps nights readable without bypassing dimming.
-  if (peak < 48) peak = 48;
-  if (peak > 96) peak = 96;
+  // A color grade, not a luminous overlay: retain darkness and object contrast.
+  if (!peak || peak > 64 || (rgb[0] >= rgb[1] && rgb[1] > rgb[2] && peak > 24)) return;
   const float palette[] = {tint.red, tint.green, tint.blue};
   for (unsigned channel = 0; channel < 3; ++channel)
     rgb[channel] = uint8_t(rgb[channel] * (1 - tint.amount) +
                            peak * palette[channel] * tint.amount + .5f);
 }
 
-inline bool indicatorVisible(uint8_t level, bool alternateScreen, bool on,
+inline void tintBackdrop(uint8_t *rgb, const uint8_t *background,
+                         const Tint &tint) {
+  if (tint.amount <= 0) return;
+  uint8_t graded[3] = {background[0], background[1], background[2]};
+  tintSky(graded, 0, false, tint);
+  // Reconstruct only the sky contribution to pale anti-aliased edges. Opaque
+  // white cores have alpha 1 and remain unchanged; emission keeps its detail.
+  float alpha = 1;
+  for (unsigned channel = 0; channel < 3; ++channel) {
+    if (background[channel] == 255) continue;
+    const float coverage = float(int(rgb[channel]) - background[channel]) /
+                           (255 - background[channel]);
+    if (coverage < alpha) alpha = coverage;
+  }
+  if (alpha < 0) alpha = 0;
+  for (unsigned channel = 0; channel < 3; ++channel) {
+    const float value = rgb[channel] + (1 - alpha) *
+        (int(graded[channel]) - background[channel]);
+    rgb[channel] = value < 0 ? 0 : value > 255 ? 255 : uint8_t(value + .5f);
+  }
+}
+
+inline bool indicatorVisible(uint8_t level, bool /* alternateScreen */, bool on,
                              bool maintenance, uint8_t brightness) {
   level = normalizedLevel(level);
-  return on && !maintenance && brightness && level &&
-      (alternateScreen || level == 3);
+  return on && !maintenance && brightness && level;
 }
 
 inline bool indicatorPixel(uint8_t level, unsigned x, unsigned y) {

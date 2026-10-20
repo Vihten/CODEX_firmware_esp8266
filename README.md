@@ -20,6 +20,26 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792486005042` softens the air-alert sky treatment. A 35% color
+grade replaces the former opaque tint and removes the absolute brightness
+lift. Original sky gradients and darkness remain visible; black stays black.
+Warm/bright unmasked artwork is protected in addition to the existing masks.
+
+Each source frame is graded before temporal interpolation, avoiding a color
+pop when cloud/object coverage changes. Pale cloud and moon edges adapt only
+their estimated background contribution; white cores and foreground detail
+remain intact. Background estimation uses a bounded, allocation-free search.
+The normal brightness controls, 600 ms interruptible transition, memorial
+exclusion and 30 FPS physical output are unchanged.
+The legacy blue safeguard is bypassed while alert tinting is active so it
+cannot recolor the graded night. A steady 2x2 corner indicator identifies the
+alert level when very low brightness quantizes away the subtle sky tint.
+Validation: PlatformIO build, 381 firmware tests (two existing skips), Dart
+analysis, actual artwork/mask regressions and native render-pipeline snapshots
+at 20% and 100% brightness passed. Physical appearance remains a hardware check.
+
+## Previous Air Alert Release
+
 Version `1792484044073` adds optional air-alert sky tinting for Vinnytsia
 and its territorial community. Configure it under Settings > Air alert;
 obtain a personal API token at https://alerts.in.ua/api-request and enter it

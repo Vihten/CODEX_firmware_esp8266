@@ -106,6 +106,7 @@ float entranceOriginVisibility(const EntranceOrigin &origin, float dx, float dy)
 }
 // Keep dark blue visible at the usual 20% setting without cancelling dimming.
 void preserveNightSkyPixel(uint8_t *rgb, uint16_t index, uint8_t effectType, uint8_t brightness) {
+  if (!status.memorialTransition && airAlertVisual.tint().amount > 0) return;
   if (!brightness || effectType || pgm_read_byte(&ENTRANCE_FIXED[index]) ||
       rgb[2] < 2 || rgb[2] > 4 || rgb[1] >= rgb[2] || rgb[0] > rgb[1]) return;
   const uint8_t minimumBlue = 5;
@@ -1019,10 +1020,33 @@ void drawAirAlertIndicator(bool alternateScreen) {
             strip.Color(color.red, color.green, color.blue));
 }
 
-void tintAirAlertSky(uint8_t *rgb, uint16_t index) {
-  if (!status.memorialTransition)
-    air_alert::tintSky(rgb, effectMask[index],
-        pgm_read_byte(&ENTRANCE_FIXED[index]) != 0, airAlertVisual.tint());
+void tintAirAlertSky(uint8_t *rgb, uint16_t index, uint8_t type,
+                     uint32_t frameOffset, uint32_t maskOffset) {
+  const auto tint = airAlertVisual.tint();
+  if (status.memorialTransition || tint.amount <= 0 || pgm_read_byte(&ENTRANCE_FIXED[index])) return;
+  if (!type) { air_alert::tintSky(rgb, 0, false, tint); return; }
+  if (type != 3 && type < 64) return;
+  if (rgb[0] >= 224 && rgb[1] >= 224 && rgb[2] >= 224) return;
+  const int x = index % MATRIX_WIDTH, y = index / MATRIX_WIDTH;
+  constexpr int dx[] = {-1, 1, 0, 0}, dy[] = {0, 0, -1, 1};
+  // Bounded cardinal search in this source frame, before temporal interpolation.
+  for (int radius = 1; radius <= 4; ++radius) {
+    unsigned sum[3] = {}, count = 0;
+    for (unsigned direction = 0; direction < 4; ++direction) {
+      const int nx = x + dx[direction] * radius, ny = y + dy[direction] * radius;
+      if (nx < 0 || nx >= MATRIX_WIDTH || ny < 0 || ny >= MATRIX_HEIGHT) continue;
+      const uint16_t next = ny * MATRIX_WIDTH + nx;
+      if (assets.effects[maskOffset + next] || pgm_read_byte(&ENTRANCE_FIXED[next])) continue;
+      const uint8_t *sky = assets.animation + frameOffset + next * 3;
+      if (sky[2] < sky[1] || sky[2] < sky[0] + 2 || sky[2] > 40) continue;
+      for (unsigned channel = 0; channel < 3; ++channel) sum[channel] += sky[channel];
+      ++count;
+    }
+    if (!count) continue;
+    const uint8_t background[] = {uint8_t(sum[0] / count), uint8_t(sum[1] / count), uint8_t(sum[2] / count)};
+    air_alert::tintBackdrop(rgb, background, tint);
+    return;
+  }
 }
 
 bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
@@ -1075,11 +1099,13 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
       const uint8_t effectType = effectRow[x];
       const uint16_t pixelIndex = y * MATRIX_WIDTH + x;
       effectMask[pixelIndex] = effectType;
+      tintAirAlertSky(rgb, pixelIndex, effectType, frameOffset, effectOffset);
       modulateSky(rgb, effectType, x, y);
       if (sceneFraction) {
         const uint8_t nextType = assets.effects[nextMaskOffset + pixelIndex];
         uint8_t nextRgb[3];
         memcpy(nextRgb, assets.animation + nextOffset + pixelIndex * 3, 3);
+        tintAirAlertSky(nextRgb, pixelIndex, nextType, nextOffset, nextMaskOffset);
         modulateSky(nextRgb, nextType, x, y);
         for (unsigned channel = 0; channel < 3; ++channel)
           rgb[channel] = subpixel::mix(rgb[channel], nextRgb[channel], sceneFraction);
@@ -1098,7 +1124,6 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
         }
       }
       const uint16_t entranceIndex = (y * MATRIX_WIDTH + x) * 3;
-      tintAirAlertSky(rgb, pixelIndex);
       memcpy(&entrancePixels[entranceIndex], rgb, 3);
       preserveNightSkyPixel(rgb, pixelIndex, effectMask[pixelIndex], strip.getBrightness());
       #endif

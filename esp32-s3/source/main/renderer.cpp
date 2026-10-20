@@ -1008,19 +1008,26 @@ void drawIpAddress() {
   if (second[0]) drawIpLine(second, 11);
 }
 
-void drawAirAlertIndicator(bool /* alternateScreen */) {
+void drawAirAlertIndicator(bool alternateScreen) {
   const auto overlay = airAlertVisual.overlay();
   if (!air_alert::indicatorVisible(overlay.amount, control.on,
           control.maintenance != Maintenance::None, control.brightness)) return;
   uint8_t *pixels = strip.getPixels();
   if (!pixels) return;
-  for (unsigned y = 0; y < 6 && y < MATRIX_HEIGHT; ++y)
+  for (unsigned y = 0; y < air_alert::kIconHeight && y < MATRIX_HEIGHT; ++y)
     for (unsigned x = 0; x < MATRIX_WIDTH; ++x) {
       if (!air_alert::cornerPixel(x, y, MATRIX_WIDTH, MATRIX_HEIGHT)) continue;
       const unsigned index = y * MATRIX_WIDTH + x;
-      if (!pgm_read_byte(&ENTRANCE_FIXED[index])) continue;
-      const unsigned localX = x < MATRIX_WIDTH / 2 ? x : MATRIX_WIDTH - 1 - x;
-      const bool ink = air_alert::iconPixel(airAlertVisual.glyphLevel(), localX, y);
+      const bool fixed = pgm_read_byte(&ENTRANCE_FIXED[index]) != 0;
+      // Service screens retain compact corners rather than covering their text.
+      if (alternateScreen && !fixed) continue;
+      const unsigned paneWidth = min(air_alert::kIconWidth, unsigned(MATRIX_WIDTH / 2));
+      const unsigned localX = x < MATRIX_WIDTH / 2 ? x : x - (MATRIX_WIDTH - paneWidth);
+      const auto level = airAlertVisual.glyphLevel();
+      const bool ink = alternateScreen || air_alert::iconPixel(level, localX, y);
+      if (!ink && !air_alert::iconBackdrop(level, localX, y)) continue;
+      // Preserve bright objects around the silhouette, but never punch holes in it.
+      if (!ink && !fixed && effectMask[index]) continue;
       uint8_t *grb = pixels + physicalIndex(x, y) * 3;
       grb[0] = air_alert::composite(grb[0], ink ? overlay.green : 0, overlay.amount, control.brightness);
       grb[1] = air_alert::composite(grb[1], ink ? overlay.red : 0, overlay.amount, control.brightness);

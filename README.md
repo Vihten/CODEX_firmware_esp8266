@@ -20,6 +20,25 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792492245939` enlarges alert glyphs to a 13x8 canvas in each
+upper corner, including the adjacent dark sky area. The delta-wing drone
+now uses 40 lit pixels; the rocket uses 36, with a nose, fuselage, window,
+fins and exhaust. Their proportions account for the 7x12 mm LED pitch.
+
+Only the glyph and a bounded one-pixel dark halo are composited, rather than
+blanking a rectangular panel. Bright foreground outside the glyph ink is
+preserved; ink remains complete when it crosses a cloud. All pixels outside
+the upper 13x8 zones remain unchanged. IP/memorial screens retain compact
+44-pixel corner status lights instead, protecting their text and artwork.
+
+Global brightness, schedule, manual power, 600 ms return fade, alert-level
+semantics and physical 30 FPS output remain unchanged. Validation: PlatformIO
+build, 386 firmware tests (two existing skips), 56 browser-script checks,
+targeted Dart analysis and native output inspection at 20%/100% brightness
+passed. Physical readability and installation remain on-device checks.
+
+## Previous Small Glyph Release
+
 Version `1792491351127` replaces solid corner fill with compact mirrored
 pixel-art glyphs: a yellow delta-wing drone for yellow level, a red rocket
 for red level and a grey question mark for unknown data. These are symbolic

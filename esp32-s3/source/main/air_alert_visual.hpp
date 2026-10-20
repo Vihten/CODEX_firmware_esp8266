@@ -4,6 +4,7 @@
 
 namespace air_alert {
 constexpr uint32_t kTransitionMs = 600;
+constexpr unsigned kIconWidth = 13, kIconHeight = 8;
 
 struct Overlay {
   float red = 0, green = 0, blue = 0, amount = 0;
@@ -45,9 +46,8 @@ class Visual {
 };
 
 inline bool cornerPixel(unsigned x, unsigned y, unsigned width, unsigned height) {
-  constexpr unsigned rows[] = {7, 5, 4, 3, 2, 1};
-  if (x >= width || y >= height || y >= 6) return false;
-  const unsigned extent = rows[y] < width / 2 ? rows[y] : width / 2;
+  if (x >= width || y >= height || y >= kIconHeight) return false;
+  const unsigned extent = kIconWidth < width / 2 ? kIconWidth : width / 2;
   return x < extent || x >= width - extent;
 }
 
@@ -56,16 +56,26 @@ inline bool indicatorVisible(float amount, bool on, bool maintenance, uint8_t br
 }
 
 inline bool iconPixel(uint8_t level, unsigned x, unsigned y) {
-  if (x >= 7 || y >= 6 || !cornerPixel(x, y, 50, 20)) return false;
-  // Local coordinates face outward; the renderer mirrors the right glyph.
-  constexpr uint8_t drone[] = {
-      0b0010001, 0b0001010, 0b0001100, 0b0000110, 0b0000001, 0};
-  constexpr uint8_t rocket[] = {
-      0b0100000, 0b0011000, 0b0001101, 0b0000110, 0b0000011, 0b0000001};
-  constexpr uint8_t unknown[] = {
-      0b0000111, 0b0000100, 0b0000010, 0, 0b0000010, 0};
-  const uint8_t *glyph = level == 1 ? drone : level == 2 ? rocket : level == 3 ? unknown : nullptr;
-  return glyph && (glyph[y] & (1U << x));
+  if (x >= kIconWidth || y >= kIconHeight) return false;
+  // Wide delta wing / narrow fuselage with fins, drawn for the 7 x 12 mm pitch.
+  static constexpr char drone[kIconHeight][kIconWidth + 1] = {
+      "......#......", ".....###.....", "....#####....", "...##.#.##...",
+      "..##..#..##..", ".##...#...##.", "#############", ".....###....."};
+  static constexpr char rocket[kIconHeight][kIconWidth + 1] = {
+      "......#......", ".....###.....", "....#####....", "....##.##....",
+      "....#####....", "..#########..", "..##.###.##..", ".....#.#....."};
+  static constexpr char unknown[kIconHeight][kIconWidth + 1] = {
+      ".....###.....", "....##.##....", ".......##....", "......##.....",
+      ".....##......", ".............", ".....##......", ".....##......"};
+  const auto *glyph = level == 1 ? drone : level == 2 ? rocket : level == 3 ? unknown : nullptr;
+  return glyph && glyph[y][x] == '#';
+}
+
+inline bool iconBackdrop(uint8_t level, unsigned x, unsigned y) {
+  if (x >= kIconWidth || y >= kIconHeight) return false;
+  for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx)
+    if (iconPixel(level, unsigned(int(x) + dx), unsigned(int(y) + dy))) return true;
+  return false;
 }
 
 // The background is already brightness-scaled GRB. Never rescale the scene.

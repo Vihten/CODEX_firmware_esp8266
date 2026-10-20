@@ -25,7 +25,10 @@ verification for NEPTUN's Google Trust Services chain. The controller reported
 `MBEDTLS_ERR_X509_FATAL_ERROR` before receiving HTTP data with this SDK option
 disabled. Trusted CA and hostname checks remain enabled. The PSRAM allocation
 and bounded transport diagnostics are retained. PlatformIO build and 410
-firmware tests passed (two existing skips). Hardware verification follows OTA.
+firmware tests passed (two existing skips). Installed over Wi-Fi on the S3:
+NEPTUN returns HTTP 200 with fresh all-clear data and no TLS errors. A manual
+yellow test produced RGB (18,13,0) at both drone glyph sample pixels in the
+actual transferred frame at brightness 49; the test was stopped afterward.
 
 ## Previous TLS Diagnostic Release
 

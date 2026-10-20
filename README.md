@@ -20,6 +20,25 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792493328356` keeps alert glyphs in their existing upper-corner
+locations and rotates their noses toward the pyramid at the bottom center.
+The left glyph points down-right; the right glyph mirrors it and points
+down-left. The physical 7x12 mm LED pitch is included in the pre-rasterized
+143-degree turn, with 75% size so the silhouettes fit without clipping.
+The drone uses 31 lit pixels and the rocket 24, down from 40 and 36.
+
+The 13x8 corner canvases, original sky and pyramid, brightness controls,
+halo/foreground rules, 600 ms fade, service-screen fallback and physical
+30 FPS output are unchanged. Unknown-data question marks stay upright and
+readable rather than being mirrored. No runtime rotation or new allocation
+is added to the renderer.
+Validation: PlatformIO build, 387 firmware tests (two existing skips),
+targeted Dart analysis and native frame inspection passed. Orientation tests
+confirm the left nose at (9,6), mirrored right nose at (40,6), unchanged corner
+origins and an untouched pyramid. On-device installation remains unverified.
+
+## Previous Enlarged Glyph Release
+
 Version `1792492245939` enlarges alert glyphs to a 13x8 canvas in each
 upper corner, including the adjacent dark sky area. The delta-wing drone
 now uses 40 lit pixels; the rocket uses 36, with a nose, fuselage, window,

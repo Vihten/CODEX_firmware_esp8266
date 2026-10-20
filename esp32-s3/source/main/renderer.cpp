@@ -1022,8 +1022,9 @@ void drawAirAlertIndicator(bool alternateScreen) {
       // Service screens retain compact corners rather than covering their text.
       if (alternateScreen && !fixed) continue;
       const unsigned paneWidth = min(air_alert::kIconWidth, unsigned(MATRIX_WIDTH / 2));
-      const unsigned localX = x < MATRIX_WIDTH / 2 ? x : x - (MATRIX_WIDTH - paneWidth);
       const auto level = airAlertVisual.glyphLevel();
+      unsigned localX = x < MATRIX_WIDTH / 2 ? x : x - (MATRIX_WIDTH - paneWidth);
+      if (x >= MATRIX_WIDTH / 2 && (level == 1 || level == 2)) localX = paneWidth - 1 - localX;
       const bool ink = alternateScreen || air_alert::iconPixel(level, localX, y);
       if (!ink && !air_alert::iconBackdrop(level, localX, y)) continue;
       // Preserve bright objects around the silhouette, but never punch holes in it.

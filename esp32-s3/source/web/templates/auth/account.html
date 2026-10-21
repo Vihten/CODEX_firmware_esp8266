@@ -1,0 +1,14 @@
+<p><a href='/'>До контролера</a></p>
+<h2>Змінити пароль</h2>
+<form method='post' action='/auth/password'>
+<input type='hidden' name='csrf' value='{{csrf}}'>
+<label>Поточний пароль<input type='password' name='current_password' autocomplete='current-password' maxlength='128' required></label>
+<label>Новий пароль<input type='password' name='new_password' autocomplete='new-password' aria-describedby='password-rule' minlength='10' maxlength='128' required></label>
+<small id='password-rule'>Щонайменше 10 символів. Максимум 128 латинських або 64 українські літери. Після збереження всі сеанси буде завершено.</small>
+<label>Повторіть новий пароль<input type='password' name='confirm_password' autocomplete='new-password' maxlength='128' required></label>
+<button type='submit'>Змінити пароль</button>
+</form>
+<form method='post' action='/auth/logout'>
+<input type='hidden' name='csrf' value='{{csrf}}'>
+<button class='secondary' type='submit'>Вийти з усіх сеансів</button>
+</form>

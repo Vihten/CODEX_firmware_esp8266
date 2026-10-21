@@ -1,5 +1,6 @@
 #include "runtime.hpp"
 #include "web_files.hpp"
+#include "web_auth.hpp"
 #include "preview.hpp"
 #include "weekly.hpp"
 #include "agent_update.hpp"
@@ -1464,6 +1465,8 @@ StaticQueue_t previewStreamQueueStorage;
 uint8_t previewStreamQueueBytes[sizeof(httpd_req_t *)];
 QueueHandle_t previewStreamQueue = nullptr;
 std::atomic<bool> previewStreamReady{false};
+std::atomic<uint32_t> previewSessionRevision{0};
+char previewSessionToken[65] = {};
 
 bool previewStreamAllowed() {
   View view;
@@ -1488,8 +1491,11 @@ void previewStreamTask(void *) {
     uint32_t lastSequence = 0;
     bool sent = false;
     const uint32_t started = uptimeMs();
+    const uint32_t authRevision = previewSessionRevision.load();
+    char authToken[65]; std::memcpy(authToken, previewSessionToken, sizeof(authToken));
     TickType_t wake = xTaskGetTickCount();
-    while (writable && uint32_t(uptimeMs() - started) < 30000 && previewStreamAllowed()) {
+    while (writable && uint32_t(uptimeMs() - started) < 30000 &&
+           authRevision == web_auth::sessionRevision() && web_auth::sessionActive(authToken) && previewStreamAllowed()) {
       if (copyPreview(bytes, sizeof(bytes), uptimeMs())) {
         uint32_t sequence = 0;
         for (unsigned i = 0; i < 4; ++i) sequence |= uint32_t(bytes[8 + i]) << (8 * i);
@@ -1510,6 +1516,8 @@ void previewStreamTask(void *) {
     if (socket >= 0) (void)shutdown(socket, writable && sent ? SHUT_WR : SHUT_RDWR);
     (void)httpd_req_async_handler_complete(request);
     --activeHandlers;
+    std::memset(authToken, 0, sizeof(authToken));
+    std::memset(previewSessionToken, 0, sizeof(previewSessionToken));
     previewStreamBusy.store(false, std::memory_order_release);
   }
 }
@@ -1524,6 +1532,14 @@ esp_err_t framesGet(httpd_req_t *request) {
     previewStreamBusy.store(false, std::memory_order_release);
     return error(request, "503 Service Unavailable", "Preview stream is draining for maintenance.");
   }
+  // Revalidate after reserving the worker; it keeps its own token, not HTTP headers.
+  // Capture the revision first so a concurrent password commit cannot grant a new epoch.
+  const uint32_t authRevision = web_auth::sessionRevision();
+  if (!web_auth::captureAuthenticatedSession(request, previewSessionToken)) {
+    previewStreamBusy.store(false, std::memory_order_release);
+    return error(request, "401 Unauthorized", "Потрібен вхід: /login");
+  }
+  previewSessionRevision.store(authRevision);
   httpd_req_t *async = nullptr;
   if (httpd_req_async_handler_begin(request, &async) != ESP_OK) {
     previewStreamBusy.store(false, std::memory_order_release);
@@ -2018,14 +2034,39 @@ esp_err_t commandPost(httpd_req_t *request) {
   httpd_resp_set_hdr(request, "Cache-Control", "no-store"); httpd_resp_set_hdr(request, "Connection", "close");
   return httpd_resp_send(request, nullptr, 0);
 }
+using HttpHandler = esp_err_t (*)(httpd_req_t *);
+struct ProtectedRoute { HttpHandler handler = nullptr; };
+ProtectedRoute protectedRoutes[40];
+size_t protectedRouteCount = 0;
+esp_err_t protectedRequest(httpd_req_t *request) {
+  HandlerScope scope;
+  if (!web_auth::authorize(request)) return ESP_OK;
+  const auto *route = static_cast<const ProtectedRoute *>(request->user_ctx);
+  return route && route->handler ? route->handler(request) : ESP_FAIL;
+}
+bool machineRoute(const char *uri, httpd_method_t method) {
+  // LAN agents keep their existing telemetry and signed-update protocol.
+  // Browser actions (upgrade, rename, uninstall) are deliberately not exempt.
+  if (method == HTTP_POST) return !std::strcmp(uri, "/agent") ||
+      !std::strcmp(uri, "/agent-update-enroll") || !std::strcmp(uri, "/agent-update-challenge") ||
+      !std::strcmp(uri, "/agent-update-poll");
+  return method == HTTP_GET && (!std::strcmp(uri, "/agent-update/manifest.json") ||
+      !std::strcmp(uri, "/agent-update/package.zip"));
+}
 bool initializeHttp() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG(); config.core_id = 0; config.stack_size = 16384;
-  config.max_uri_handlers = 36; config.max_open_sockets = 4; config.lru_purge_enable = true;
+  config.max_uri_handlers = 48; config.max_open_sockets = 4; config.lru_purge_enable = true;
   config.recv_wait_timeout = 2; config.send_wait_timeout = 2;
   if (httpd_start(&model.http, &config) != ESP_OK) return false;
   const auto failed = []() { httpd_stop(model.http); model.http = nullptr; return false; };
-  const auto registerRoute = [](const char *uri, httpd_method_t method, esp_err_t (*handler)(httpd_req_t *)) {
+  protectedRouteCount = 0;
+  const auto registerRoute = [](const char *uri, httpd_method_t method, HttpHandler handler) {
     httpd_uri_t route{}; route.uri = uri; route.method = method; route.handler = handler;
+    if (!machineRoute(uri, method)) {
+      if (protectedRouteCount >= sizeof(protectedRoutes) / sizeof(protectedRoutes[0])) return false;
+      auto &binding = protectedRoutes[protectedRouteCount++]; binding.handler = handler;
+      route.handler = protectedRequest; route.user_ctx = &binding;
+    }
     return httpd_register_uri_handler(model.http, &route) == ESP_OK;
   };
   if (!registerRoute("/", HTTP_GET, page) || !registerRoute("/agents", HTTP_GET, page) ||
@@ -2043,6 +2084,7 @@ bool initializeHttp() {
     if (!registerRoute(uri, HTTP_POST, agentUpdatePost)) return failed();
   for (const char *uri : {"/agent-update/manifest.json", "/agent-update/package.zip"})
     if (!registerRoute(uri, HTTP_GET, agentUpdateArtifact)) return failed();
+  if (!web_auth::registerRoutes(model.http)) return failed();
   previewStreamQueue = xQueueCreateStatic(1, sizeof(httpd_req_t *), previewStreamQueueBytes, &previewStreamQueueStorage);
   previewStreamReady.store(previewStreamQueue &&
     xTaskCreatePinnedToCore(previewStreamTask, "preview-stream", 8192, nullptr, 2, nullptr, 0) == pdPASS,
@@ -2395,6 +2437,7 @@ bool installFirmware() {
 
 void requestMaintenance(Maintenance kind) {
   if (model.releasePending || model.control.maintenance != Maintenance::None) return;
+  web_auth::setMaintenance(true);
   previewStreamSealed.store(true);
   model.control.otaVisualSequence = 0; model.control.otaVisualPercent = 0;
   model.control.otaVisualAnimate = false;
@@ -2411,6 +2454,7 @@ void releaseMaintenance() {
   // Keep the old epoch until Core 1 explicitly reports that it resumed.
   model.releasePending = true; updateControl(); publishView();
   previewStreamSealed.store(false);
+  web_auth::setMaintenance(false);
 }
 bool acknowledged() {
   return model.render.quiescent &&
@@ -2484,6 +2528,7 @@ void serviceMaintenance() {
         saved = saveWeekly() && saved;
         saved = saveMemorialSettings() && saved;
         saved = saveAirAlertSettings() && saved;
+        saved = web_auth::persist() && saved;
         if (model.confirmationPending && std::strcmp(webFilesVersion(), "unavailable") && model.render.watchdogReady && model.render.assetsReady && model.render.frames && model.render.ledError == 0 && model.wifiReady && model.httpReady && model.udp >= 0) {
           if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) model.confirmationPending = false;
           else { message("Boot confirmation could not be persisted."); saved = false; }
@@ -2491,7 +2536,7 @@ void serviceMaintenance() {
         model.persistRetryAt = now + (saved ? 0 : 5000); releaseMaintenance(); break;
       }
       case Maintenance::Ota:
-        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty || web_auth::pendingSave() || web_auth::busy() || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
         if (!model.render.assetsReady || model.render.ledError) {
           otaMessage("OTA refused: renderer unhealthy"); model.manifestReady = false; releaseMaintenance(); break;
         }
@@ -2502,8 +2547,8 @@ void serviceMaintenance() {
         if (model.otaVisualTimedOut) return;
         model.manifestReady = false; model.otaAt = uptimeMs() + 60000; releaseMaintenance(); break;
       case Maintenance::Restart:
-        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty) { releaseMaintenance(); break; }
-        if (!activeHandlers.load() && !uxQueueMessagesWaiting(commandQueue)) esp_restart();
+        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty || web_auth::pendingSave()) { releaseMaintenance(); break; }
+        if (!activeHandlers.load() && !web_auth::busy() && !uxQueueMessagesWaiting(commandQueue)) esp_restart();
         else if (now - model.maintenanceAt >= kMaintenanceTimeout) {
           model.restarting = false; ++model.maintenanceTimeouts;
           message("Restart cancelled: HTTP requests did not drain. Please retry.");
@@ -2522,6 +2567,7 @@ void serviceMaintenance() {
   }
   if (air_alert::busy()) return;
   if ((model.dirty && now - model.dirtyAt >= 300 && due(now, model.persistRetryAt)) ||
+      (web_auth::pendingSave() && due(now, model.persistRetryAt)) ||
       (model.memorialDirty && due(now, model.persistRetryAt)) ||
       (model.airDirty && due(now, model.persistRetryAt)) ||
       (model.weeklyDirty && (now - model.weeklySavedAt >= 300000 || model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
@@ -2530,10 +2576,10 @@ void serviceMaintenance() {
     requestMaintenance(Maintenance::Persist); return;
   }
   if (model.restarting) {
-    if (!model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
+    if (!model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && !web_auth::pendingSave() && !web_auth::busy() && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
     return;
   }
-  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
+  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
   if (!model.connected || model.dirty || model.confirmationPending || !model.render.assetsReady || model.render.ledError) return;
   if (model.updateRequested || due(now, model.otaAt)) queueManifestCheck();
 }
@@ -2549,6 +2595,9 @@ void networkTask(void *) {
   if (!viewMutex || !wifiEvents || !telemetryQueue || !telemetryReplies || !manifestJobs || !manifestResults) { ESP_LOGE(kTag, "Cannot initialize network IPC"); vTaskDelete(nullptr); return; }
   // Complete all boot-time storage and PHY initialization before permitting RMT output.
   loadSettings();
+  bootloader_random_enable();
+  web_auth::initialize();
+  bootloader_random_disable();
   loadAgentUpdateKey();
   loadWeekly();
   loadMemorialSettings();

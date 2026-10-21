@@ -52,6 +52,28 @@ and has no peripheral attached before connecting.
 
 ## Runtime
 
+### Web Password
+
+All browser pages, diagnostics, preview frames and management actions require
+a browser session. On the first visit, `/login` asks the owner to set a password
+and confirm it. The interface remains locked until the credential has been
+committed to NVS. The footer's password/access link opens password change and
+sign-out. A reboot invalidates sessions, not the saved password.
+
+Credentials use a random salt and PBKDF2-HMAC-SHA256, not a plaintext password.
+The separate credential record is saved by the network task only after the
+existing renderer/preview maintenance acknowledgement. Failed or corrupt reads
+do not silently unlock the interface. Password changes preserve Wi-Fi, agent
+names/colors and weekly statistics. There is no default or universal password;
+a forgotten password requires local USB servicing, not merely RESET.
+
+This is a trusted-LAN HTTP interface, not HTTPS: network observers can still
+intercept traffic. Do not expose its port to the Internet, and do not reuse an
+account password. First-time setup should be performed on a trusted network.
+LAN telemetry, UDP discovery and the signed agent-update transport retain their
+existing machine protocol; browser upgrade/rename/uninstall actions are locked.
+This password is not authentication for the telemetry protocol itself.
+
 ### Filesystem Web Project
 
 The portal is served from a real LittleFS directory tree, not inline C++ HTML,

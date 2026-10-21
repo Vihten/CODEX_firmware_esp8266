@@ -417,6 +417,11 @@
       const timeout = setTimeout(() => { request.reason = 'timeout'; request.controller.abort(); }, 6000);
       try {
         const response = await fetch('/status', {signal: request.controller.signal, cache: 'no-store', credentials: 'same-origin', redirect: 'error'});
+        if (response.status === 401) {
+          pageActive = false;
+          window.location.replace('/login');
+          return;
+        }
         if (!response.ok) throw new Error('HTTP');
         const status = await response.json();
         if (!status || !finite(status.uptime_ms) || !finite(status.frames) || !Array.isArray(status.agents)) throw new Error('JSON');

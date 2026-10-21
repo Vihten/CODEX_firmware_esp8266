@@ -20,6 +20,27 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792580756571` adds password protection for all browser pages, diagnostics,
+preview frames and management actions. On the first visit, set the password at
+`/login`; there is no default password. Only a salted PBKDF2-HMAC-SHA256 credential
+is saved in separate NVS storage, after renderer/preview flash exclusion. Storage
+errors fail closed; password changes do not erase Wi-Fi, agents or statistics.
+Up to four random HttpOnly/SameSite browser sessions expire after eight hours.
+Changing the password or signing out revokes sessions and preview streams.
+Origin/form-token checks and bounded retry backoff protect browser mutations.
+
+The existing LAN-agent telemetry/discovery and signed update transport remain
+compatible; they do not use this browser password. HTTP is not encrypted: use a
+trusted LAN, do not reuse an account password and do not expose this port publicly.
+Forgotten passwords require local USB servicing. Physical animation stays at 30 FPS.
+
+Validation: 477 firmware tests passed (two existing skips), including native auth,
+storage-failure, CSRF and stream-expiry cases. Native export, targeted Dart analysis
+and the ESP32-S3 build passed. Rendered setup/login forms were checked at 390 and
+1280 px widths. On-device password entry remains for the owner after OTA.
+
+## Previous Alert Silhouette Release
+
 Version `1792571104322` simplifies the corner air-alert silhouettes for the
 physical 7 x 12 mm LED pitch. The yellow drone has distinct swept wings and a
 fuselage; the red rocket has a narrow body, pointed nose and rear fins. Both

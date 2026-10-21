@@ -1,0 +1,6 @@
+<h2>Вхід</h2>
+<form method='post' action='/login'>
+<input type='hidden' name='csrf' value='{{csrf}}'>
+<label>Пароль<input type='password' name='password' autocomplete='current-password' maxlength='128' required></label>
+<button type='submit'>Увійти</button>
+</form>

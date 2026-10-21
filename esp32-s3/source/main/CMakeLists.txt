@@ -10,7 +10,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${WEB_SOURCE_FILE
 endif()
 
 idf_component_register(
-  SRCS "main.cpp" "runtime.cpp" "renderer.cpp" "network.cpp" "led_output.cpp" "preview.cpp" "web_files.cpp" "air_alert.cpp"
+  SRCS "main.cpp" "runtime.cpp" "renderer.cpp" "network.cpp" "led_output.cpp" "preview.cpp" "web_files.cpp" "web_auth.cpp" "air_alert.cpp"
   INCLUDE_DIRS "."
   EMBED_FILES "animation.bin" "effects.bin" "web_bundle.bin"
   REQUIRES esp_wifi esp_event esp_netif esp_http_server esp_http_client app_update bootloader_support esp_timer

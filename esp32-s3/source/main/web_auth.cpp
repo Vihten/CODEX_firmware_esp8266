@@ -1,0 +1,466 @@
+#include "web_auth.hpp"
+#include "web_files.hpp"
+
+#include <algorithm>
+#include <atomic>
+#include <cstddef>
+#include <cstdio>
+#include <cstring>
+#include "esp_random.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "nvs.h"
+#include "psa/crypto.h"
+
+namespace web_auth {
+namespace {
+constexpr uint32_t kMagic = 0x57415531, kIterations = 100000;
+constexpr int64_t kSessionMs = 8LL * 60 * 60 * 1000;
+constexpr char kMarker[] = "<!-- Legacy LAN discovery marker: <title>LED Forge Controller</title> -->";
+struct Credential {
+  uint32_t magic = kMagic, version = 1, iterations = kIterations;
+  uint8_t salt[16] = {}, digest[32] = {};
+  uint32_t checksum = 0;
+};
+static_assert(sizeof(Credential) == 64, "Stable NVS credential layout");
+struct Session { uint8_t token[32] = {}; int64_t issued = 0; bool used = false; };
+StaticSemaphore_t mutexStorage;
+SemaphoreHandle_t mutex = nullptr;
+Credential credential, staged;
+Session sessions[4];
+char bootToken[65] = {};
+bool initialized = false, healthy = false, configured = false, pending = false;
+bool saving = false, maintenance = false, saveFailed = false;
+unsigned active = 0, failures = 0;
+int64_t nextAttempt = 0;
+uint32_t generation = 0;
+std::atomic<uint32_t> revision{0};
+int64_t nowMs() { return esp_timer_get_time() / 1000; }
+void erase(void *data, size_t size) {
+  volatile uint8_t *bytes = static_cast<volatile uint8_t *>(data);
+  while (size--) *bytes++ = 0;
+}
+struct Lock {
+  bool held;
+  Lock() : held(mutex && xSemaphoreTake(mutex, pdMS_TO_TICKS(50)) == pdTRUE) {}
+  ~Lock() { if (held) xSemaphoreGive(mutex); }
+};
+bool equal(const void *a, const void *b, size_t size) {
+  const auto *x = static_cast<const uint8_t *>(a), *y = static_cast<const uint8_t *>(b);
+  uint8_t difference = 0;
+  for (size_t i = 0; i < size; ++i) difference |= x[i] ^ y[i];
+  return difference == 0;
+}
+uint32_t checksum(const Credential &value) {
+  const auto *bytes = reinterpret_cast<const uint8_t *>(&value);
+  uint32_t hash = 2166136261U;
+  for (size_t i = 0; i < offsetof(Credential, checksum); ++i) hash = (hash ^ bytes[i]) * 16777619U;
+  return hash;
+}
+void hex(const uint8_t *bytes, size_t size, char *out) {
+  constexpr char digits[] = "0123456789abcdef";
+  for (size_t i = 0; i < size; ++i) { out[i * 2] = digits[bytes[i] >> 4]; out[i * 2 + 1] = digits[bytes[i] & 15]; }
+  out[size * 2] = 0;
+}
+int digit(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1; }
+bool tokenBytes(const char *text, uint8_t (&bytes)[32]) {
+  if (!text || std::strlen(text) != 64) return false;
+  for (unsigned i = 0; i < 32; ++i) {
+    const int a = digit(text[i * 2]), b = digit(text[i * 2 + 1]);
+    if (a < 0 || b < 0) return false;
+    bytes[i] = uint8_t(a * 16 + b);
+  }
+  return true;
+}
+void invalidateSessions() { erase(sessions, sizeof(sessions)); revision.fetch_add(1); }
+int findSession(const char *text) {
+  uint8_t bytes[32];
+  if (!tokenBytes(text, bytes)) return -1;
+  int found = -1;
+  const int64_t now = nowMs();
+  for (unsigned i = 0; i < 4; ++i) {
+    auto &entry = sessions[i];
+    if (entry.used && (now < entry.issued || now - entry.issued >= kSessionMs)) {
+      erase(&entry, sizeof(entry)); revision.fetch_add(1);
+    }
+    if (entry.used && equal(entry.token, bytes, sizeof(bytes))) found = int(i);
+  }
+  erase(bytes, sizeof(bytes));
+  return found;
+}
+template<size_t N> bool header(httpd_req_t *request, const char *name, char (&out)[N]) {
+  out[0] = 0;
+  const size_t size = httpd_req_get_hdr_value_len(request, name);
+  return size && size < N && httpd_req_get_hdr_value_str(request, name, out, N) == ESP_OK;
+}
+bool cookie(httpd_req_t *request, char (&out)[65]) {
+  char text[1024]; out[0] = 0;
+  if (!header(request, "Cookie", text)) return false;
+  bool found = false;
+  for (char *p = text; *p;) {
+    while (*p == ' ' || *p == ';') ++p;
+    char *end = std::strchr(p, ';');
+    if (!end) end = p + std::strlen(p);
+    if (size_t(end - p) >= 14 && !std::memcmp(p, "codex_session=", 14)) {
+      if (found || end - p != 78) return false;
+      std::memcpy(out, p + 14, 64); out[64] = 0; found = true;
+    }
+    p = *end ? end + 1 : end;
+  }
+  return found;
+}
+bool unsafe(httpd_req_t *request) { return request->method != HTTP_GET && request->method != HTTP_HEAD && request->method != HTTP_OPTIONS; }
+bool sameOrigin(httpd_req_t *request) {
+  char host[128], origin[160], referer[512], site[24], expected[144];
+  if (!header(request, "Host", host)) return false;
+  for (const char *p = host; *p; ++p)
+    if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+          (*p >= '0' && *p <= '9') || *p == '.' || *p == '-' || *p == ':' || *p == '[' || *p == ']')) return false;
+  std::snprintf(expected, sizeof(expected), "http://%s", host);
+  const size_t siteSize = httpd_req_get_hdr_value_len(request, "Sec-Fetch-Site");
+  if (siteSize && (!header(request, "Sec-Fetch-Site", site) || std::strcmp(site, "same-origin"))) return false;
+  const size_t originSize = httpd_req_get_hdr_value_len(request, "Origin");
+  if (originSize) return header(request, "Origin", origin) && !std::strcmp(origin, expected);
+  const size_t length = std::strlen(expected);
+  return header(request, "Referer", referer) && !std::strncmp(referer, expected, length) && referer[length] == '/';
+}
+void responseHeaders(httpd_req_t *request) {
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+  httpd_resp_set_hdr(request, "Referrer-Policy", "same-origin");
+}
+esp_err_t reject(httpd_req_t *request, const char *status, const char *text) {
+  responseHeaders(request); httpd_resp_set_status(request, status);
+  httpd_resp_set_type(request, "text/plain; charset=utf-8");
+  // Refusing a POST must not leave unread bytes on a reusable connection.
+  httpd_resp_set_hdr(request, "Connection", "close");
+  return httpd_resp_send(request, text, HTTPD_RESP_USE_STRLEN);
+}
+esp_err_t redirect(httpd_req_t *request, const char *path, bool marker = false) {
+  responseHeaders(request); httpd_resp_set_status(request, "303 See Other");
+  httpd_resp_set_hdr(request, "Location", path);
+  httpd_resp_set_type(request, "text/html; charset=utf-8");
+  return httpd_resp_send(request, marker ? kMarker : "", HTTPD_RESP_USE_STRLEN);
+}
+bool utf8(const char *text) {
+  const auto *p = reinterpret_cast<const uint8_t *>(text);
+  while (*p) {
+    uint32_t value = *p++; unsigned count = 0; uint32_t minimum = 0;
+    if (value < 128) continue;
+    if (value >= 0xc2 && value <= 0xdf) { value &= 31; count = 1; minimum = 128; }
+    else if (value >= 0xe0 && value <= 0xef) { value &= 15; count = 2; minimum = 2048; }
+    else if (value >= 0xf0 && value <= 0xf4) { value &= 7; count = 3; minimum = 65536; }
+    else return false;
+    while (count--) { if ((*p & 0xc0) != 0x80) return false; value = value * 64 + (*p++ & 63); }
+    if (value < minimum || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)) return false;
+  }
+  return true;
+}
+bool passwordValid(const char *text) {
+  const size_t size = std::strlen(text);
+  if (size > 128 || !utf8(text)) return false;
+  size_t characters = 0;
+  for (const auto *p = reinterpret_cast<const uint8_t *>(text); *p; ++p)
+    if ((*p & 0xc0) != 0x80) ++characters;
+  return characters >= 10;
+}
+bool decode(const char *text, size_t size, char *out, size_t capacity) {
+  size_t used = 0;
+  for (size_t i = 0; i < size; ++i) {
+    unsigned char c = text[i];
+    if (c == '%') {
+      if (i + 2 >= size) return false;
+      const auto unhex = [](char x) { return x >= 'A' && x <= 'F' ? x - 'A' + 10 : digit(x); };
+      const int a = unhex(text[i + 1]), b = unhex(text[i + 2]);
+      if (a < 0 || b < 0) return false;
+      c = uint8_t(a * 16 + b); i += 2;
+    } else if (c == '+') c = ' ';
+    if (!c || used + 1 >= capacity) return false;
+    out[used++] = char(c);
+  }
+  out[used] = 0; return true;
+}
+struct Form {
+  char password[129] = {}, current[129] = {}, next[129] = {}, confirm[129] = {}, csrf[65] = {};
+  unsigned fields = 0;
+  ~Form() { erase(this, sizeof(*this)); }
+};
+bool readForm(httpd_req_t *request, Form &form) {
+  char type[96];
+  if (!header(request, "Content-Type", type) ||
+      (std::strcmp(type, "application/x-www-form-urlencoded") && std::strcmp(type, "application/x-www-form-urlencoded; charset=UTF-8"))) return false;
+  struct Body { char bytes[2049] = {}; ~Body() { erase(bytes, sizeof(bytes)); } } body;
+  if (!request->content_len || request->content_len >= sizeof(body.bytes)) return false;
+  size_t used = 0; const int64_t started = nowMs();
+  while (used < request->content_len) {
+    if (nowMs() - started > 10000) return false;
+    const int count = httpd_req_recv(request, body.bytes + used, request->content_len - used);
+    if (count <= 0) return false;
+    used += size_t(count);
+  }
+  if (std::memchr(body.bytes, 0, used)) return false;
+  for (char *p = body.bytes; *p;) {
+    char *end = std::strchr(p, '&'); if (!end) end = p + std::strlen(p);
+    char *separator = static_cast<char *>(std::memchr(p, '=', size_t(end - p)));
+    if (!separator) return false;
+    char key[32]; if (!decode(p, size_t(separator - p), key, sizeof(key))) return false;
+    char *target = nullptr; size_t capacity = 129; unsigned bit = 0;
+    if (!std::strcmp(key, "password")) { target = form.password; bit = 1; }
+    else if (!std::strcmp(key, "current_password")) { target = form.current; bit = 2; }
+    else if (!std::strcmp(key, "new_password")) { target = form.next; bit = 4; }
+    else if (!std::strcmp(key, "confirm_password")) { target = form.confirm; bit = 8; }
+    else if (!std::strcmp(key, "csrf")) { target = form.csrf; capacity = 65; bit = 16; }
+    else return false;
+    if ((form.fields & bit) || !decode(separator + 1, size_t(end - separator - 1), target, capacity)) return false;
+    form.fields |= bit; p = *end ? end + 1 : end;
+  }
+  return std::strlen(form.csrf) == 64 && equal(form.csrf, bootToken, 64);
+}
+struct PriorityGuard {
+  UBaseType_t previous = uxTaskPriorityGet(nullptr);
+  PriorityGuard() { vTaskPrioritySet(nullptr, tskIDLE_PRIORITY); vTaskDelay(1); }
+  ~PriorityGuard() { vTaskPrioritySet(nullptr, previous); }
+};
+bool derive(const char *password, const uint8_t (&salt)[16], uint8_t (&out)[32]) {
+  // The library owns PBKDF2. Priority zero time-slices with idle0 while core1 renders.
+  PriorityGuard priority;
+  psa_key_derivation_operation_t operation = PSA_KEY_DERIVATION_OPERATION_INIT;
+  bool okay = psa_key_derivation_setup(&operation, PSA_ALG_PBKDF2_HMAC(PSA_ALG_SHA_256)) == PSA_SUCCESS &&
+      psa_key_derivation_input_integer(&operation, PSA_KEY_DERIVATION_INPUT_COST, kIterations) == PSA_SUCCESS &&
+      psa_key_derivation_input_bytes(&operation, PSA_KEY_DERIVATION_INPUT_SALT, salt, sizeof(salt)) == PSA_SUCCESS &&
+      psa_key_derivation_input_bytes(&operation, PSA_KEY_DERIVATION_INPUT_PASSWORD,
+          reinterpret_cast<const uint8_t *>(password), std::strlen(password)) == PSA_SUCCESS &&
+      psa_key_derivation_output_bytes(&operation, out, sizeof(out)) == PSA_SUCCESS;
+  psa_key_derivation_abort(&operation);
+  if (!okay) erase(out, sizeof(out));
+  return okay;
+}
+bool verify(const char *password, const Credential &record, bool &cryptoOkay) {
+  uint8_t output[32]; cryptoOkay = derive(password, record.salt, output);
+  const bool match = cryptoOkay && equal(output, record.digest, sizeof(output)); erase(output, sizeof(output)); return match;
+}
+struct Operation {
+  bool admitted = false;
+  Operation() { Lock lock; if (lock.held && initialized && healthy && !maintenance && !saving && active == 0) { ++active; admitted = true; } }
+  ~Operation() {
+    if (!admitted) return;
+    // Admission count must never be lost on a transient lock timeout.
+    if (xSemaphoreTake(mutex, portMAX_DELAY) == pdTRUE) { --active; xSemaphoreGive(mutex); }
+  }
+};
+void failedAttempt() {
+  failures = std::min(failures + 1, 6U);
+  nextAttempt = nowMs() + std::min(60000U, 1000U << (failures - 1));
+}
+bool pathIs(httpd_req_t *request, const char *path) {
+  const size_t size = std::strcspn(request->uri, "?");
+  return std::strlen(path) == size && !std::memcmp(request->uri, path, size);
+}
+bool templateFile(httpd_req_t *request, const char *path) {
+  FILE *file = openWebFile(path); if (!file) return false;
+  char line[512]; bool okay = true;
+  while (okay && std::fgets(line, sizeof(line), file)) {
+    char *p = line;
+    while (char *marker = std::strstr(p, "{{csrf}}")) {
+      okay = (marker == p || httpd_resp_send_chunk(request, p, int(marker - p)) == ESP_OK) &&
+          httpd_resp_send_chunk(request, bootToken, 64) == ESP_OK;
+      p = marker + 8; if (!okay) break;
+    }
+    if (okay && *p) okay = httpd_resp_send_chunk(request, p, int(std::strlen(p))) == ESP_OK;
+  }
+  okay = okay && !std::ferror(file); std::fclose(file); return okay;
+}
+esp_err_t loginPage(httpd_req_t *request) {
+  bool ready = false, setup = false, waiting = false, authenticated = false, failed = false, blocked = false;
+  char token[65];
+  {
+    Lock lock;
+    if (lock.held) {
+      ready = initialized && healthy; setup = !configured; waiting = pending; failed = saveFailed; blocked = maintenance;
+      authenticated = ready && cookie(request, token) && findSession(token) >= 0;
+    }
+  }
+  responseHeaders(request); httpd_resp_set_type(request, "text/html; charset=utf-8");
+  httpd_resp_set_hdr(request, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+  if (!templateFile(request, "templates/auth/head.html")) return ESP_FAIL;
+  const char *message = !ready ? "Доступ заблоковано: не вдалося прочитати налаштування захисту. Перезапустіть контролер або зверніться до адміністратора." :
+      waiting ? (failed ? "Пароль ще не збережено. Попередній пароль залишається чинним. Контролер повторить спробу збереження." :
+          "Пароль очікує збереження. Новий пароль набуде чинності лише після успішного запису.") :
+      blocked ? "Контролер виконує технічне обслуговування. Вхід і зміна пароля тимчасово недоступні." : nullptr;
+  if (message) {
+    if (httpd_resp_send_chunk(request, "<p role='status'>", HTTPD_RESP_USE_STRLEN) != ESP_OK ||
+        httpd_resp_send_chunk(request, message, HTTPD_RESP_USE_STRLEN) != ESP_OK ||
+        httpd_resp_send_chunk(request, "</p><p><a href='/login'>Оновити стан</a></p>", HTTPD_RESP_USE_STRLEN) != ESP_OK) return ESP_FAIL;
+  }
+  if (ready && !blocked && (!waiting || (!setup && !authenticated))) {
+    const char *form = authenticated ? "templates/auth/account.html" : setup ? "templates/auth/setup.html" : "templates/auth/login.html";
+    if (!templateFile(request, form)) return ESP_FAIL;
+  }
+  if (!templateFile(request, "templates/auth/foot.html")) return ESP_FAIL;
+  return httpd_resp_send_chunk(request, nullptr, 0);
+}
+esp_err_t state(httpd_req_t *request) {
+  bool okay = false, setup = false, waiting = false, authenticated = false;
+  char token[65];
+  { Lock lock; if (lock.held) { okay = initialized && healthy; setup = okay && !configured; waiting = pending; authenticated = okay && cookie(request, token) && findSession(token) >= 0; } }
+  responseHeaders(request); httpd_resp_set_type(request, "application/json");
+  char body[112]; std::snprintf(body, sizeof(body), "{\"available\":%s,\"setup\":%s,\"pending\":%s,\"authenticated\":%s}",
+      okay ? "true" : "false", setup ? "true" : "false", waiting ? "true" : "false", authenticated ? "true" : "false");
+  return httpd_resp_send(request, body, HTTPD_RESP_USE_STRLEN);
+}
+esp_err_t mutate(httpd_req_t *request) {
+  if (!sameOrigin(request)) return reject(request, "403 Forbidden", "Запит має надходити зі сторінки цього контролера.");
+  Operation operation;
+  if (!operation.admitted) return reject(request, "503 Service Unavailable", "Контролер зайнятий або доступ заблоковано. Спробуйте пізніше.");
+  Form form;
+  if (!readForm(request, form)) return reject(request, "400 Bad Request", "Некоректна форма. Поверніться на /login і повторіть спробу.");
+  char token[65] = {};
+  const bool hasCookie = cookie(request, token);
+  const bool login = pathIs(request, "/login"), setup = pathIs(request, "/auth/setup"), logout = pathIs(request, "/auth/logout");
+  Credential snapshot; uint32_t version = 0; bool admitted = false, limited = false;
+  {
+    Lock lock;
+    if (lock.held && !maintenance && healthy && !saving) {
+      const bool authenticated = hasCookie && findSession(token) >= 0;
+      if (logout && authenticated) {
+        invalidateSessions(); admitted = true;
+      } else if ((!pending || login) && ((login && configured) || (setup && !configured) || (!login && !setup && !logout && authenticated && configured))) {
+        limited = nowMs() < nextAttempt;
+        if (!limited) { nextAttempt = nowMs() + 1000; snapshot = credential; version = generation; admitted = true; }
+      }
+    }
+  }
+  if (limited) { httpd_resp_set_hdr(request, "Retry-After", "60"); return reject(request, "429 Too Many Requests", "Забагато спроб. Зачекайте хвилину та повторіть."); }
+  if (!admitted) return reject(request, "403 Forbidden", "Дію відхилено. Оновіть /login і перевірте стан входу.");
+  if (logout) {
+    httpd_resp_set_hdr(request, "Set-Cookie", "codex_session=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/");
+    return redirect(request, "/login");
+  }
+  const char *password = login ? form.password : form.next;
+  const bool valid = passwordValid(password) && (login || (passwordValid(form.current) || setup)) &&
+      (login || !std::strcmp(form.next, form.confirm));
+  if (!valid) return reject(request, "400 Bad Request", "Щонайменше 10 символів. Максимум 128 латинських або 64 українські літери. Новий пароль і підтвердження мають збігатися.");
+  bool cryptoOkay = true;
+  const bool matched = setup || verify(login ? form.password : form.current, snapshot, cryptoOkay);
+  if (!matched) {
+    { Lock lock; if (lock.held) failedAttempt(); }
+    erase(&snapshot, sizeof(snapshot));
+    return reject(request, cryptoOkay ? "401 Unauthorized" : "503 Service Unavailable", cryptoOkay ? "Неправильний пароль. Поверніться на /login та спробуйте ще раз." : "Перевірка пароля недоступна. Спробуйте пізніше.");
+  }
+  Credential replacement;
+  if (!login) {
+    esp_fill_random(replacement.salt, sizeof(replacement.salt));
+    if (!derive(form.next, replacement.salt, replacement.digest)) return reject(request, "503 Service Unavailable", "Не вдалося підготувати пароль. Спробуйте пізніше.");
+    replacement.checksum = checksum(replacement);
+  }
+  bool accepted = false;
+  char sessionCookie[160] = {};
+  {
+    Lock lock;
+    if (lock.held && !maintenance && !saving && (!pending || login) && healthy && generation == version &&
+        (setup ? !configured : configured) && (login || setup || (hasCookie && findSession(token) >= 0))) {
+      if (login) {
+        unsigned slot = 0;
+        for (unsigned i = 0; i < 4; ++i) {
+          if (!sessions[i].used) { slot = i; break; }
+          if (sessions[i].issued < sessions[slot].issued) slot = i;
+        }
+        auto &entry = sessions[slot]; esp_fill_random(entry.token, sizeof(entry.token)); entry.issued = nowMs(); entry.used = true;
+        char value[65]; hex(entry.token, sizeof(entry.token), value);
+        std::snprintf(sessionCookie, sizeof(sessionCookie), "codex_session=%s; Max-Age=28800; HttpOnly; SameSite=Strict; Path=/", value);
+        erase(value, sizeof(value)); revision.fetch_add(1);
+      } else { staged = replacement; pending = true; saveFailed = false; }
+      failures = 0; accepted = true;
+    }
+  }
+  erase(&snapshot, sizeof(snapshot)); erase(&replacement, sizeof(replacement)); erase(token, sizeof(token));
+  if (!accepted) return reject(request, "409 Conflict", "Стан контролера змінився. Оновіть /login і повторіть дію.");
+  if (login) httpd_resp_set_hdr(request, "Set-Cookie", sessionCookie);
+  // IDF retains header pointers until the response is sent.
+  const esp_err_t result = redirect(request, login ? "/" : "/login?pending=1");
+  erase(sessionCookie, sizeof(sessionCookie));
+  return result;
+}
+}  // namespace
+
+void initialize() {
+  if (initialized || mutex) return;
+  mutex = xSemaphoreCreateMutexStatic(&mutexStorage); if (!mutex) return;
+  uint8_t random[32]; esp_fill_random(random, sizeof(random)); hex(random, sizeof(random), bootToken); erase(random, sizeof(random));
+  invalidateSessions(); initialized = true;
+  if (psa_crypto_init() != PSA_SUCCESS) return;
+  nvs_handle_t handle;
+  const esp_err_t opened = nvs_open("web_auth", NVS_READONLY, &handle);
+  if (opened == ESP_ERR_NVS_NOT_FOUND) { healthy = true; return; }
+  if (opened != ESP_OK) return;
+  Credential record; size_t size = sizeof(record);
+  const esp_err_t result = nvs_get_blob(handle, "credential", &record, &size); nvs_close(handle);
+  if (result == ESP_ERR_NVS_NOT_FOUND) { healthy = true; return; }
+  if (result != ESP_OK || size != sizeof(record) || record.magic != kMagic || record.version != 1 ||
+      record.iterations != kIterations || record.checksum != checksum(record)) return;
+  credential = record; configured = healthy = true; erase(&record, sizeof(record));
+}
+bool registerRoutes(httpd_handle_t server) {
+  struct Route { const char *uri; httpd_method_t method; esp_err_t (*handler)(httpd_req_t *); };
+  const Route routes[] = {{"/login", HTTP_GET, loginPage}, {"/login", HTTP_POST, mutate},
+      {"/auth/setup", HTTP_POST, mutate}, {"/auth/logout", HTTP_POST, mutate},
+      {"/auth/password", HTTP_POST, mutate}, {"/auth/state", HTTP_GET, state}};
+  for (const auto &entry : routes) {
+    httpd_uri_t route{}; route.uri = entry.uri; route.method = entry.method; route.handler = entry.handler;
+    if (httpd_register_uri_handler(server, &route) != ESP_OK) return false;
+  }
+  return true;
+}
+bool captureAuthenticatedSession(httpd_req_t *request, char token[65]) {
+  char value[65] = {}; token[0] = 0;
+  if (!cookie(request, value)) return false;
+  Lock lock;
+  const bool valid = lock.held && initialized && healthy && configured && findSession(value) >= 0;
+  if (valid) std::memcpy(token, value, sizeof(value));
+  erase(value, sizeof(value));
+  return valid;
+}
+bool sessionActive(const char *token) {
+  Lock lock; return lock.held && initialized && healthy && configured && findSession(token) >= 0;
+}
+bool authorize(httpd_req_t *request) {
+  if (unsafe(request) && !sameOrigin(request)) { reject(request, "403 Forbidden", "Запит має надходити зі сторінки цього контролера."); return false; }
+  char token[65];
+  if (captureAuthenticatedSession(request, token)) { erase(token, sizeof(token)); return true; }
+  char accept[192];
+  const bool page = request->method == HTTP_GET && (pathIs(request, "/") || pathIs(request, "/settings") ||
+      pathIs(request, "/agents") || pathIs(request, "/weekly") || (header(request, "Accept", accept) && std::strstr(accept, "text/html")));
+  if (page) redirect(request, "/login", pathIs(request, "/"));
+  else reject(request, "401 Unauthorized", "Потрібен вхід: /login");
+  return false;
+}
+bool pendingSave() { Lock lock; return !lock.held || pending || saving; }
+bool busy() { Lock lock; return !lock.held || active != 0 || saving; }
+void setMaintenance(bool enabled) {
+  if (!mutex) return;
+  if (xSemaphoreTake(mutex, portMAX_DELAY) == pdTRUE) { maintenance = enabled; xSemaphoreGive(mutex); }
+}
+uint32_t sessionRevision() { return revision.load(); }
+bool persist() {
+  Credential record; uint32_t version = 0;
+  {
+    Lock lock;
+    if (!lock.held || !initialized || !healthy || saving || active) return false;
+    if (!pending) return true;
+    saving = true; record = staged; version = generation;
+  }
+  // Caller owns flash exclusion. No HTTP handler can stage a replacement while saving.
+  nvs_handle_t handle; bool okay = nvs_open("web_auth", NVS_READWRITE, &handle) == ESP_OK;
+  if (okay) { okay = nvs_set_blob(handle, "credential", &record, sizeof(record)) == ESP_OK && nvs_commit(handle) == ESP_OK; nvs_close(handle); }
+  if (xSemaphoreTake(mutex, portMAX_DELAY) == pdTRUE) {
+    if (okay && pending && version == generation) {
+      credential = record; configured = true; pending = false; saveFailed = false; ++generation;
+      erase(&staged, sizeof(staged)); invalidateSessions();
+    } else { okay = false; saveFailed = true; }
+    saving = false; xSemaphoreGive(mutex);
+  } else okay = false;
+  erase(&record, sizeof(record)); return okay;
+}
+}  // namespace web_auth

@@ -124,6 +124,11 @@
       let delay = null;
       try {
         const response = await fetch(useStream ? '/frames' : '/frame', {cache: 'no-store', signal: request.controller.signal});
+        if (response.status === 401) {
+          pageActive = false;
+          window.location.replace('/login');
+          return;
+        }
         if (useStream && (!response.ok || !response.body || !response.body.getReader)) {
           if (response.body && response.body.cancel) await response.body.cancel();
           useStream = false;

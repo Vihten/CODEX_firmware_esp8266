@@ -4,6 +4,17 @@ This is a separate ESP-IDF firmware target for ESP32-S3-WROOM-1-N16R8:
 16 MiB quad flash and 8 MiB octal PSRAM. The firmware repository now publishes
 S3 as its primary target; ESP8266 releases remain only in Git history.
 
+## Quota Recovery Motion
+
+A fresh report from an already live source changing its remaining quota from
+below 100 percent to 100 percent triggers recovery once the combined minimum
+also reaches 100 percent. First reports, expired sources, unknown quota and
+source disappearance do not count as resets. The visible sky returns to noon
+with a small damped overshoot over 2.6 seconds, using the existing fractional
+frame sampling; the pyramid and brightness remain unchanged. An existing
+meteor flight finishes first. Startup, off, memorial and maintenance suppress
+new recovery events; an in-progress recovery pauses during maintenance.
+
 ## Wiring
 
 - Matrix data: GPIO18, not the NodeMCU label D4.

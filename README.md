@@ -20,6 +20,19 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792564692455` adds daytime quota-recovery motion. Fresh same-source
+reports returning to 100 percent trigger one 2.6-second return to noon with a
+small damped oscillation once the combined minimum reaches 100 percent.
+Startup, expired/unknown telemetry and source disappearance never simulate a
+reset. Already flying meteors finish first; off/memorial interruptions retain
+the sampled sky and maintenance pauses existing motion. Physical output stays
+at 30 FPS with unchanged colors and brightness. Validation: 412 firmware tests
+(two existing skips), 60 final focused render/motion checks, native export,
+targeted Dart analysis and the ESP32-S3 PlatformIO build. A real account-limit
+reset has not been injected into the live device.
+
+## Previous NEPTUN TLS Correction
+
 Version `1792501600000` enables ESP-IDF's cross-signed certificate bundle
 verification for NEPTUN's Google Trust Services chain. The controller reported
 `MBEDTLS_ERR_X509_FATAL_ERROR` before receiving HTTP data with this SDK option

@@ -152,6 +152,7 @@ struct Model {
   uint16_t disconnectReason = 0;
   uint8_t legacyActivity = 0, legacyRemaining = 100, stationAttempts = 0;
   bool legacySeen = false, directSeen = false, linked = false, connected = false;
+  bool quotaResetReported = false;
   bool nvsReady = false, dirty = false, wifiChanged = false, stationConnecting = false;
   bool restarting = false, updateRequested = false, manifestReady = false;
   bool releasePending = false, confirmationPending = false, sntpStarted = false;
@@ -625,6 +626,8 @@ bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
   if (!parseTelemetry(packet, incoming, legacy, remaining, activity)) return false;
   const uint32_t now = uptimeMs();
   if (legacy) {
+    model.quotaResetReported |= model.legacySeen && now - model.legacyAt < 8000 &&
+        model.legacyRemaining < 100 && remaining == 100;
     model.legacySeen = true; model.legacyAt = receivedAt; model.legacyRemaining = remaining; model.legacyActivity = activity;
     std::snprintf(ack, sizeof(ack), "LF1_ACK,%06lX,%d", (unsigned long)model.deviceId, model.rssi);
   } else {
@@ -645,6 +648,9 @@ bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
     }
     if (slot == kAgentCapacity) return false;
     const auto &previous = model.control.agents[slot];
+    model.quotaResetReported |= previous.present && previous.clientId == incoming.clientId &&
+        now - previous.seenAt < kAgentTimeout && previous.remaining >= 0 &&
+        previous.remaining < 100 && incoming.remaining == 100;
     const bool sameColor = previous.present && previous.clientId == incoming.clientId &&
         now - previous.seenAt < kAgentTimeout && model.requestedRgb[slot] == incoming.rgb;
     incoming.present = true; incoming.seenAt = receivedAt;
@@ -704,6 +710,9 @@ void updateControl() {
   const bool legacy = model.legacySeen && now - model.legacyAt < 8000;
   model.control.activityPercent = direct ? uint8_t(std::min(combined, 100U)) : legacy && !model.directSeen ? model.legacyActivity : 0;
   if (legacy) remaining = std::min(remaining, int(model.legacyRemaining));
+  if (remaining == 100 && model.control.remainingPercent < 100 && model.quotaResetReported)
+    ++model.control.quotaRecoveryEpoch;
+  model.quotaResetReported = false;
   if (remaining <= 100) model.control.remainingPercent = uint8_t(remaining);
   model.control.connected = model.connected; model.control.accountLinked = model.linked;
   model.control.brightness = model.settings.brightness; model.control.on = scheduledOn();

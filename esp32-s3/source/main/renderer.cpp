@@ -5,6 +5,7 @@
 #include "preview.hpp"
 #include "memorial_draw.hpp"
 #include "air_alert_visual.hpp"
+#include "quota_recovery.hpp"
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
 #include "esp_log.h"
@@ -41,6 +42,7 @@ uint32_t sceneFrameMilli = 0;
 uint32_t quotaFrameMilli = 0, skySampleAt = 0;
 bool skySampleReady = false;
 air_alert::Visual airAlertVisual;
+quota_recovery::Motion quotaRecovery;
 
 enum SeekMode { SeekSet };
 class FrameReader {
@@ -751,12 +753,22 @@ uint32_t updateSkySample(uint16_t target, bool frozen) {
   skySampleAt = now;
   if (status.memorialTransition) return quotaFrameMilli;
   const uint32_t wanted = uint32_t(target) * 1000;
+  if (skySampleReady && !sceneTargetOn && sceneProgress < SCENE_DURATION_MS)
+    return quotaFrameMilli;
   if (!skySampleReady || sceneProgress < SCENE_DURATION_MS) {
     skySampleReady = true; quotaFrameMilli = wanted;
-  } else if (!frozen) {
-    const uint32_t distance = quotaFrameMilli > wanted ? quotaFrameMilli - wanted : wanted - quotaFrameMilli;
-    const uint32_t step = min(distance, delta * 4);
-    quotaFrameMilli = quotaFrameMilli > wanted ? quotaFrameMilli - step : quotaFrameMilli + step;
+  } else {
+    if (quotaRecovery.pending() && !frozen) quotaRecovery.begin(quotaFrameMilli, wanted);
+    if (quotaRecovery.active()) {
+      quotaFrameMilli = quotaRecovery.advance(delta, wanted);
+      return quotaFrameMilli;
+    }
+    if (!frozen) {
+      const int32_t distance = (int32_t(wanted) - int32_t(quotaFrameMilli) + 300000) % 200000 - 100000;
+      const int32_t step = min(uint32_t(std::abs(distance)), delta * 4);
+      const int32_t phase = int32_t(quotaFrameMilli) + (distance < 0 ? -step : step);
+      quotaFrameMilli = uint32_t((phase + 200000) % 200000);
+    }
   }
   return quotaFrameMilli;
 }
@@ -1040,13 +1052,13 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
                  uint16_t &frame, bool finishingMeteorFlight) {
 #if EVENT_MODE
   entranceMirror = false;
-  if (!finishingMeteorFlight || sceneEntranceActive()) frame = 100 - remainingPercent;
+  if (!finishingMeteorFlight || sceneEntranceActive() || quotaRecovery.active()) frame = 100 - remainingPercent;
   sceneFrameMilli = updateSkySample(frame, finishingMeteorFlight);
   frame = sceneFrameMilli / 1000;
   const uint32_t entranceElapsed = sceneProgress;
   const int32_t phase = entranceMotionPhase(entranceElapsed);
   if (entranceElapsed < SCENE_DURATION_MS) {
-    const int64_t unwrapped = ENTRANCE_ANCHOR + int64_t(int32_t(sceneFrameMilli) - 200000L - ENTRANCE_ANCHOR) * phase / 200000L;
+    const int64_t unwrapped = ENTRANCE_ANCHOR + int64_t(quota_recovery::signedPhase(sceneFrameMilli) - 200000L - ENTRANCE_ANCHOR) * phase / 200000L;
     entrancePhasePosition = unwrapped / 100000.0f;
     int32_t position = (unwrapped % 200000L + 200000L) % 200000L;
     entranceMirror = FRAME_COUNT != 201 && position > 100000L;
@@ -1214,10 +1226,11 @@ void renderTask(void *) {
     if (control.maintenance == Maintenance::None && parked) {
       parked = false;
       if (memorialExiting) memorialExitAt += uint32_t(millis() - memorialParkedAt);
-      sceneTimelineAt = millis();
+      sceneTimelineAt = skySampleAt = millis();
       effectOrigin = started - (int64_t(effectTick) * 256 + effectSubTick) * 1000000 / (EVENT_FPS * 256);
     }
     if (parked) {
+      quotaRecovery.observe(control.quotaRecoveryEpoch, true, false);
       // Keep the original ACK alive until core 0 releases the request. No PSRAM,
       // scene drawing, LED transfers, or asset reads while flash may be active.
       status.quiescent = true;
@@ -1263,6 +1276,10 @@ void renderTask(void *) {
       if (memorialOff) memorialExiting = false;
       status.memorialTransition = memorialActive || memorialExiting;
       const bool memorialTransition = status.memorialTransition || previousMemorialTransition;
+      quotaRecovery.observe(control.quotaRecoveryEpoch,
+          control.on && control.connected && control.accountLinked && sceneVisible &&
+          sceneTargetOn && sceneProgress >= SCENE_DURATION_MS && !memorialTransition,
+          control.maintenance == Maintenance::None);
       if (memorialTransition) {
         // Rebase through the exit frame too: neither scene nor effects catch up.
         sceneTimelineAt = skySampleAt = now;

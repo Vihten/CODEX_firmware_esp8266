@@ -21,6 +21,7 @@ struct AgentInput {
 };
 
 struct ControlFrame {
+  uint32_t quotaRecoveryEpoch = 0;
   uint8_t remainingPercent = 100;
   uint8_t activityPercent = 0;
   uint8_t brightness = PROJECT_BRIGHTNESS;

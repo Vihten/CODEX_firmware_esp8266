@@ -7,6 +7,7 @@
 #include "agent_release.hpp"
 #include "memorial.hpp"
 #include "air_alert.hpp"
+#include "air_alert_history.hpp"
 
 #include <algorithm>
 #include <array>
@@ -120,6 +121,7 @@ struct View {
   int airTlsError = 0, airTlsCode = 0, airTlsFlags = 0;
   uint32_t airAge = UINT32_MAX, airRemaining = 0;
   uint32_t airMessageId = 0;
+  air_alert::FailureHistory airHistory;
   char airStatus[96] = {}, airDetails[160] = {}, airSource[96] = {};
   bool overrideColor[kAgentCapacity] = {};
   ColorOverride savedColors[kAgentCapacity] = {};
@@ -143,6 +145,7 @@ struct Model {
   air_alert::Failure airFailure = air_alert::Failure::None;
   uint32_t airPollMs = 0;
   int airTlsError = 0, airTlsCode = 0, airTlsFlags = 0;
+  air_alert::FailureHistory airHistory;
   ControlFrame control;
   RenderStatus render;
   Manifest manifest;
@@ -388,6 +391,7 @@ void serviceAirAlert() {
     if (result.generation != model.airGeneration) continue;
     const uint32_t previousMessage = model.air.telegramMessageId;
     const bool accepted = model.air.accept(result, model.airGeneration, now);
+    model.airHistory.observe(result, accepted, now);
     if (accepted && result.messageId &&
         (result.messageId != previousMessage ||
          (result.headId != model.airCheckpointHead && now - model.airCheckpointSavedAt >= 300000))) model.airDirty = true;
@@ -424,6 +428,7 @@ void fillAirAlertView(View &view) {
   view.airTlsError = model.airTlsError; view.airTlsCode = model.airTlsCode; view.airTlsFlags = model.airTlsFlags;
   view.airRemaining = model.air.remainingSeconds(now);
   view.airMessageId = model.air.telegramMessageId;
+  view.airHistory = model.airHistory;
   view.airAge = model.air.seen ? (now - model.air.checkedAt) / 1000 : UINT32_MAX;
   copy(view.airStatus, !view.airEnabled && !view.airManual ? "Вимкнено" :
       view.airLevel == 2 ? "Ракетна загроза" : view.airLevel == 1 ? "Дронова загроза" :
@@ -1469,9 +1474,11 @@ std::atomic<uint32_t> previewSessionRevision{0};
 char previewSessionToken[65] = {};
 
 bool previewStreamAllowed() {
-  View view;
-  return !previewStreamSealed.load() && snapshot(view) && !view.restarting && view.control.maintenance == Maintenance::None &&
-         view.render.assetsReady && !view.render.ledError;
+  if (previewStreamSealed.load() || !viewMutex || xSemaphoreTake(viewMutex, pdMS_TO_TICKS(20)) != pdTRUE) return false;
+  const bool allowed = !sharedView.restarting && sharedView.control.maintenance == Maintenance::None &&
+      sharedView.render.assetsReady && !sharedView.render.ledError;
+  xSemaphoreGive(viewMutex);
+  return allowed && !previewStreamSealed.load();
 }
 
 void previewStreamTask(void *) {
@@ -1619,6 +1626,24 @@ esp_err_t portalStatus(httpd_req_t *request) {
     number(airStatus, "tls_error", view.airTlsError);
     number(airStatus, "tls_code", view.airTlsCode);
     number(airStatus, "tls_flags", view.airTlsFlags);
+    number(airStatus, "worker_stack_free", air_alert::workerStackFree());
+    if (!view.airHistory.seen) {
+      if (!cJSON_AddNullToObject(airStatus, "last_failure")) okay = false;
+    } else {
+      cJSON *last = cJSON_AddObjectToObject(airStatus, "last_failure");
+      if (!last) okay = false;
+      else {
+        const auto &failure = view.airHistory.result;
+        string(last, "failure", air_alert::failureName(failure.failure));
+        number(last, "age_seconds", view.airHistory.ageSeconds(uptimeMs()));
+        number(last, "http_status", failure.httpStatus);
+        number(last, "tls_error", failure.tlsError); number(last, "tls_code", failure.tlsCode);
+        number(last, "tls_flags", failure.tlsFlags); number(last, "poll_ms", failure.elapsedMs);
+        number(last, "heap_before_tls", failure.heapBeforeTls);
+        number(last, "largest_before_tls", failure.largestBeforeTls);
+        number(last, "clock_before_tls", double(failure.clockBeforeTls));
+      }
+    }
     number(airStatus, "remaining_seconds", view.airRemaining);
     if (view.airAge == UINT32_MAX) { if (!cJSON_AddNullToObject(airStatus, "updated_age_seconds")) okay = false; }
     else number(airStatus, "updated_age_seconds", view.airAge);
@@ -1673,8 +1698,9 @@ esp_err_t portalStatus(httpd_req_t *request) {
       number(item, "tokens", double(entry.tokens));
     }
   }
-  // Bounded heap buffer avoids growing the HTTP task's stack with the leaderboard.
-  std::unique_ptr<char[]> body(new(std::nothrow) char[16384]);
+  // Keep the bounded response off both the HTTP stack and TLS's scarce internal heap.
+  std::unique_ptr<char, decltype(&heap_caps_free)> body(
+      static_cast<char *>(heap_caps_malloc(16384, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)), heap_caps_free);
   const bool printed = okay && body && cJSON_PrintPreallocated(root, body.get(), 16384, false);
   cJSON_Delete(root);
   if (!printed) return error(request, "503 Service Unavailable", "Status unavailable; retry.");

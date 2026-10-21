@@ -20,6 +20,25 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792590550056` reduces stack/internal-heap pressure during Telegram
+polling and live preview. The preview worker no longer puts the full controller
+snapshot on its small stack; `/status` uses PSRAM for its bounded 16 KiB body.
+TLS certificate/hostname checks and TLS allocator policy are unchanged. The last
+failed poll's TLS codes, timing and pre-handshake internal-memory/UTC samples
+remain available under authenticated `air_alert.last_failure` through later
+successful polls, until reboot. Poll-worker stack margin is also exposed.
+
+The observed Telegram post 25582 is correctly classified as Yellow. Live HTTPS
+had recovered and accepted the subsequent all-clear, but the earlier failure's
+exact TLS code was lost; this release does not claim a confirmed historical root
+cause. Active warnings remain retained on connection loss, with no inferred
+all-clear. Passwords, settings, agents, artwork and 30 FPS remain unchanged.
+
+Validation: 488 firmware tests passed (two existing skips), current Telegram HTML
+fixture parsing, native export, targeted Dart analysis and ESP32-S3 build passed.
+
+## Previous Web Password Release
+
 Version `1792580756571` adds password protection for all browser pages, diagnostics,
 preview frames and management actions. On the first visit, set the password at
 `/login`; there is no default password. Only a salted PBKDF2-HMAC-SHA256 credential

@@ -48,6 +48,7 @@ StaticQueue_t jobsStorage, resultsStorage;
 uint8_t jobsBytes[sizeof(PollJob)], resultsBytes[sizeof(PollResult)];
 QueueHandle_t jobs = nullptr, results = nullptr;
 std::atomic<bool> running{false}, ready{false};
+std::atomic<uint32_t> workerStackBytes{0};
 
 // DNS callbacks may arrive after the poll deadline. Persistent storage keeps them safe.
 struct DnsState {
@@ -205,6 +206,9 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
     result.failure = esp_timer_get_time() >= deadline ? Failure::Timeout : Failure::Dns;
     return finish();
   }
+  result.heapBeforeTls = uint32_t(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  result.largestBeforeTls = uint32_t(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  result.clockBeforeTls = int64_t(std::time(nullptr));
   esp_tls_t *tls = esp_tls_init();
   if (!tls) { result.failure = Failure::Memory; return finish(); }
   const auto captureTlsError = [&]() {
@@ -340,6 +344,7 @@ void worker(void *) {
     PollJob job;
     if (xQueueReceive(jobs, &job, portMAX_DELAY) != pdTRUE) continue;
     const PollResult result = poll(job);
+    workerStackBytes.store(uxTaskGetStackHighWaterMark(nullptr), std::memory_order_relaxed);
     erase(&job, sizeof(job));
     xQueueOverwrite(results, &result);
     running.store(false, std::memory_order_release);
@@ -610,5 +615,6 @@ bool receive(PollResult &result) {
 }
 
 bool busy() { return running.load(std::memory_order_acquire); }
+uint32_t workerStackFree() { return workerStackBytes.load(std::memory_order_relaxed); }
 
 }  // namespace air_alert

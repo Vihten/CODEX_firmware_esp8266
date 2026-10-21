@@ -52,6 +52,22 @@ and has no peripheral attached before connecting.
 
 ## Runtime
 
+### Telegram Reliability Diagnostics
+
+The preview worker reads only its required flags under the view mutex; it no
+longer copies the full controller/agent/weekly snapshot onto its small stack.
+The bounded 16 KiB `/status` response buffer lives in PSRAM, not the internal
+heap used by TLS. TLS validation and the TLS allocation policy remain unchanged.
+
+Authenticated `/status` includes `air_alert.last_failure` (or null before the
+first failed poll), retained through subsequent successful polls until reboot.
+It records failure type, TLS codes/flags, HTTP status, elapsed time, and the
+internal free/largest-block and UTC samples taken immediately before TLS setup.
+`air_alert.worker_stack_free` reports the polling worker's stack high-water
+margin after its first poll. History is fixed-size RAM only and never changes
+the real alert state or simulates an all-clear. These measurements diagnose
+transient failures; they do not establish the cause of an earlier lost failure.
+
 ### Web Password
 
 All browser pages, diagnostics, preview frames and management actions require

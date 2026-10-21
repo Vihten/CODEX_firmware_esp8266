@@ -41,6 +41,8 @@ struct PollResult {
   Failure failure = Failure::None;
   uint32_t elapsedMs = 0;
   int tlsError = 0, tlsCode = 0, tlsFlags = 0;
+  uint32_t heapBeforeTls = 0, largestBeforeTls = 0;
+  int64_t clockBeforeTls = 0;
   uint32_t retryAfterMs = 30000;
 };
 
@@ -151,5 +153,7 @@ bool startPolling();
 bool submit(const PollJob &job);
 bool receive(PollResult &result);
 bool busy();
+// Last worker stack high-water sample in bytes; initially zero.
+uint32_t workerStackFree();
 
 }  // namespace air_alert

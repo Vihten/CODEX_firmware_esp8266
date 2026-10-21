@@ -1,4 +1,5 @@
 #include "air_alert.hpp"
+#include "telegram_alert.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -22,15 +23,11 @@
 
 namespace air_alert {
 namespace {
-constexpr size_t kBodyLimit = 64 * 1024;
-constexpr size_t kWireLimit = 96 * 1024;
-constexpr int64_t kDeadlineUs = 4000000;
+constexpr size_t kBodyLimit = 256 * 1024;
+constexpr size_t kWireLimit = 320 * 1024;
+constexpr int64_t kDeadlineUs = 8000000;
 constexpr uint32_t kMaximumRetryMs = 86400000;  // Fits main's signed wrap-safe due comparison.
-constexpr char kHost[] = "neptun.in.ua";
-constexpr char kRequest[] =
-    "GET /api/v1/alerts HTTP/1.1\r\nHost: neptun.in.ua\r\n"
-    "Accept: application/json\r\nAccept-Encoding: identity\r\n"
-    "User-Agent: Codex-Matrix\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+constexpr char kHost[] = "t.me";
 
 bool whitespace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
 
@@ -193,11 +190,10 @@ bool wantsIo(int result) {
   return result == ESP_TLS_ERR_SSL_WANT_READ || result == ESP_TLS_ERR_SSL_WANT_WRITE;
 }
 
-PollResult poll(const PollJob &job) {
+PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, int64_t deadline) {
   PollResult result;
   result.generation = job.generation;
   const int64_t started = esp_timer_get_time();
-  const int64_t deadline = started + kDeadlineUs;
   const auto finish = [&]() {
     result.elapsedMs = uint32_t((esp_timer_get_time() - started) / 1000);
     return result;
@@ -218,7 +214,7 @@ PollResult poll(const PollJob &job) {
   };
   esp_tls_cfg_t config{};
   config.non_block = true;
-  config.timeout_ms = 4000;
+  config.timeout_ms = 8000;
   config.crt_bundle_attach = esp_crt_bundle_attach;
   config.common_name = kHost;  // Certificate verification and SNI remain the fixed DNS host.
   config.skip_common_name = false;
@@ -236,10 +232,16 @@ PollResult poll(const PollJob &job) {
     esp_tls_conn_destroy(tls);
     return finish();
   }
-  constexpr size_t requestSize = sizeof(kRequest) - 1;
+  char path[64] = "/s/vmroficial";
+  if (before) std::snprintf(path, sizeof(path), "/s/vmroficial?before=%lu", (unsigned long)before);
+  char request[320];
+  const int requestLength = std::snprintf(request, sizeof(request),
+      "GET %s HTTP/1.1\r\nHost: t.me\r\nAccept: text/html\r\nAccept-Encoding: identity\r\n"
+      "User-Agent: Codex-Matrix\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n", path);
+  const size_t requestSize = size_t(requestLength);
   size_t sent = 0;
   while (sent < size_t(requestSize) && esp_timer_get_time() < deadline) {
-    const int count = int(esp_tls_conn_write(tls, kRequest + sent, requestSize - sent));
+    const int count = int(esp_tls_conn_write(tls, request + sent, requestSize - sent));
     if (count > 0) sent += size_t(count);
     else if (!wantsIo(count)) break;
     vTaskDelay(1);
@@ -273,11 +275,11 @@ PollResult poll(const PollJob &job) {
   }
   result.httpStatus = int(r.status);
   if (r.status == 429) result.retryAfterMs = r.retry;
-  // TLS owns sizable internal buffers: release them before allocating cJSON nodes.
+  // Release internal TLS buffers before the bounded HTML scan.
   captureTlsError();
   esp_tls_conn_destroy(tls);
   if (parsed && r.complete && !r.bad && r.status == 200 && esp_timer_get_time() < deadline)
-    result.valid = parseBody(r.body, r.used, result.level);
+    result.valid = telegram::parsePage(r.body, r.used, page);
   if (result.valid && esp_timer_get_time() >= deadline) {
     result.valid = false;
     result.level = Level::Unknown;
@@ -287,6 +289,50 @@ PollResult poll(const PollJob &job) {
       sent != requestSize ? Failure::Write : r.status && r.status != 200 ? Failure::Http :
       !parsed || !r.complete ? Failure::Read : Failure::Payload;
   return finish();
+}
+
+PollResult poll(const PollJob &job) {
+  const int64_t started = esp_timer_get_time(), deadline = started + kDeadlineUs;
+  PollResult result;
+  result.generation = job.generation;
+  uint32_t before = 0, head = 0;
+  int64_t headTime = 0;
+  for (unsigned attempt = 0; attempt < 3 && esp_timer_get_time() < deadline; ++attempt) {
+    telegram::Page page;
+    result = fetchPage(job, before, page, deadline);
+    result.valid = result.valid && page.posts && page.newestId && page.oldestId && page.newestTime >= 1577836800 &&
+        page.newestTime <= int64_t(std::time(nullptr)) + 120;
+    if (!result.valid) break;
+    if (!attempt) {
+      head = page.newestId;
+      headTime = page.newestTime;
+      if (head < job.knownHeadId) { result.valid = false; break; }
+    } else if (page.newestId >= before || page.newestTime > headTime) { result.valid = false; break; }
+    result.headId = head;
+    if (page.eventId) {
+      result.messageId = page.eventId; result.messageTime = page.eventTime; result.level = page.level;
+      result.valid = (result.level == Level::Clear || active(result.level)) &&
+          page.eventTime <= headTime &&
+          page.eventId >= job.knownEventId && page.eventTime >= job.knownEventTime &&
+          (page.eventId != job.knownEventId ||
+           (page.level == job.knownLevel && page.eventTime == job.knownEventTime));
+      break;
+    }
+    if (job.knownEventId && page.oldestId <= job.knownHeadId) {
+      result.messageId = job.knownEventId; result.messageTime = job.knownEventTime; result.level = job.knownLevel;
+      result.valid = result.level == Level::Clear || active(result.level);
+      break;
+    }
+    before = page.oldestId;
+    result.valid = false;
+  }
+  if (!result.valid || esp_timer_get_time() >= deadline) {
+    result.valid = false; result.level = Level::Unknown;
+    if (result.failure == Failure::None) result.failure = esp_timer_get_time() >= deadline ? Failure::Timeout : Failure::Payload;
+    if (result.retryAfterMs < 30000) result.retryAfterMs = 30000;
+  } else { result.failure = Failure::None; result.retryAfterMs = 15000; }
+  result.elapsedMs = uint32_t((esp_timer_get_time() - started) / 1000);
+  return result;
 }
 
 void worker(void *) {
@@ -481,7 +527,7 @@ bool records(const cJSON *array, bool district, Level &strongest) {
 
 bool parseBody(const char *body, size_t length, Level &level) {
   level = Level::Unknown;
-  if (!body || !length || length > kBodyLimit || std::memchr(body, 0, length) ||
+  if (!body || !length || length > 64 * 1024 || std::memchr(body, 0, length) ||
       !JsonPreflight(body, length).valid()) return false;
   const char *end = nullptr;
   cJSON *root = cJSON_ParseWithLengthOpts(body, length, &end, false);

@@ -118,6 +118,7 @@ struct View {
   uint32_t airPollMs = 0;
   int airTlsError = 0, airTlsCode = 0, airTlsFlags = 0;
   uint32_t airAge = UINT32_MAX, airRemaining = 0;
+  uint32_t airMessageId = 0;
   char airStatus[96] = {}, airDetails[160] = {}, airSource[96] = {};
   bool overrideColor[kAgentCapacity] = {};
   ColorOverride savedColors[kAgentCapacity] = {};
@@ -135,6 +136,8 @@ struct Model {
   air_alert::State air;
   bool airDirty = false, airSaveFailed = false, airWorkerReady = false, airFetchFailed = false;
   uint32_t airGeneration = 1, airNextAt = 0;
+  uint32_t airCheckpointSavedAt = 0;
+  uint32_t airCheckpointHead = 0;
   int airHttpStatus = 0;
   air_alert::Failure airFailure = air_alert::Failure::None;
   uint32_t airPollMs = 0;
@@ -332,6 +335,26 @@ void loadAirAlertSettings() {
   std::memset(model.airSettings.retiredToken, 0, sizeof(model.airSettings.retiredToken));
   std::memset(stored.retiredToken, 0, sizeof(stored.retiredToken));
 }
+void loadTelegramAlertState() {
+  if (!model.nvsReady) return;
+  nvs_handle_t handle;
+  if (nvs_open("led_forge_s3", NVS_READONLY, &handle) != ESP_OK) return;
+  air_alert::TelegramRecord stored; size_t size = sizeof(stored);
+  const auto result = nvs_get_blob(handle, "tg_alert", &stored, &size);
+  nvs_close(handle);
+  if (result == ESP_ERR_NVS_NOT_FOUND) return;
+  if (result != ESP_OK || size != sizeof(stored) || !air_alert::valid(stored)) {
+    model.airSaveFailed = true; return;
+  }
+  model.air.telegramHeadId = stored.headId;
+  model.airCheckpointHead = stored.headId;
+  model.air.telegramMessageId = stored.messageId;
+  model.air.telegramMessageTime = stored.messageTime;
+  model.air.last = air_alert::Level(stored.level);
+  model.air.seen = true;
+  model.air.freshnessExpired = true;
+  model.air.checkedAt = uptimeMs();
+}
 bool saveAirAlertSettings() {
   if (!model.airDirty) return true;
   if (!model.nvsReady) { model.airSaveFailed = true; return false; }
@@ -339,12 +362,21 @@ bool saveAirAlertSettings() {
   esp_err_t result = nvs_open("led_forge_s3", NVS_READWRITE, &handle);
   if (result == ESP_OK) {
     result = nvs_set_blob(handle, "air_alert", &model.airSettings, sizeof(model.airSettings));
+    if (result == ESP_OK && model.air.telegramMessageId) {
+      air_alert::TelegramRecord stored;
+      stored.headId = model.air.telegramHeadId; stored.messageId = model.air.telegramMessageId;
+      stored.messageTime = uint32_t(model.air.telegramMessageTime); stored.level = uint32_t(model.air.last);
+      stored.crc = air_alert::checksum(stored);
+      result = air_alert::valid(stored) ? nvs_set_blob(handle, "tg_alert", &stored, sizeof(stored)) : ESP_FAIL;
+    }
     if (result == ESP_OK) result = nvs_commit(handle);
     nvs_close(handle);
   }
   model.airSaveFailed = result != ESP_OK;
   if (result != ESP_OK) return false;
   model.airDirty = false;
+  model.airCheckpointSavedAt = uptimeMs();
+  model.airCheckpointHead = model.air.telegramHeadId;
   return true;
 }
 void serviceAirAlert() {
@@ -353,12 +385,17 @@ void serviceAirAlert() {
   air_alert::PollResult result;
   while (air_alert::receive(result)) {
     if (result.generation != model.airGeneration) continue;
-    model.air.accept(result.level, result.valid, now);
+    const uint32_t previousMessage = model.air.telegramMessageId;
+    const bool accepted = model.air.accept(result, model.airGeneration, now);
+    if (accepted && result.messageId &&
+        (result.messageId != previousMessage ||
+         (result.headId != model.airCheckpointHead && now - model.airCheckpointSavedAt >= 300000))) model.airDirty = true;
     model.airHttpStatus = result.httpStatus;
-    model.airFailure = result.failure;
+    model.airFailure = !accepted && result.failure == air_alert::Failure::None
+        ? air_alert::Failure::Payload : result.failure;
     model.airPollMs = result.elapsedMs;
     model.airTlsError = result.tlsError; model.airTlsCode = result.tlsCode; model.airTlsFlags = result.tlsFlags;
-    model.airFetchFailed = !result.valid;
+    model.airFetchFailed = !accepted;
     model.airNextAt = now + std::min(uint32_t(86400000), std::max(kAirPollIntervalMs, result.retryAfterMs));
   }
   if (!model.airWorkerReady || !model.airSettings.enabled ||
@@ -366,6 +403,8 @@ void serviceAirAlert() {
       model.control.maintenance != Maintenance::None || air_alert::busy() || !due(now, model.airNextAt)) return;
   air_alert::PollJob job{};
   job.generation = model.airGeneration;
+  job.knownHeadId = model.air.telegramHeadId; job.knownEventId = model.air.telegramMessageId;
+  job.knownLevel = model.air.last; job.knownEventTime = model.air.telegramMessageTime;
   if (air_alert::submit(job)) model.airNextAt = now + kAirPollIntervalMs;
 }
 const char *airLevelName(uint8_t level) {
@@ -383,6 +422,7 @@ void fillAirAlertView(View &view) {
   view.airPollMs = model.airPollMs;
   view.airTlsError = model.airTlsError; view.airTlsCode = model.airTlsCode; view.airTlsFlags = model.airTlsFlags;
   view.airRemaining = model.air.remainingSeconds(now);
+  view.airMessageId = model.air.telegramMessageId;
   view.airAge = model.air.seen ? (now - model.air.checkedAt) / 1000 : UINT32_MAX;
   copy(view.airStatus, !view.airEnabled && !view.airManual ? "Вимкнено" :
       view.airLevel == 2 ? "Ракетна загроза" : view.airLevel == 1 ? "Дронова загроза" :
@@ -391,14 +431,14 @@ void fillAirAlertView(View &view) {
   copy(view.airSource, !view.airEnabled ? "Автоперевірку вимкнено" :
       !model.connected ? "Немає Wi-Fi" :
       !model.airWorkerReady ? "Сервіс перевірки недоступний" :
-      model.airHttpStatus == 401 || model.airHttpStatus == 403 ? "NEPTUN: доступ тимчасово недоступний" :
+      model.airHttpStatus == 401 || model.airHttpStatus == 403 ? "Telegram: доступ тимчасово недоступний" :
       model.airHttpStatus == 429 ? "Ліміт запитів: очікування повтору" :
       model.airFetchFailed && model.airFailure == air_alert::Failure::Memory ? "Недостатньо пам’яті для перевірки" :
       model.airFetchFailed && model.airFailure == air_alert::Failure::Tls ? "Помилка захищеного з’єднання HTTPS" :
-      model.airFetchFailed && model.airFailure == air_alert::Failure::Dns ? "Не вдалося знайти сервер NEPTUN" :
-      model.airFetchFailed && model.airFailure == air_alert::Failure::Timeout ? "Перевищено час очікування NEPTUN" :
+      model.airFetchFailed && model.airFailure == air_alert::Failure::Dns ? "Не вдалося знайти сервер Telegram" :
+      model.airFetchFailed && model.airFailure == air_alert::Failure::Timeout ? "Перевищено час очікування Telegram" :
       model.airFetchFailed ? "Помилка оновлення" :
-      view.airFresh ? "Дані NEPTUN отримано" : model.air.seen ? "Дані застаріли" : "Очікування NEPTUN");
+      view.airFresh ? "Дані Telegram отримано" : model.air.seen ? "Дані застаріли" : "Очікування Telegram");
   copy(view.airDetails, model.airSaveFailed ? "Налаштування не збережено. Спробуйте ще раз." :
       model.airDirty ? "Збереження…" : !model.control.on ? "Матриця вимкнена за розкладом або вручну." :
       view.airEnabled && !view.airFresh ? "Немає актуальних даних. Це не відбій тривоги." :
@@ -1547,8 +1587,9 @@ esp_err_t portalStatus(httpd_req_t *request) {
   if (!airStatus) okay = false;
   else {
     boolean(airStatus, "enabled", view.airEnabled);
-    string(airStatus, "provider", "neptun");
-    string(airStatus, "scope", "Вінницький район");
+    string(airStatus, "provider", "telegram");
+    string(airStatus, "scope", "Вінниця");
+    number(airStatus, "message_id", view.airMessageId);
     boolean(airStatus, "manual", view.airManual);
     boolean(airStatus, "fresh", view.airFresh);
     boolean(airStatus, "save_failed", view.airSaveFailed);
@@ -1940,7 +1981,7 @@ esp_err_t commandPost(httpd_req_t *request) {
     if (!std::strcmp(mode, "save")) {
       const char *enabled = form.get("enabled");
       if ((enabled[0] && std::strcmp(enabled, "1")) || form.get("api_token")[0] || form.get("clear_token")[0])
-        return error(request, "400 Bad Request", "NEPTUN не потребує API-токена. Оновіть сторінку.");
+        return error(request, "400 Bad Request", "Telegram-канал не потребує API-токена. Оновіть сторінку.");
       command.kind = CommandKind::AirAlertSave; command.enabled = enabled[0] != 0;
     } else if (!std::strcmp(mode, "yellow") || !std::strcmp(mode, "red")) {
       if (!view.control.on) return error(request, "409 Conflict", "Матриця вимкнена. Спочатку ввімкніть її.");
@@ -2512,6 +2553,7 @@ void networkTask(void *) {
   loadWeekly();
   loadMemorialSettings();
   loadAirAlertSettings();
+  loadTelegramAlertState();
   const bool webReady = initializeWebFiles();
   if (!webReady) { message("Web filesystem initialization failed."); ESP_LOGE(kTag, "Web filesystem unavailable"); }
   model.wifiReady = initializeWifi();

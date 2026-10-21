@@ -20,6 +20,28 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792568086560` switches autonomous air-alert polling to the official
+Vinnytsia City Council public Telegram feed, `https://t.me/s/vmroficial`, for
+the city rather than the former NEPTUN district source. No token, Telegram
+login, running PC or phone is required. Certificate and fixed-host validation
+remain enabled. Bounded HTML tokenization reads only original channel posts
+and explicit standalone alert/all-clear headlines; red emoji alone do not
+identify missile threats. Quoted/forwarded content, news and malformed data
+cannot infer all-clear. A three-page total/eight-second job budget and 256 KiB
+PSRAM response limit bound recovery work. Message-ID checkpoints reject replay
+and survive reboot in separate checksummed NVS storage; active warnings remain
+stale but visible when fetching fails. Brightness, schedule, visual indicators,
+30 FPS, Wi-Fi and agents are unchanged. The Settings source attribution is updated.
+
+Validation: 450 firmware tests passed (two existing skips), including 16 HTML
+parser cases and a live public-page fixture; native ESP export, targeted Dart
+analysis and ESP32-S3 PlatformIO build passed. HTML is an undocumented public
+presentation feed and can be delayed or changed; this is supplementary
+indication, not a replacement for official alerts or sirens. On-device Telegram
+polling must be verified after the installed controller receives this OTA.
+
+## Previous OTA Progress Release
+
 Version `1792566856693` adds matrix OTA progress: a clockwise cyan perimeter
 fills with successfully written bytes, a moving highlight remains active during
 network reads, and the completed border turns green only after image/hash and

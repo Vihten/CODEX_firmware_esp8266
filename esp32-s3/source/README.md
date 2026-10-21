@@ -140,37 +140,47 @@ geometry and the original physical row spacing remain unchanged. Output is still
 
 ### Autonomous Air-Alert Indication
 
-The controller polls `https://neptun.in.ua/api/v1/alerts` directly over
-certificate-verified HTTPS for Vinnytskyi district (`вінницький`), including
-an applicable whole-oblast alert (`вінницька`). No personal API token,
+The controller reads `https://t.me/s/vmroficial`, the public feed of Vinnytsia
+City Council, directly over certificate-verified HTTPS for the city itself.
+No Telegram login, bot token, personal API token,
 LAN agent, running PC, phone or user-operated relay is required. Successful
 polls are spaced 15 seconds apart; failures back off and HTTP 429 respects
 Retry-After. Networking runs on core 0, separate from the 30 FPS renderer.
-ESP-IDF cross-signed certificate bundle verification is enabled for NEPTUN's
-Google Trust Services certificate chain. The full trusted CA bundle and
+ESP-IDF cross-signed certificate bundle verification remains enabled.
+The full trusted CA bundle and fixed `t.me`
 hostname validation remain required; certificate verification is not bypassed.
 
-The bounded 64 KiB response buffer is allocated explicitly in PSRAM, not
-internal RAM needed by mbedTLS. TLS resources are released before JSON parsing.
+The bounded 256 KiB response buffer is allocated explicitly in PSRAM, not
+internal RAM needed by mbedTLS. TLS resources are released before bounded HTML
+tokenization. Each job has an eight-second total budget and scans at most three
+pages, walking backward only when it needs to recover a previous explicit state.
 No internal-RAM fallback is attempted if PSRAM allocation fails. The status
 object exposes `failure`, `http_status` and `poll_ms` for transport diagnosis.
 
 The Settings page enables the feature and offers bounded manual previews.
-Explicit drone/missile reasons select the existing yellow drone/red rocket;
+Only complete official alert headlines and explicit drone/missile labels select
+the existing yellow drone/red rocket;
 a verified active alert with an unspecified cause has a separate generic
 indicator. A color level alone is not treated as proof of a weapon type.
-Only a complete, validated alert snapshot may clear a warning. Wi-Fi, DNS,
+Only an explicit newer all-clear post may clear a warning. News, quoted or
+forwarded messages and red emoji alone are not alert-state evidence. Original
+message IDs, not edit times, determine order. A persisted checksummed checkpoint
+rejects older pages/events and restores an active warning as stale after reboot.
+New event checkpoints use the existing safe maintenance/NVS gate; news-only
+head changes are checkpointed at most every five minutes. Wi-Fi, DNS,
 TLS, HTTP, payload and rate-limit failures retain the last active warning;
-the portal reports missing/stale data separately. Empty threat-track lists
+the portal reports missing/stale data separately. Missing alert posts
 are never used to infer an all-clear. Schedule and manual matrix-off remain
 authoritative, and disabling the feature is an explicit user override.
 
 The old provider's saved enabled preference is retained. Its retired API-token
 bytes are cleared in RAM and rewritten empty in the existing NVS record;
 Wi-Fi credentials, agent metadata, colors and weekly statistics are unchanged.
-NEPTUN attribution remains visible beside the alert controls. It is a third-party
-information aggregator, without availability or accuracy guarantees, and this
-display does not replace official air-alert notifications or sirens.
+City Council/Telegram attribution remains visible beside the controls. The
+public HTML feed has no documented delivery/schema guarantee and can be delayed,
+unavailable or changed. This supplementary display does not replace official
+air-alert notifications or sirens. The former NEPTUN district source is no
+longer polled; its JSON decoder remains only as a legacy pure test helper.
 
 The Ukrainian portal has Overview (`/`), Agents (`/agents`) and Settings
 (`/settings`) views. Power, brightness and the single weekly schedule stay on

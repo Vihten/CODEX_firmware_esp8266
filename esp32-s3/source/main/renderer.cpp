@@ -6,6 +6,7 @@
 #include "memorial_draw.hpp"
 #include "air_alert_visual.hpp"
 #include "quota_recovery.hpp"
+#include "ota_visual.hpp"
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
 #include "esp_log.h"
@@ -1160,6 +1161,25 @@ bool showFrame() {
   }
   return completed;
 }
+
+void renderOtaProgress() {
+  if (control.maintenance != Maintenance::Ota || !control.otaVisualSequence ||
+      (status.otaVisualSequence == control.otaVisualSequence && !control.otaVisualAnimate)) return;
+  // Continuous motion is granted only during network reads. Core 0 revokes it
+  // and waits for an exact one-shot ACK before any subsequent flash operation.
+  strip.setBrightness(control.brightness);
+  strip.clear();
+  if (control.on) {
+    for (unsigned y = 0; y < MATRIX_HEIGHT; ++y)
+      for (unsigned x = 0; x < MATRIX_WIDTH; ++x) {
+        const auto color = ota_visual::pixel(x, y, MATRIX_WIDTH, MATRIX_HEIGHT,
+            control.otaVisualPercent, millis());
+        strip.setPixelColor(physicalIndex(x, y), strip.Color(color.red, color.green, color.blue));
+      }
+  }
+  if (showFrame() && strip.isQuiescent()) status.otaVisualSequence = control.otaVisualSequence;
+}
+
 void feedWatchdog() {
   if (status.watchdogReady) esp_task_wdt_reset();
 }
@@ -1231,9 +1251,10 @@ void renderTask(void *) {
     }
     if (parked) {
       quotaRecovery.observe(control.quotaRecoveryEpoch, true, false);
-      // Keep the original ACK alive until core 0 releases the request. No PSRAM,
-      // scene drawing, LED transfers, or asset reads while flash may be active.
-      status.quiescent = true;
+      if (outputReady) renderOtaProgress();
+      // Keep the original maintenance ACK alive. No PSRAM or artwork reads;
+      // Core 0 revokes animation and waits for the stop-frame ACK before flash.
+      status.quiescent = strip.isQuiescent();
       status.maintenanceEpoch = acknowledgedEpoch;
     } else if (outputReady) {
       if (fresh) applyControlAgents();
@@ -1308,6 +1329,7 @@ void renderTask(void *) {
         }
         if (complete) {
           acknowledgedEpoch = control.maintenanceEpoch;
+          status.otaVisualSequence = 0;
           memorialParkedAt = now;
           parked = true;
           status.quiescent = true;
@@ -1421,6 +1443,7 @@ void renderTask(void *) {
       // Failed initialization can ACK only when the adapter confirms no DMA.
       parked = true;
       acknowledgedEpoch = control.maintenanceEpoch;
+      status.otaVisualSequence = 0;
       status.maintenanceEpoch = acknowledgedEpoch;
       status.quiescent = true;
     }

@@ -20,6 +20,20 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792566856693` adds matrix OTA progress: a clockwise cyan perimeter
+fills with successfully written bytes, a moving highlight remains active during
+network reads, and the completed border turns green only after image/hash and
+boot-partition validation. Each subsequent flash operation revokes animation
+and waits for a sequence/epoch-matched synchronous LED completion ACK. Timeout
+keeps maintenance sealed and defers cleanup; progress frames read no artwork
+or PSRAM. Existing brightness and schedule/manual-off remain authoritative.
+The normal animation retains its 30 FPS target. Validation: 419 firmware tests
+(two existing skips), native export, targeted Dart analysis and PlatformIO build.
+The progress indicator runs on updates performed by this version, not while
+older firmware is installing it. Physical OTA animation is not yet observed.
+
+## Previous Quota Recovery Release
+
 Version `1792564692455` adds daytime quota-recovery motion. Fresh same-source
 reports returning to 100 percent trigger one 2.6-second return to noon with a
 small damped oscillation once the combined minimum reaches 100 percent.

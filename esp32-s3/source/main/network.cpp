@@ -149,6 +149,8 @@ struct Model {
   uint32_t restartAt = 0, otaAt = 0, stationAt = 0, stationRetryAt = 0, discoveryAt = 0;
   uint32_t legacyAt = 0, maintenanceTimeouts = 0, udpPackets = 0, disconnects = 0, loops = 0;
   uint32_t otaDone = 0, otaTotal = 0, requestedRgb[kAgentCapacity] = {};
+  esp_ota_handle_t otaAbortHandle = 0;
+  bool otaVisualTimedOut = false, otaBootSelected = false;
   uint16_t disconnectReason = 0;
   uint8_t legacyActivity = 0, legacyRemaining = 100, stationAttempts = 0;
   bool legacySeen = false, directSeen = false, linked = false, connected = false;
@@ -2239,6 +2241,54 @@ bool imageDescriptor(const uint8_t *data, size_t size) {
   uint64_t version;
   return unsignedValue(app.version, 9007199254740991ULL, version) && version == model.manifest.version;
 }
+bool otaVisualAcknowledged() {
+  return model.control.maintenance == Maintenance::Ota && model.control.otaVisualSequence &&
+      !model.control.otaVisualAnimate &&
+      model.render.maintenanceEpoch == model.control.maintenanceEpoch &&
+      model.render.otaVisualSequence == model.control.otaVisualSequence &&
+      model.render.quiescent && model.render.ledError == 0;
+}
+void beginOtaVisualAnimation(uint8_t percent) {
+  if (model.control.maintenance != Maintenance::Ota || model.otaVisualTimedOut) return;
+  ++model.control.otaVisualSequence;
+  if (!model.control.otaVisualSequence) ++model.control.otaVisualSequence;
+  model.control.otaVisualPercent = std::min(percent, uint8_t(99));
+  model.control.otaVisualAnimate = true;
+  model.control.on = scheduledOn();
+  // Only network reads may overlap repeated LED transfers; no flash calls here.
+  xQueueOverwrite(controlQueue, &model.control);
+  publishView();
+}
+bool requestOtaVisual(uint8_t percent) {
+  if (model.control.maintenance != Maintenance::Ota || model.otaVisualTimedOut) return false;
+  ++model.control.otaVisualSequence;
+  if (!model.control.otaVisualSequence) ++model.control.otaVisualSequence;
+  model.control.otaVisualPercent = std::min(percent, uint8_t(100));
+  model.control.otaVisualAnimate = false;
+  model.control.on = scheduledOn();
+  // Retain brightness and avoid updateControl's broader state work during OTA.
+  xQueueOverwrite(controlQueue, &model.control);
+  publishView();
+  const uint32_t started = uptimeMs();
+  for (;;) {
+    const uint32_t elapsed = uptimeMs() - started;
+    if (elapsed >= 1000) break;
+    RenderStatus render;
+    const uint32_t remaining = 1000 - elapsed;
+    if (xQueueReceive(renderStatusQueue, &render, pdMS_TO_TICKS(std::min(remaining, uint32_t(10)))) == pdTRUE) {
+      model.render = render;
+      if (otaVisualAcknowledged()) return true;
+    }
+    // Yield even when stale status reports keep the queue readable (idle watchdog).
+    if (uptimeMs() - started < 1000) vTaskDelay(1);
+  }
+  // A delayed request can still start DMA. Keep maintenance sealed until its ACK;
+  // neither abort nor release/restart is safe merely because a timer expired.
+  model.otaVisualTimedOut = true;
+  ++model.maintenanceTimeouts;
+  otaMessage("OTA visual ACK timed out; flash cleanup waiting for renderer");
+  return false;
+}
 bool installFirmware() {
   Download download;
   if (!download.open(kFirmwareUrl)) { otaMessage("Firmware HTTPS request failed"); return false; }
@@ -2257,19 +2307,33 @@ bool installFirmware() {
   psa_hash_operation_t hash = PSA_HASH_OPERATION_INIT;
   if (psa_crypto_init() != PSA_SUCCESS || psa_hash_setup(&hash, PSA_ALG_SHA_256) != PSA_SUCCESS) { otaMessage("SHA-256 unavailable"); return false; }
   esp_ota_handle_t handle = 0;
-  if (esp_ota_begin(partition, model.manifest.size, &handle) != ESP_OK) { psa_hash_abort(&hash); otaMessage("OTA partition initialization failed"); return false; }
   model.otaDone = 0; model.otaTotal = model.manifest.size;
+  if (!requestOtaVisual(0)) { psa_hash_abort(&hash); return false; }
+  if (esp_ota_begin(partition, model.manifest.size, &handle) != ESP_OK) { psa_hash_abort(&hash); otaMessage("OTA partition initialization failed"); return false; }
   const uint32_t started = uptimeMs(); bool okay = true; size_t count = first;
   while (model.otaDone < model.otaTotal) {
     if (uptimeMs() - started > 180000 || count > model.otaTotal - model.otaDone ||
         psa_hash_update(&hash, buffer.data(), count) != PSA_SUCCESS || esp_ota_write(handle, buffer.data(), count) != ESP_OK) { okay = false; break; }
     model.otaDone += count; publishView();
     if (model.otaDone == model.otaTotal) break;
+    const uint8_t percent = uint8_t(std::min(uint64_t(99), uint64_t(model.otaDone) * 100 / model.otaTotal));
+    beginOtaVisualAnimation(percent);
     const int read = download.read(buffer.data(), std::min(buffer.size(), size_t(model.otaTotal - model.otaDone)));
+    // Stop even on EOF/error, before any subsequent write, abort or validation.
+    if (!requestOtaVisual(percent)) {
+      psa_hash_abort(&hash); model.otaAbortHandle = handle; return false;
+    }
     if (read <= 0) { okay = false; break; }
     count = size_t(read); vTaskDelay(1);
   }
-  if (okay) { const int extra = download.read(buffer.data(), 1); if (extra != 0 || !download.complete()) okay = false; }
+  if (okay) {
+    beginOtaVisualAnimation(99);
+    const int extra = download.read(buffer.data(), 1);
+    if (!requestOtaVisual(99)) {
+      psa_hash_abort(&hash); model.otaAbortHandle = handle; return false;
+    }
+    if (extra != 0 || !download.complete()) okay = false;
+  }
   uint8_t digest[32]; size_t digestSize = 0;
   if (psa_hash_finish(&hash, digest, sizeof(digest), &digestSize) != PSA_SUCCESS || digestSize != 32 || std::memcmp(digest, model.manifest.sha, 32)) okay = false;
   psa_hash_abort(&hash);
@@ -2281,18 +2345,27 @@ bool installFirmware() {
       std::strcmp(description.project_name, "led_forge_s3") || esp_ota_set_boot_partition(partition) != ESP_OK) {
     otaMessage("Boot partition validation failed"); return false;
   }
+  model.otaBootSelected = true;
+  if (!requestOtaVisual(100)) return false;
   otaMessage("Firmware verified; restarting");
+  vTaskDelay(pdMS_TO_TICKS(300));
   esp_restart(); return true;
 }
 
 void requestMaintenance(Maintenance kind) {
   if (model.releasePending || model.control.maintenance != Maintenance::None) return;
   previewStreamSealed.store(true);
+  model.control.otaVisualSequence = 0; model.control.otaVisualPercent = 0;
+  model.control.otaVisualAnimate = false;
+  model.otaBootSelected = false;
   model.control.maintenance = kind; ++model.control.maintenanceEpoch;
   if (!model.control.maintenanceEpoch) ++model.control.maintenanceEpoch;
   model.maintenanceAt = uptimeMs(); updateControl(); publishView();
 }
 void releaseMaintenance() {
+  if (model.otaVisualTimedOut) return;
+  model.control.otaVisualSequence = 0; model.control.otaVisualPercent = 0;
+  model.control.otaVisualAnimate = false;
   model.control.maintenance = Maintenance::None;
   // Keep the old epoch until Core 1 explicitly reports that it resumed.
   model.releasePending = true; updateControl(); publishView();
@@ -2332,6 +2405,22 @@ void discardBlockedTelemetry() {
 }
 void serviceMaintenance() {
   const uint32_t now = uptimeMs();
+  if (model.otaVisualTimedOut) {
+    if (!otaVisualAcknowledged()) return;
+    if (model.otaBootSelected) {
+      otaMessage("Firmware verified; restarting");
+      vTaskDelay(pdMS_TO_TICKS(300)); esp_restart();
+      return;
+    }
+    model.otaVisualTimedOut = false;
+    if (model.otaAbortHandle) {
+      esp_ota_abort(model.otaAbortHandle);
+      otaMessage("OTA cancelled after renderer became quiescent");
+    }
+    model.otaAbortHandle = 0;
+    model.manifestReady = false; model.otaAt = uptimeMs() + 60000;
+    releaseMaintenance(); return;
+  }
   if (model.releasePending) {
     if (!model.render.quiescent && model.render.maintenanceEpoch == model.control.maintenanceEpoch) model.releasePending = false;
     else return;
@@ -2367,7 +2456,9 @@ void serviceMaintenance() {
         }
         // Finish the command gate atomically; HTTP views and telemetry never block OTA.
         if (!commandsSealedForOta()) return;
-        installFirmware(); discardBlockedTelemetry();
+        if (installFirmware()) return;
+        discardBlockedTelemetry();
+        if (model.otaVisualTimedOut) return;
         model.manifestReady = false; model.otaAt = uptimeMs() + 60000; releaseMaintenance(); break;
       case Maintenance::Restart:
         if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty) { releaseMaintenance(); break; }

@@ -15,6 +15,24 @@ frame sampling; the pyramid and brightness remain unchanged. An existing
 meteor flight finishes first. Startup, off, memorial and maintenance suppress
 new recovery events; an in-progress recovery pauses during maintenance.
 
+## OTA Matrix Progress
+
+During firmware installation the renderer replaces the scene with a clockwise
+perimeter indicator: cyan fill tracks successfully written bytes (capped at
+99 percent), a short brighter ribbon moves around the outline, and the full
+border turns green only after SHA-256, SDK image and boot-partition checks.
+The existing brightness and manual/scheduled off state remain authoritative.
+
+The renderer may animate continuously during network reads. Before every
+subsequent flash operation the writer revokes that permission and waits for
+an exact one-shot sequence and maintenance epoch acknowledged only after
+synchronous RMT completion. Flash erase/validation may briefly hold the last
+frame. The parked renderer never reads artwork or PSRAM for these frames.
+Missing ACKs keep maintenance sealed and defer cleanup until the renderer
+proves completion; elapsed time alone is not DMA-safety evidence.
+The new indicator is available for updates performed by this firmware, not
+while an older installed version is still downloading it.
+
 ## Wiring
 
 - Matrix data: GPIO18, not the NodeMCU label D4.

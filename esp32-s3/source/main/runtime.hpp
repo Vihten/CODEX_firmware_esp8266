@@ -22,6 +22,9 @@ struct AgentInput {
 
 struct ControlFrame {
   uint32_t quotaRecoveryEpoch = 0;
+  uint32_t otaVisualSequence = 0;
+  uint8_t otaVisualPercent = 0;
+  bool otaVisualAnimate = false;
   uint8_t remainingPercent = 100;
   uint8_t activityPercent = 0;
   uint8_t brightness = PROJECT_BRIGHTNESS;
@@ -39,6 +42,7 @@ struct ControlFrame {
 };
 
 struct RenderStatus {
+  uint32_t otaVisualSequence = 0;
   uint32_t frames = 0;
   uint32_t missedDeadlines = 0;
   uint32_t lastFrameUs = 0;

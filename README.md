@@ -20,6 +20,21 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792571104322` simplifies the corner air-alert silhouettes for the
+physical 7 x 12 mm LED pitch. The yellow drone has distinct swept wings and a
+fuselage; the red rocket has a narrow body, pointed nose and rear fins. Both
+remain in their existing 13 x 8 corner regions, facing inward/down toward the
+pyramid. Colors, brightness, background protection, alert polling and 30 FPS
+remain unchanged. Shape-only and mirrored rendering checks cover the new masks.
+The preview uses the real LED spacing; physical appearance still needs observation
+after the controller receives the update.
+
+Validation: 450 firmware tests passed (two existing skips), including native
+corner rendering, mirroring and foreground protection. Native export, targeted
+Dart analysis and the ESP32-S3 PlatformIO build passed.
+
+## Previous Telegram Alert Release
+
 Version `1792568086560` switches autonomous air-alert polling to the official
 Vinnytsia City Council public Telegram feed, `https://t.me/s/vmroficial`, for
 the city rather than the former NEPTUN district source. No token, Telegram

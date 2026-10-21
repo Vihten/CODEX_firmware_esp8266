@@ -58,14 +58,14 @@ inline bool indicatorVisible(float amount, bool on, bool maintenance, uint8_t br
 
 inline bool iconPixel(uint8_t level, unsigned x, unsigned y) {
   if (x >= kIconWidth || y >= kIconHeight) return false;
-  // Pre-rasterized 143-degree inward turn at 75% size, using the 7 x 12 mm
-  // physical pitch. The nose is (9,6); the renderer mirrors the right glyph.
+  // Native silhouettes for 7 x 12 mm pitch: swept delta wing versus slim body
+  // with rear fins. Both noses point inward/down at (10,6); mirror on the right.
   static constexpr char drone[kIconHeight][kIconWidth + 1] = {
-      ".............", "...######....", "...###.##....", ".###.##.#....",
-      ".########....", ".....#####...", ".........#...", "............."};
+      ".............", "...##....#...", "....##.###...", ".....#####...",
+      "...######....", ".#####..##...", ".........##..", "............."};
   static constexpr char rocket[kIconHeight][kIconWidth + 1] = {
-      ".............", "....#.##.....", "...#####.....", "..######.....",
-      "...#.####....", "......####...", ".........#...", "............."};
+      ".............", "...##..#.....", "....####.....", "...#####.....",
+      "......###....", "........##...", "..........#..", "............."};
   static constexpr char unspecified[kIconHeight][kIconWidth + 1] = {
       ".............", "......##.....", "......##.....", "......##.....",
       "......##.....", ".............", "......##.....", "............."};

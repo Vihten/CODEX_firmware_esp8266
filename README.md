@@ -20,6 +20,20 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792593593246` redraws the yellow drone as a solid delta/flying-wing
+silhouette with a short projecting nose, matching the supplied visual reference.
+The bitmap is drawn directly for the physical 7 x 12 mm LED pitch and retains
+its 13 x 8 corner region and inward/downward orientation. The rocket, colors,
+brightness, air-alert state logic and physical 30 FPS output are unchanged.
+Native checks cover the solid wing, mirroring and foreground/background behavior;
+the preview was reviewed at the real LED spacing. Physical appearance is not yet
+verified after installation.
+
+Validation: 488 firmware tests passed (two existing skips), native export,
+targeted Dart analysis and ESP32-S3 PlatformIO build passed.
+
+## Previous Telegram Reliability Release
+
 Version `1792590550056` reduces stack/internal-heap pressure during Telegram
 polling and live preview. The preview worker no longer puts the full controller
 snapshot on its small stack; `/status` uses PSRAM for its bounded 16 KiB body.

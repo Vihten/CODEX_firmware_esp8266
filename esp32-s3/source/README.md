@@ -81,6 +81,10 @@ committed to NVS. The footer's password/access link opens password change and
 sign-out. A reboot invalidates sessions, not the saved password.
 
 Credentials use a random salt and PBKDF2-HMAC-SHA256, not a plaintext password.
+The 100,000-round derivation reuses SHA-256 HMAC pad states through PSA hash
+cloning. Bounded scheduler yields replace idle-priority execution. The output
+and credential layout remain compatible with previously saved passwords;
+iteration count, session expiry and failed-attempt limits are unchanged.
 The separate credential record is saved by the network task only after the
 existing renderer/preview maintenance acknowledgement. Failed or corrupt reads
 do not silently unlock the interface. Password changes preserve Wi-Fi, agent

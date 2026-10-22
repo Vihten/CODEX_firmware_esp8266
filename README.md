@@ -20,6 +20,26 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792660054237` replaces the drone's small upper protrusions with a
+clean symmetric triangular wing and a short tubular nose. The missile has a
+continuous narrow body, restrained fins and a pointed nose. Both still face
+straight down in the existing upper corner regions, at the same alert colors
+and brightness, with physical 7 x 12 mm LED spacing accounted for.
+
+Password verification reuses the HMAC inner/outer SHA-256 pad states via PSA
+hash cloning, avoiding repeated pad hashing in every PBKDF2 round. Periodic
+bounded yields replace running the entire derivation at idle priority. The
+100,000-round PBKDF2-HMAC-SHA256 output and NVS layout are unchanged; saved
+passwords, rate limits, sessions and CSRF checks remain compatible. Native
+checks include independent known-answer vectors and stored-verifier login.
+Live login speedup has not yet been measured after installation.
+
+Validation: 496 firmware tests passed (two existing skips), native export,
+targeted Dart analysis and ESP32-S3 PlatformIO build passed. Physical animation
+remains 30 FPS.
+
+## Previous OTA Progress Release
+
 Version `1792652404748` redraws both corner alert silhouettes pointing straight
 down: a solid delta-wing drone and a slim missile with short mid-wings and tail
 stabilizers. Both are designed for the physical 7 x 12 mm LED pitch and retain

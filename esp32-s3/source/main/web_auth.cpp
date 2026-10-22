@@ -218,22 +218,60 @@ bool readForm(httpd_req_t *request, Form &form) {
   }
   return std::strlen(form.csrf) == 64 && equal(form.csrf, bootToken, 64);
 }
-struct PriorityGuard {
-  UBaseType_t previous = uxTaskPriorityGet(nullptr);
-  PriorityGuard() { vTaskPrioritySet(nullptr, tskIDLE_PRIORITY); vTaskDelay(1); }
-  ~PriorityGuard() { vTaskPrioritySet(nullptr, previous); }
+struct PasswordHmac {
+  psa_hash_operation_t inner = PSA_HASH_OPERATION_INIT, outer = PSA_HASH_OPERATION_INIT;
+  psa_hash_operation_t work = PSA_HASH_OPERATION_INIT;
+  uint8_t pad[64] = {}, digest[32] = {};
+  ~PasswordHmac() {
+    psa_hash_abort(&work); psa_hash_abort(&inner); psa_hash_abort(&outer);
+    erase(pad, sizeof(pad)); erase(digest, sizeof(digest));
+  }
+  bool setup(const char *password) {
+    const size_t size = std::strlen(password);
+    size_t written = 0;
+    if (size > sizeof(pad)) {
+      if (psa_hash_compute(PSA_ALG_SHA_256, reinterpret_cast<const uint8_t *>(password), size,
+              pad, sizeof(pad), &written) != PSA_SUCCESS || written != sizeof(digest)) return false;
+    } else std::memcpy(pad, password, size);
+    for (auto &byte : pad) byte ^= 0x36;
+    if (psa_hash_setup(&inner, PSA_ALG_SHA_256) != PSA_SUCCESS ||
+        psa_hash_update(&inner, pad, sizeof(pad)) != PSA_SUCCESS) return false;
+    for (auto &byte : pad) byte ^= 0x36 ^ 0x5c;
+    const bool okay = psa_hash_setup(&outer, PSA_ALG_SHA_256) == PSA_SUCCESS &&
+        psa_hash_update(&outer, pad, sizeof(pad)) == PSA_SUCCESS;
+    erase(pad, sizeof(pad)); return okay;
+  }
+  bool hash(const psa_hash_operation_t &seed, const uint8_t *bytes, size_t size, uint8_t *out) {
+    size_t written = 0;
+    const bool okay = psa_hash_clone(&seed, &work) == PSA_SUCCESS &&
+        psa_hash_update(&work, bytes, size) == PSA_SUCCESS &&
+        psa_hash_finish(&work, out, sizeof(digest), &written) == PSA_SUCCESS && written == sizeof(digest);
+    psa_hash_abort(&work); return okay;
+  }
+  bool compute(const uint8_t *bytes, size_t size, uint8_t *out) {
+    return hash(inner, bytes, size, digest) && hash(outer, digest, sizeof(digest), out);
+  }
 };
 bool derive(const char *password, const uint8_t (&salt)[16], uint8_t (&out)[32]) {
-  // The library owns PBKDF2. Priority zero time-slices with idle0 while core1 renders.
-  PriorityGuard priority;
-  psa_key_derivation_operation_t operation = PSA_KEY_DERIVATION_OPERATION_INIT;
-  bool okay = psa_key_derivation_setup(&operation, PSA_ALG_PBKDF2_HMAC(PSA_ALG_SHA_256)) == PSA_SUCCESS &&
-      psa_key_derivation_input_integer(&operation, PSA_KEY_DERIVATION_INPUT_COST, kIterations) == PSA_SUCCESS &&
-      psa_key_derivation_input_bytes(&operation, PSA_KEY_DERIVATION_INPUT_SALT, salt, sizeof(salt)) == PSA_SUCCESS &&
-      psa_key_derivation_input_bytes(&operation, PSA_KEY_DERIVATION_INPUT_PASSWORD,
-          reinterpret_cast<const uint8_t *>(password), std::strlen(password)) == PSA_SUCCESS &&
-      psa_key_derivation_output_bytes(&operation, out, sizeof(out)) == PSA_SUCCESS;
-  psa_key_derivation_abort(&operation);
+  // RFC 8018, one SHA-256 output block. Reuse HMAC pad states instead of
+  // hashing both pads again on every iteration; PSA still owns all hashing.
+  PasswordHmac hmac;
+  uint8_t first[20] = {}, current[32] = {};
+  std::memcpy(first, salt, sizeof(salt)); first[19] = 1;
+  bool okay = hmac.setup(password) && hmac.compute(first, sizeof(first), current);
+  if (okay) std::memcpy(out, current, sizeof(out));
+  int64_t yielded = nowMs();
+  for (uint32_t iteration = 1; okay && iteration < kIterations; ++iteration) {
+    okay = hmac.compute(current, sizeof(current), current);
+    if (!okay) break;
+    for (size_t i = 0; i < sizeof(out); ++i) out[i] ^= current[i];
+    // Block periodically so idle0 can service its watchdog, without running
+    // the entire KDF at idle priority. Never sleep once per KDF iteration.
+    if ((iteration & 63U) == 0 && nowMs() - yielded >= 10) {
+      vTaskDelay(1); yielded = nowMs();
+    }
+  }
+  erase(first, sizeof(first)); erase(current, sizeof(current));
   if (!okay) erase(out, sizeof(out));
   return okay;
 }

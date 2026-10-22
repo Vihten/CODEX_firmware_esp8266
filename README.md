@@ -20,6 +20,18 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792665795068` makes both air-alert silhouettes more compact. The drone
+shrinks from an 11 x 7 to a 9 x 6 LED bounding box, retaining its solid triangular
+wing and short nose. The ballistic missile shrinks from 5 x 8 to 5 x 6 LEDs,
+with a continuous narrow body, tapered nose and tail-only stabilizers instead
+of mid-body wings. Both point down and stay in their existing upper corners.
+Colors, brightness, alert handling and physical 30 FPS output are unchanged.
+
+Validation: 26 native glyph/renderer tests passed, native export, targeted Dart
+analysis and ESP32-S3 PlatformIO build passed. Hardware appearance awaits installation.
+
+## Previous Login Optimization Release
+
 Version `1792660054237` replaces the drone's small upper protrusions with a
 clean symmetric triangular wing and a short tubular nose. The missile has a
 continuous narrow body, restrained fins and a pointed nose. Both still face

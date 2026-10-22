@@ -20,6 +20,17 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792668398888` copies the supplied compact pixel reference directly.
+The yellow drone uses row widths 5/3/1/1 (10 LEDs), and the red missile uses
+1/3/1/1 (6 LEDs). Their existing upper-corner centerlines, alert colors and
+brightness are unchanged. Physical output remains 30 FPS.
+
+Validation: 26 native glyph/renderer tests, native export, targeted Dart analysis
+and ESP32-S3 PlatformIO build. Preview checked at 7 x 12 mm pitch; hardware
+appearance awaits installation.
+
+## Previous Compact Silhouette Release
+
 Version `1792665795068` makes both air-alert silhouettes more compact. The drone
 shrinks from an 11 x 7 to a 9 x 6 LED bounding box, retaining its solid triangular
 wing and short nose. The ballistic missile shrinks from 5 x 8 to 5 x 6 LEDs,

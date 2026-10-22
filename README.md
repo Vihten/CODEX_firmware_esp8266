@@ -20,6 +20,16 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792670992332` moves both compact alert silhouettes three LEDs outward
+into the dark upper corners. Their centerlines are now x=3 and x=46 on the
+50 x 20 matrix. The reference shapes, size, downward orientation, colors,
+brightness and physical 30 FPS animation are unchanged.
+
+Validation: 26 native glyph/renderer tests, native export, targeted Dart analysis
+and ESP32-S3 PlatformIO build. Preview checked at physical LED spacing.
+
+## Previous Reference Silhouette Release
+
 Version `1792668398888` copies the supplied compact pixel reference directly.
 The yellow drone uses row widths 5/3/1/1 (10 LEDs), and the red missile uses
 1/3/1/1 (6 LEDs). Their existing upper-corner centerlines, alert colors and

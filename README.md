@@ -20,6 +20,24 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1792652404748` redraws both corner alert silhouettes pointing straight
+down: a solid delta-wing drone and a slim missile with short mid-wings and tail
+stabilizers. Both are designed for the physical 7 x 12 mm LED pitch and retain
+their existing corner locations, alert colors and brightness.
+
+The OTA indicator no longer lights the empty perimeter. Its moving ribbon stays,
+while newly filled LEDs rise linearly over 180 ms with fractional edge coverage.
+Progress still represents successfully written bytes, capped at 99 percent;
+verified green completion remains immediate. Rendering is restricted to the
+existing flash-safe windows, so flash operations can hold the last frame.
+Physical output remains 30 FPS. Settings, passwords and agent statistics are
+preserved; no live installation or hardware appearance is claimed here.
+
+Validation: 493 firmware tests passed (two existing skips), native export,
+targeted Dart analysis and ESP32-S3 PlatformIO build passed.
+
+## Previous Drone Silhouette Release
+
 Version `1792593593246` redraws the yellow drone as a solid delta/flying-wing
 silhouette with a short projecting nose, matching the supplied visual reference.
 The bitmap is drawn directly for the physical 7 x 12 mm LED pitch and retains

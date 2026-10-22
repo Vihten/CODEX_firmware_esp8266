@@ -1162,18 +1162,27 @@ bool showFrame() {
   return completed;
 }
 
+ota_visual::Fill<ota_visual::perimeter(MATRIX_WIDTH, MATRIX_HEIGHT)> otaFill;
+uint32_t otaFillEpoch = 0;
 void renderOtaProgress() {
   if (control.maintenance != Maintenance::Ota || !control.otaVisualSequence ||
       (status.otaVisualSequence == control.otaVisualSequence && !control.otaVisualAnimate)) return;
   // Continuous motion is granted only during network reads. Core 0 revokes it
   // and waits for an exact one-shot ACK before any subsequent flash operation.
+  const uint32_t now = millis();
+  if (otaFillEpoch != control.maintenanceEpoch) {
+    otaFill.reset(now);
+    otaFillEpoch = control.maintenanceEpoch;
+  }
+  otaFill.update(control.otaVisualPercent, now);
   strip.setBrightness(control.brightness);
   strip.clear();
   if (control.on) {
     for (unsigned y = 0; y < MATRIX_HEIGHT; ++y)
       for (unsigned x = 0; x < MATRIX_WIDTH; ++x) {
+        const int edge = ota_visual::position(x, y, MATRIX_WIDTH, MATRIX_HEIGHT);
         const auto color = ota_visual::pixel(x, y, MATRIX_WIDTH, MATRIX_HEIGHT,
-            control.otaVisualPercent, millis());
+            control.otaVisualPercent, now, edge < 0 ? 0 : otaFill.coverage(unsigned(edge)));
         strip.setPixelColor(physicalIndex(x, y), strip.Color(color.red, color.green, color.blue));
       }
   }

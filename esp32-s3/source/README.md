@@ -19,8 +19,12 @@ new recovery events; an in-progress recovery pauses during maintenance.
 
 During firmware installation the renderer replaces the scene with a clockwise
 perimeter indicator: cyan fill tracks successfully written bytes (capped at
-99 percent), a short brighter ribbon moves around the outline, and the full
+99 percent), a short brighter ribbon moves around the otherwise unlit border, and the full
 border turns green only after SHA-256, SDK image and boot-partition checks.
+New fill LEDs rise linearly over 180 ms, including fractional edge coverage.
+Animation advances only in approved network-read windows; a flash-write pause
+holds the last frame rather than skipping the fade when rendering resumes.
+Verified green completion remains immediate for the final one-frame barrier.
 The existing brightness and manual/scheduled off state remain authoritative.
 
 The renderer may animate continuously during network reads. Before every

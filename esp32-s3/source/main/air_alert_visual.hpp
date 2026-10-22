@@ -58,14 +58,14 @@ inline bool indicatorVisible(float amount, bool on, bool maintenance, uint8_t br
 
 inline bool iconPixel(uint8_t level, unsigned x, unsigned y) {
   if (x >= kIconWidth || y >= kIconHeight) return false;
-  // Native silhouettes for 7 x 12 mm pitch: solid delta wing versus slim body
-  // with rear fins. Both noses point inward/down at (10,6); mirror on the right.
+  // Native silhouettes for 7 x 12 mm pitch: solid delta wing versus a long
+  // missile body with short mid-wings. Both noses point straight down at (6,6).
   static constexpr char drone[kIconHeight][kIconWidth + 1] = {
-      ".............", ".........#...", "....#..###...", "....######...",
-      ".#########...", "........##...", "..........#..", "............."};
+      ".............", "..#...#...#..", "..#########..", "...#######...",
+      "....#####....", ".....###.....", "......#......", "............."};
   static constexpr char rocket[kIconHeight][kIconWidth + 1] = {
-      ".............", "...##..#.....", "....####.....", "...#####.....",
-      "......###....", "........##...", "..........#..", "............."};
+      ".............", "....#####....", "......#......", "...#######...",
+      "......#......", "......#......", "......#......", "............."};
   static constexpr char unspecified[kIconHeight][kIconWidth + 1] = {
       ".............", "......##.....", "......##.....", "......##.....",
       "......##.....", ".............", "......##.....", "............."};

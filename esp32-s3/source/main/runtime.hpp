@@ -58,7 +58,7 @@ struct RenderStatus {
   bool memorialTransition = false;
 };
 
-enum class CommandKind : uint8_t { Wifi, Power, Brightness, Schedule, Color, Restart, Update, AgentPoll, AgentUpgrade, AgentRename, AgentUninstall, MemorialSave, MemorialPlay, MemorialStop, AirAlertSave, AirAlertTest, AirAlertStop };
+enum class CommandKind : uint8_t { Wifi, Power, Brightness, Schedule, Color, Restart, Update, AgentPoll, AgentUpgrade, AgentRename, AgentUninstall, MemorialSave, MemorialPlay, MemorialStop, AirAlertSave, AirAlertTest, AirAlertStop, ExternalLight };
 struct NetworkCommand {
   uint64_t agentVersion = 0;
   uint64_t agentNonceCounter = 0;

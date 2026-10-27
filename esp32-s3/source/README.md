@@ -4,6 +4,65 @@ This is a separate ESP-IDF firmware target for ESP32-S3-WROOM-1-N16R8:
 16 MiB quad flash and 8 MiB octal PSRAM. The firmware repository now publishes
 S3 as its primary target; ESP8266 releases remain only in Git history.
 
+## External Illumination
+
+Overview provides two independent 0-100 percent PWM channels: GPIO4 for the
+first LED pair and GPIO5 for the second. GPIO18 remains the matrix data output.
+Hardware LEDC runs at 1 kHz / 10-bit resolution without a PWM task or ISR.
+Zero disables a channel; the separate OFF button disables both. Follow-matrix
+mode respects the matrix's schedule and manual power state. Disable this option
+for independent lighting. OTA and requested restart force both channels off.
+
+Both GPIOs are driven LOW before boot-time storage/assets/network work. A new
+installation starts with both levels zero. Previously saved levels are restored
+after boot initialization, subject to follow-matrix state. Initialization or
+write failure latches the outputs OFF until reboot; status reports unavailable.
+The separate checksummed `exterior` NVS blob is persisted only behind the existing
+renderer/preview flash-maintenance acknowledgement. Wi-Fi, passwords, agents and
+weekly statistics retain their existing storage layouts.
+
+### Wiring and Gate Drive
+
+Disconnect all power before wiring. For each channel, connect two separate
+parallel LED branches, each with its OWN current-limiting resistor:
+
+```text
++5 V ---- LED1 anode -> cathode ---- 37 ohm ----+---- Drain (D)
++5 V ---- LED2 anode -> cathode ---- 37 ohm ----+
+                                                   MOSFET
+Common DC ground -------------------------------- Source (S)
+```
+
+Repeat for LED3/LED4 and the second transistor. The resistor's switched end goes
+to Drain, not directly to ground. Join PSU negative, both Sources and ESP32 GND.
+Do not run LED load current through a GPIO or the controller's 3.3 V pin. Two
+3.2-3.4 V LEDs cannot be connected in series from this 5 V supply. With 37 ohm
+per LED and an ideal switch, estimated peak current is 43-49 mA per branch;
+0.25 W resistors provide margin. PWM reduces average current, not pulse current.
+Do not remove the resistors. The supplied 300 mA rating at 3.3 V is about 1 W,
+not 3 W; confirm actual LED ratings before attempting higher current.
+
+IRF520 is NOT specified for full enhancement at ESP32's 3.3 V gate output.
+Vishay specifies RDS(on) at VGS=10 V; its 2-4 V threshold is measured at only
+250 microamps. A tested LED brightness through a resistor does not establish
+reliable 3.3 V gate switching. Prefer a logic-level MOSFET whose RDS(on) is
+specified at 2.5/3.3 V, or keep IRF520 with a non-inverting gate driver accepting
+3.3 V logic and supplying approximately 10 V gate drive. Never connect that
+gate-drive voltage to an ESP32 pin. A separate compatible gate supply is needed
+for a 10 V driver; the 5 V LED rail alone does not provide it.
+
+For the driver arrangement: GPIO4/5 -> driver input; driver output -> 100 ohm ->
+Gate. Choose a driver that defaults LOW with undervoltage protection, and add a
+10 kilohm driver-input-to-ground pulldown. Add 47-100 kilohm Gate-to-Source pulldown on each transistor, even though
+firmware initializes LOW: software cannot control pins before reset completes.
+For Vishay TO-220 IRF520, viewed from the marked face with legs downward, the
+pins are Gate, Drain, Source left-to-right; the metal tab is Drain. Verify the
+actual manufacturer's pinout before soldering and do not short both tabs to a
+conductive enclosure. Account for the matrix in the shared 5 V / 8 A PSU budget.
+
+Sources: [Vishay IRF520 datasheet](https://www.vishay.com/docs/91017/irf520.pdf),
+[Espressif GPIO reference](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/peripherals/gpio.html).
+
 ## Quota Recovery Motion
 
 A fresh report from an already live source changing its remaining quota from

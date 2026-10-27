@@ -334,6 +334,26 @@
         text('#brightnessValue', `${Math.round(status.brightness * 100 / 255)}%`);
       }
       const memorial = status.memorial;
+      const light = status.external_light;
+      const lightForm = one('#external-light-form');
+      if (lightForm && light && ['first', 'second'].every(key => Number.isInteger(light[key]) && light[key] >= 0 && light[key] <= 100) &&
+          ['ready', 'allowed', 'follow_matrix', 'saving', 'save_failed'].every(key => typeof light[key] === 'boolean')) {
+        if (!dirtyForms.has(lightForm)) {
+          for (const key of ['first', 'second']) {
+            const input = one(`#light-${key}`, lightForm);
+            if (input) input.value = String(light[key]);
+            text(`#light-${key}-value`, `${light[key]}%`);
+          }
+          const follow = one('input[name=follow_matrix]', lightForm);
+          if (follow) follow.checked = light.follow_matrix;
+        }
+        const controls = one('fieldset', lightForm);
+        if (controls) controls.disabled = !light.ready || status.maintenance === true;
+        text('[data-light-state]', !light.ready ? 'Помилка виходів. Підсвітку вимкнено.' :
+          !light.allowed && (light.first || light.second) ? 'Вимкнено разом із матрицею або на час обслуговування.' :
+          light.first || light.second ? 'Увімкнено' : 'Вимкнено');
+        text('[data-light-save]', light.save_failed ? 'Не вдалося зберегти. Повторюємо спробу.' : light.saving ? 'Збереження…' : '');
+      }
       if (memorial && typeof memorial === 'object' && !Array.isArray(memorial) &&
           ['enabled', 'active', 'manual', 'time_ready', 'saving', 'save_failed'].every(key => typeof memorial[key] === 'boolean') &&
           Number.isInteger(memorial.remaining_seconds) && memorial.remaining_seconds >= 0 && memorial.remaining_seconds <= 60) {
@@ -455,6 +475,7 @@
         const output = one('#brightnessValue');
         if (output) output.textContent = `${Math.round(Number(input.value) * 100 / 255)}%`;
       }
+      if (input.matches('[data-light-range]')) text(`#${input.id}-value`, `${input.value}%`);
       if (input.matches('.agent-color input[type=color]')) {
         const output = one('output', input.closest('form'));
         if (output) output.textContent = input.value.toUpperCase();

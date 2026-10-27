@@ -2,6 +2,12 @@
 :root{color-scheme:dark;--bg:#111315;--surface:#1a1e20;--text:#edf2ee;--muted:#a6b0aa;--line:#353d38;--accent:#56d39b;--warning:#e8bc72;--danger:#f2a09a;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:16px;line-height:1.5}
 *{box-sizing:border-box;letter-spacing:0}
 body{margin:0;background:var(--bg);color:var(--text)}
+.light-controls{border:0;padding:0;margin:0;min-width:0;display:grid;gap:1rem}
+.light-channels{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem}
+.light-channels label{display:flex;justify-content:space-between;gap:.75rem;flex-wrap:wrap}
+.light-channels input{width:100%;min-width:0}
+.light-channels output{font-variant-numeric:tabular-nums}
+@media(max-width:36rem){.light-channels{grid-template-columns:minmax(0,1fr)}}
 [hidden]{display:none!important}
 html[data-page-loading=true] .shell{visibility:hidden}
 html[data-page-loading=true] .page-loader{display:grid!important;position:fixed;inset:0;z-index:1000;place-items:center;background:var(--bg);color:var(--text)}

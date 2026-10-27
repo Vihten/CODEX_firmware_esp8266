@@ -1,0 +1,14 @@
+<section class='section' aria-labelledby='external-light-heading'>
+<div class='section-head'><h2 id='external-light-heading'>Зовнішня підсвітка</h2><span data-light-state role='status'>{{3}}</span></div>
+<form id='external-light-form' method='post' action='/external-light'>
+<fieldset class='light-controls' {{5}}>
+<div class='light-channels'>
+<div><label for='light-first'>Канал 1 · GPIO4 <output id='light-first-value' for='light-first'>{{0}}%</output></label><input id='light-first' data-light-range type='range' name='first' min='0' max='100' step='1' value='{{0}}'></div>
+<div><label for='light-second'>Канал 2 · GPIO5 <output id='light-second-value' for='light-second'>{{1}}%</output></label><input id='light-second' data-light-range type='range' name='second' min='0' max='100' step='1' value='{{1}}'></div>
+</div>
+<label class='checkbox-label'><input type='checkbox' name='follow_matrix' value='1' {{2}}>Вмикати разом із матрицею</label>
+<div class='actions'><button type='submit'>Застосувати</button><button type='submit' name='off' value='1' class='secondary'>Вимкнути обидва</button></div>
+</fieldset>
+</form>
+<p class='muted' data-light-save role='status'>{{4}}</p>
+</section>

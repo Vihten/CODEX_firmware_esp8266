@@ -20,6 +20,27 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793101714469` adds two independent external illumination channels on
+GPIO4/GPIO5: 0-100 percent brightness, OFF-both, and optional follow-matrix
+schedule/manual power. Hardware LEDC PWM is 1 kHz/10-bit without animation-core
+work. The web controls are under Overview and remain password protected.
+
+New installations default OFF, GPIOs start LOW, and saved settings restore only
+after boot initialization. PWM failures latch both outputs OFF until reboot.
+OTA and requested restart disable both outputs. A separate checksummed NVS blob
+uses the existing flash-maintenance barrier; other settings and statistics are
+unchanged. Physical matrix animation remains 30 FPS.
+
+IMPORTANT: bare IRF520 is not guaranteed to switch from 3.3 V GPIO. Use a suitable
+gate driver or 3.3 V-compatible logic-level MOSFET and retain individual LED
+current limiting. See [wiring and electrical limits](esp32-s3/README.md#external-illumination).
+
+Validation: 517 firmware tests passed (two existing skips), native export,
+targeted Dart analysis, ESP32-S3 build and desktop/mobile browser checks passed.
+The new physical power outputs have not been verified on hardware.
+
+## Previous Corner Placement Release
+
 Version `1792670992332` moves both compact alert silhouettes three LEDs outward
 into the dark upper corners. Their centerlines are now x=3 and x=46 on the
 50 x 20 matrix. The reference shapes, size, downward orientation, colors,

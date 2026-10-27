@@ -8,6 +8,7 @@
 #include "memorial.hpp"
 #include "air_alert.hpp"
 #include "air_alert_history.hpp"
+#include "external_light.hpp"
 
 #include <algorithm>
 #include <array>
@@ -99,6 +100,8 @@ struct WifiEvent {
 struct TelemetryRequest { uint32_t id; uint32_t receivedAt; char packet[160]; };
 struct TelemetryReply { uint32_t id; bool accepted; char ack[64]; };
 struct View {
+  external_light::Settings light;
+  bool lightReady = false, lightDirty = false, lightSaveFailed = false, lightAllowed = false;
   agent_update::Table agentUpdates;
   bool agentUpdateKeyReady = false;
   weekly::Store weekly;
@@ -127,6 +130,8 @@ struct View {
   ColorOverride savedColors[kAgentCapacity] = {};
 };
 struct Model {
+  external_light::Settings light;
+  bool lightDirty = false, lightSaveFailed = false, lightAllowed = false;
   agent_update::Table agentUpdates;
   uint64_t actionSequence = 0;
   weekly::Store weekly;
@@ -489,6 +494,38 @@ bool saveSettings() {
   message("Settings saved.");
   return true;
 }
+void loadExternalLight() {
+  if (!model.nvsReady) return;
+  nvs_handle_t handle;
+  if (nvs_open("led_forge_s3", NVS_READONLY, &handle) != ESP_OK) return;
+  external_light::Settings stored;
+  size_t size = sizeof(stored);
+  const auto result = nvs_get_blob(handle, "exterior", &stored, &size);
+  nvs_close(handle);
+  if (result == ESP_OK && size == sizeof(stored) && external_light::valid(stored)) model.light = stored;
+  else if (result != ESP_ERR_NVS_NOT_FOUND) message("External lighting settings invalid; outputs remain off.");
+}
+bool saveExternalLight() {
+  if (!model.lightDirty) return true;
+  external_light::Settings stored = model.light;
+  external_light::seal(stored);
+  nvs_handle_t handle;
+  esp_err_t result = model.nvsReady ? nvs_open("led_forge_s3", NVS_READWRITE, &handle) : ESP_FAIL;
+  if (result == ESP_OK) {
+    result = nvs_set_blob(handle, "exterior", &stored, sizeof(stored));
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  model.lightSaveFailed = result != ESP_OK;
+  if (model.lightSaveFailed) return false;
+  model.lightDirty = false;
+  return true;
+}
+void serviceExternalLight() {
+  model.lightAllowed = !model.restarting && model.control.maintenance != Maintenance::Ota &&
+      model.control.maintenance != Maintenance::Restart && (!model.light.followMatrix || model.control.on);
+  if (!external_light::apply(model.light.first, model.light.second, model.lightAllowed)) model.lightAllowed = false;
+}
 const ColorOverride *findOverride(uint32_t id) {
   for (const auto &entry : model.settings.colors) if (entry.used && entry.clientId == id) return &entry;
   return nullptr;
@@ -810,6 +847,9 @@ void publishView() {
   view.deviceId = model.deviceId; view.rssi = model.rssi; view.power = model.settings.power;
   view.start = model.settings.start; view.end = model.settings.end; view.days = model.settings.days;
   view.scheduleEnabled = model.settings.scheduleEnabled; view.dirty = model.dirty; view.nvsReady = model.nvsReady;
+  view.light = model.light; view.lightReady = external_light::ready(); view.lightAllowed = model.lightAllowed;
+  view.lightDirty = model.lightDirty; view.lightSaveFailed = model.lightSaveFailed;
+  view.dirty = view.dirty || model.lightDirty;
   view.restarting = model.restarting; view.maintenanceTimeouts = model.maintenanceTimeouts; view.udpPackets = model.udpPackets;
   view.memorialEnabled = model.memorialEnabled; view.memorialManual = model.memorial.manual;
   view.memorialSaveFailed = model.memorialSaveFailed; view.dirty = view.dirty || model.memorialDirty;
@@ -1263,6 +1303,18 @@ void writeOverview(Html &html, const View &view) {
   });
   html.file("templates/overview/brightness-actions.html");
   html.file("templates/overview/column-next.html"); writeSchedule(html, view); html.file("templates/overview/workspace-close.html");
+  html.render("templates/overview/external-light.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%u", view.light.first); break;
+      case 1: html.format("%u", view.light.second); break;
+      case 2: html.attribute(view.light.followMatrix ? "@checked" : ""); break;
+      case 3: html.text(!view.lightReady ? "Помилка виходів. Підсвітку вимкнено." :
+          !view.lightAllowed && (view.light.first || view.light.second) ? "Вимкнено разом із матрицею або на час обслуговування." :
+          view.light.first || view.light.second ? "Увімкнено" : "Вимкнено"); break;
+      case 4: html.text(view.lightSaveFailed ? "Не вдалося зберегти. Повторюємо спробу." : view.lightDirty ? "Збереження…" : ""); break;
+      case 5: html.attribute(!view.lightReady || view.restarting || view.control.maintenance == Maintenance::Ota ? "@disabled" : ""); break;
+    }
+  });
   writeAgentSummary(html, view);
 }
 void writeSettings(Html &html, const View &view) {
@@ -1583,6 +1635,16 @@ esp_err_t portalStatus(httpd_req_t *request) {
   number(root, "heap", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   number(root, "rssi", view.rssi); number(root, "activity", view.control.activityPercent);
   number(root, "agents_count", portalAgentCount(view)); number(root, "brightness", view.control.brightness);
+  cJSON *light = cJSON_AddObjectToObject(root, "external_light");
+  if (!light) okay = false;
+  else {
+    number(light, "first", view.light.first); number(light, "second", view.light.second);
+    number(light, "first_output", view.lightAllowed ? view.light.first : 0);
+    number(light, "second_output", view.lightAllowed ? view.light.second : 0);
+    boolean(light, "ready", view.lightReady); boolean(light, "allowed", view.lightAllowed);
+    boolean(light, "follow_matrix", view.light.followMatrix); boolean(light, "saving", view.lightDirty);
+    boolean(light, "save_failed", view.lightSaveFailed);
+  }
   boolean(root, "preview_stream_busy", previewStreamBusy.load(std::memory_order_acquire));
   number(root, "preview_stream_frames", previewStreamFrames.load(std::memory_order_relaxed));
   number(root, "preview_stream_stack", previewStreamStack.load(std::memory_order_relaxed));
@@ -2008,6 +2070,16 @@ esp_err_t commandPost(httpd_req_t *request) {
     command.kind = CommandKind::Brightness;
     if (!unsignedValue(form.get("value"), 255, number) || !number) return error(request, "400 Bad Request", "Brightness must be 1 to 255.");
     command.value = uint8_t(number);
+  } else if (!std::strcmp(uri, "/external-light")) {
+    command.kind = CommandKind::ExternalLight;
+    if (!view.lightReady) return error(request, "503 Service Unavailable", "Виходи підсвітки недоступні.");
+    uint64_t second;
+    const char *follow = form.get("follow_matrix"), *off = form.get("off");
+    if (!unsignedValue(form.get("first"), 100, number) || !unsignedValue(form.get("second"), 100, second) ||
+        (follow[0] && std::strcmp(follow, "1")) || (off[0] && std::strcmp(off, "1")))
+      return error(request, "400 Bad Request", "Яскравість підсвітки має бути від 0 до 100%.");
+    command.start = off[0] ? 0 : uint16_t(number); command.end = off[0] ? 0 : uint16_t(second);
+    command.enabled = follow[0] != 0;
   } else if (!std::strcmp(uri, "/schedule")) {
     command.kind = CommandKind::Schedule; command.enabled = !std::strcmp(form.get("enabled"), "1");
     if (!clockMinutes(form.get("start"), command.start) || !clockMinutes(form.get("end"), command.end)) return error(request, "400 Bad Request", "Invalid schedule time.");
@@ -2102,7 +2174,7 @@ bool initializeHttp() {
       !registerRoute("/device.png", HTTP_GET, deviceImage) ||
       !registerRoute("/favicon.svg", HTTP_GET, favicon) ||
       !registerRoute("/health", HTTP_GET, health) || !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
-  for (const char *uri : {"/save", "/power", "/brightness", "/schedule", "/agent-color", "/restart", "/update", "/memorial", "/air-alert"})
+  for (const char *uri : {"/save", "/power", "/brightness", "/external-light", "/schedule", "/agent-color", "/restart", "/update", "/memorial", "/air-alert"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();
   for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js", "/assets/js/boot.js"})
     if (!registerRoute(uri, HTTP_GET, staticAsset)) return failed();
@@ -2177,6 +2249,13 @@ void serviceCommands() {
       }
       case CommandKind::Power: model.settings.power = command.value; dirty(); break;
       case CommandKind::Brightness: model.settings.brightness = command.value; dirty(); break;
+      case CommandKind::ExternalLight:
+        if (command.start <= 100 && command.end <= 100 && external_light::ready() &&
+            (model.light.first != command.start || model.light.second != command.end || model.light.followMatrix != command.enabled)) {
+          model.light.first = uint8_t(command.start); model.light.second = uint8_t(command.end);
+          model.light.followMatrix = command.enabled; model.lightDirty = true;
+        }
+        break;
       case CommandKind::Schedule:
         model.settings.scheduleEnabled = command.enabled; model.settings.start = command.start;
         model.settings.end = command.end; model.settings.days = command.days; dirty(); break;
@@ -2554,6 +2633,7 @@ void serviceMaintenance() {
         saved = saveWeekly() && saved;
         saved = saveMemorialSettings() && saved;
         saved = saveAirAlertSettings() && saved;
+        saved = saveExternalLight() && saved;
         saved = web_auth::persist() && saved;
         if (model.confirmationPending && std::strcmp(webFilesVersion(), "unavailable") && model.render.watchdogReady && model.render.assetsReady && model.render.frames && model.render.ledError == 0 && model.wifiReady && model.httpReady && model.udp >= 0) {
           if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) model.confirmationPending = false;
@@ -2562,7 +2642,7 @@ void serviceMaintenance() {
         model.persistRetryAt = now + (saved ? 0 : 5000); releaseMaintenance(); break;
       }
       case Maintenance::Ota:
-        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty || web_auth::pendingSave() || web_auth::busy() || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty || model.lightDirty || web_auth::pendingSave() || web_auth::busy() || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
         if (!model.render.assetsReady || model.render.ledError) {
           otaMessage("OTA refused: renderer unhealthy"); model.manifestReady = false; releaseMaintenance(); break;
         }
@@ -2573,7 +2653,7 @@ void serviceMaintenance() {
         if (model.otaVisualTimedOut) return;
         model.manifestReady = false; model.otaAt = uptimeMs() + 60000; releaseMaintenance(); break;
       case Maintenance::Restart:
-        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty || web_auth::pendingSave()) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty || model.lightDirty || web_auth::pendingSave()) { releaseMaintenance(); break; }
         if (!activeHandlers.load() && !web_auth::busy() && !uxQueueMessagesWaiting(commandQueue)) esp_restart();
         else if (now - model.maintenanceAt >= kMaintenanceTimeout) {
           model.restarting = false; ++model.maintenanceTimeouts;
@@ -2596,16 +2676,17 @@ void serviceMaintenance() {
       (web_auth::pendingSave() && due(now, model.persistRetryAt)) ||
       (model.memorialDirty && due(now, model.persistRetryAt)) ||
       (model.airDirty && due(now, model.persistRetryAt)) ||
+      (model.lightDirty && due(now, model.persistRetryAt)) ||
       (model.weeklyDirty && (now - model.weeklySavedAt >= 300000 || model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
       (model.confirmationPending && std::strcmp(webFilesVersion(), "unavailable") && model.wifiReady && model.httpReady && model.udp >= 0 &&
        model.render.watchdogReady && model.render.assetsReady && model.render.frames && !model.render.ledError && due(now, model.persistRetryAt))) {
     requestMaintenance(Maintenance::Persist); return;
   }
   if (model.restarting) {
-    if (!model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && !web_auth::pendingSave() && !web_auth::busy() && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
+    if (!model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && !model.lightDirty && !web_auth::pendingSave() && !web_auth::busy() && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
     return;
   }
-  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
+  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && !model.lightDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
   if (!model.connected || model.dirty || model.confirmationPending || !model.render.assetsReady || model.render.ledError) return;
   if (model.updateRequested || due(now, model.otaAt)) queueManifestCheck();
 }
@@ -2621,6 +2702,7 @@ void networkTask(void *) {
   if (!viewMutex || !wifiEvents || !telemetryQueue || !telemetryReplies || !manifestJobs || !manifestResults) { ESP_LOGE(kTag, "Cannot initialize network IPC"); vTaskDelete(nullptr); return; }
   // Complete all boot-time storage and PHY initialization before permitting RMT output.
   loadSettings();
+  loadExternalLight();
   bootloader_random_enable();
   web_auth::initialize();
   bootloader_random_disable();
@@ -2642,7 +2724,7 @@ void networkTask(void *) {
     esp_ota_mark_app_invalid_rollback_and_reboot();
   }
   model.otaAt = uptimeMs() + 30000;
-  updateControl(); publishView();
+  updateControl(); serviceExternalLight(); publishView();
   model.httpReady = initializeHttp();
   if (!model.httpReady) { message("HTTP server initialization failed."); ESP_LOGE(kTag, "HTTP server initialization failed"); }
   model.manifestWorkerReady = xTaskCreatePinnedToCore(manifestTask, "manifest", 16384, nullptr, 2, nullptr, 0) == pdPASS;
@@ -2661,7 +2743,7 @@ void networkTask(void *) {
       }
     }
     serviceWifi(); serviceCommands(); serviceWeekly(); serviceTelemetry(); discover(); serviceManifestResults(); serviceAirAlert();
-    updateControl(); publishView(); serviceMaintenance();
+    updateControl(); serviceExternalLight(); publishView(); serviceMaintenance();
     // A blocking flash transfer must not leave thousands of overdue polling ticks.
     if (xTaskGetTickCount() - wake > pdMS_TO_TICKS(100)) wake = xTaskGetTickCount();
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(20));

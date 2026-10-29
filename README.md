@@ -20,6 +20,20 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793276184323` adds a manual passive piezo buzzer test on GPIO6.
+Settings > Sound provides a password-protected button for one short 4 kHz,
+250 ms tone. Hardware LEDC timer 1/channel 2 are isolated from external lighting;
+there are no new tasks, blocking delays or persistence records. Startup is silent,
+overlapping tests are ignored, and maintenance/restart cancels the signal.
+No automatic air-alert sounds are enabled. Physical matrix animation remains 30 FPS.
+
+Validation: 537 firmware tests passed (two existing skips), 90 focused driver/network
+tests passed after final maintenance-gate changes, targeted Dart analysis, native
+export, ESP32-S3 build and desktop/mobile browser checks passed. Actual buzzer
+sound and installed firmware have not been verified on the physical controller.
+
+## Previous External Illumination Release
+
 Version `1793101714469` adds two independent external illumination channels on
 GPIO4/GPIO5: 0-100 percent brightness, OFF-both, and optional follow-matrix
 schedule/manual power. Hardware LEDC PWM is 1 kHz/10-bit without animation-core

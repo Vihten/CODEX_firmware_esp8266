@@ -488,6 +488,18 @@ Rollover waits for valid controller time. A backward clock correction does not
 roll the stored week backward. The portal distinguishes pending data from a
 failed persistence attempt; failed commits are retried, not marked saved.
 
+## Passive Buzzer
+
+An AZ-14M40 piezo transducer connects from GPIO6 through a 330 ohm series
+resistor to its positive terminal; its negative terminal connects to GND.
+Do not connect this GPIO circuit to 5 V or substitute a low-resistance magnetic
+buzzer. Settings provides an authenticated, CSRF-protected POST `/buzzer-test`
+action: one 4 kHz, 50% duty, 250 ms test tone. No automatic alert sounds are enabled.
+The network owner services its deadline without sleeping or creating a task.
+LEDC timer 1/channel 2 are separate from external-light timer 0/channels 0 and 1.
+The output starts LOW, rejects overlapping tones, and stops during maintenance
+or restart. No buzzer settings or statistics are written to flash.
+
 ## Hardware Acceptance
 
 After initial USB installation, switch safely to the normal external supply.

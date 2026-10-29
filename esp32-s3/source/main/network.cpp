@@ -9,6 +9,7 @@
 #include "air_alert.hpp"
 #include "air_alert_history.hpp"
 #include "external_light.hpp"
+#include "buzzer.hpp"
 
 #include <algorithm>
 #include <array>
@@ -100,6 +101,7 @@ struct WifiEvent {
 struct TelemetryRequest { uint32_t id; uint32_t receivedAt; char packet[160]; };
 struct TelemetryReply { uint32_t id; bool accepted; char ack[64]; };
 struct View {
+  bool buzzerReady = false;
   external_light::Settings light;
   bool lightReady = false, lightDirty = false, lightSaveFailed = false, lightAllowed = false;
   agent_update::Table agentUpdates;
@@ -848,6 +850,7 @@ void publishView() {
   view.start = model.settings.start; view.end = model.settings.end; view.days = model.settings.days;
   view.scheduleEnabled = model.settings.scheduleEnabled; view.dirty = model.dirty; view.nvsReady = model.nvsReady;
   view.light = model.light; view.lightReady = external_light::ready(); view.lightAllowed = model.lightAllowed;
+  view.buzzerReady = buzzer::ready();
   view.lightDirty = model.lightDirty; view.lightSaveFailed = model.lightSaveFailed;
   view.dirty = view.dirty || model.lightDirty;
   view.restarting = model.restarting; view.maintenanceTimeouts = model.maintenanceTimeouts; view.udpPackets = model.udpPackets;
@@ -1372,6 +1375,10 @@ void writeSettings(Html &html, const View &view) {
       else html.text("Ручний тест не активний");
     }
   });
+  html.render("templates/settings/buzzer.html", [&](unsigned token) {
+    if (token == 0) html.attribute(!view.buzzerReady || view.restarting ||
+        view.control.maintenance != Maintenance::None ? "@disabled" : "");
+  });
   html.file("templates/settings/system-open.html");
   html.render("templates/settings/device-id.html", [&](unsigned token) {
     switch (token) {
@@ -1655,6 +1662,7 @@ esp_err_t portalStatus(httpd_req_t *request) {
   else if (!cJSON_AddNullToObject(root, "remaining")) okay = false;
   boolean(root, "wifi", view.control.connected); boolean(root, "on", view.control.on);
   boolean(root, "maintenance", view.restarting || view.control.maintenance == Maintenance::Ota || view.control.maintenance == Maintenance::Restart);
+  boolean(root, "buzzer_ready", view.buzzerReady && view.control.maintenance == Maintenance::None);
   cJSON *memorialStatus = cJSON_AddObjectToObject(root, "memorial");
   if (!memorialStatus) okay = false;
   else {
@@ -2080,6 +2088,10 @@ esp_err_t commandPost(httpd_req_t *request) {
       return error(request, "400 Bad Request", "Яскравість підсвітки має бути від 0 до 100%.");
     command.start = off[0] ? 0 : uint16_t(number); command.end = off[0] ? 0 : uint16_t(second);
     command.enabled = follow[0] != 0;
+  } else if (!std::strcmp(uri, "/buzzer-test")) {
+    if (!view.buzzerReady || view.control.maintenance != Maintenance::None)
+      return error(request, "503 Service Unavailable", "Звуковий вихід недоступний. Спробуйте ще раз.");
+    command.kind = CommandKind::BuzzerTest;
   } else if (!std::strcmp(uri, "/schedule")) {
     command.kind = CommandKind::Schedule; command.enabled = !std::strcmp(form.get("enabled"), "1");
     if (!clockMinutes(form.get("start"), command.start) || !clockMinutes(form.get("end"), command.end)) return error(request, "400 Bad Request", "Invalid schedule time.");
@@ -2120,13 +2132,14 @@ esp_err_t commandPost(httpd_req_t *request) {
   if (xSemaphoreTake(viewMutex, pdMS_TO_TICKS(20)) != pdTRUE)
     return error(request, "503 Service Unavailable", "Controller busy; retry.");
   const bool unavailable = sharedView.restarting || sharedView.control.maintenance == Maintenance::Ota ||
-      sharedView.control.maintenance == Maintenance::Restart;
+      sharedView.control.maintenance == Maintenance::Restart ||
+      (command.kind == CommandKind::BuzzerTest && sharedView.control.maintenance != Maintenance::None);
   const bool queued = !unavailable && xQueueSend(commandQueue, &command, 0) == pdTRUE;
   xSemaphoreGive(viewMutex);
   if (!queued) return error(request, "503 Service Unavailable", unavailable ? "Controller maintenance; retry." : "Command queue full; retry.");
   httpd_resp_set_status(request, "303 See Other");
   httpd_resp_set_hdr(request, "Location", command.kind == CommandKind::Color ? "/agents" :
-      command.kind == CommandKind::Wifi || command.kind == CommandKind::Update || command.kind == CommandKind::Restart ||
+      command.kind == CommandKind::Wifi || command.kind == CommandKind::Update || command.kind == CommandKind::Restart || command.kind == CommandKind::BuzzerTest ||
       command.kind == CommandKind::AirAlertSave || command.kind == CommandKind::AirAlertTest || command.kind == CommandKind::AirAlertStop ||
       command.kind == CommandKind::MemorialSave || command.kind == CommandKind::MemorialPlay || command.kind == CommandKind::MemorialStop ? "/settings" : "/");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store"); httpd_resp_set_hdr(request, "Connection", "close");
@@ -2174,7 +2187,7 @@ bool initializeHttp() {
       !registerRoute("/device.png", HTTP_GET, deviceImage) ||
       !registerRoute("/favicon.svg", HTTP_GET, favicon) ||
       !registerRoute("/health", HTTP_GET, health) || !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
-  for (const char *uri : {"/save", "/power", "/brightness", "/external-light", "/schedule", "/agent-color", "/restart", "/update", "/memorial", "/air-alert"})
+  for (const char *uri : {"/save", "/power", "/brightness", "/external-light", "/buzzer-test", "/schedule", "/agent-color", "/restart", "/update", "/memorial", "/air-alert"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();
   for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js", "/assets/js/boot.js"})
     if (!registerRoute(uri, HTTP_GET, staticAsset)) return failed();
@@ -2255,6 +2268,10 @@ void serviceCommands() {
           model.light.first = uint8_t(command.start); model.light.second = uint8_t(command.end);
           model.light.followMatrix = command.enabled; model.lightDirty = true;
         }
+        break;
+      case CommandKind::BuzzerTest:
+        if (!model.restarting && model.control.maintenance == Maintenance::None)
+          (void)buzzer::start(uptimeMs());
         break;
       case CommandKind::Schedule:
         model.settings.scheduleEnabled = command.enabled; model.settings.start = command.start;
@@ -2743,7 +2760,9 @@ void networkTask(void *) {
       }
     }
     serviceWifi(); serviceCommands(); serviceWeekly(); serviceTelemetry(); discover(); serviceManifestResults(); serviceAirAlert();
-    updateControl(); serviceExternalLight(); publishView(); serviceMaintenance();
+    updateControl(); serviceExternalLight();
+    buzzer::service(uptimeMs(), !model.restarting && model.control.maintenance == Maintenance::None);
+    publishView(); serviceMaintenance();
     // A blocking flash transfer must not leave thousands of overdue polling ticks.
     if (xTaskGetTickCount() - wake > pdMS_TO_TICKS(100)) wake = xTaskGetTickCount();
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(20));

@@ -1,5 +1,6 @@
 #include "runtime.hpp"
 #include "external_light.hpp"
+#include "buzzer.hpp"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_flash.h"
@@ -21,6 +22,7 @@ void startNetwork(void *argument) {
 extern "C" void app_main() {
   // Power outputs must be off before assets, storage or network initialization.
   if (!external_light::initialize()) ESP_LOGE("boot", "External lighting disabled: PWM initialization failed");
+  if (!buzzer::initialize()) ESP_LOGE("boot", "Buzzer disabled: PWM initialization failed");
   gpio_set_direction(static_cast<gpio_num_t>(PROJECT_DATA_PIN), GPIO_MODE_OUTPUT);
   gpio_set_level(static_cast<gpio_num_t>(PROJECT_DATA_PIN), 0);
   uint32_t flashSize = 0;

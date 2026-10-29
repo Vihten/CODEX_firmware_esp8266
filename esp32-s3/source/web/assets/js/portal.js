@@ -334,6 +334,7 @@
         text('#brightnessValue', `${Math.round(status.brightness * 100 / 255)}%`);
       }
       const memorial = status.memorial;
+      all('[data-buzzer-test]').forEach(button => { button.disabled = status.buzzer_ready !== true || status.maintenance === true; });
       const light = status.external_light;
       const lightForm = one('#external-light-form');
       if (lightForm && light && ['first', 'second'].every(key => Number.isInteger(light[key]) && light[key] >= 0 && light[key] <= 100) &&

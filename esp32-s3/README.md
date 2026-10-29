@@ -494,11 +494,28 @@ An AZ-14M40 piezo transducer connects from GPIO6 through a 330 ohm series
 resistor to its positive terminal; its negative terminal connects to GND.
 Do not connect this GPIO circuit to 5 V or substitute a low-resistance magnetic
 buzzer. Settings provides an authenticated, CSRF-protected POST `/buzzer-test`
-action: one 4 kHz, 50% duty, 250 ms test tone. No automatic alert sounds are enabled.
+action: one 4 kHz, 250 ms test tone. No automatic alert sounds are enabled.
+Settings also provides relative volume 0-100% (0 is silent), saved separately
+in the NVS `buzzer_volume` key after a short debounce and the existing flash
+maintenance barrier. Failed saves are reported and retried before OTA/restart.
+PWM duty varies from 0 to 50%; loudness is nonlinear and is not calibrated in dB.
 The network owner services its deadline without sleeping or creating a task.
 LEDC timer 1/channel 2 are separate from external-light timer 0/channels 0 and 1.
 The output starts LOW, rejects overlapping tones, and stops during maintenance
-or restart. No buzzer settings or statistics are written to flash.
+or restart. Changing volume does not start a sound or modify other settings.
+
+## In-place Web Commands
+
+With JavaScript enabled, control forms submit same-origin URL-encoded POSTs
+with `__async=1`. An authenticated accepted request returns HTTP 202 and
+`{"accepted":true}` without navigating or replacing the page. This confirms
+queue submission, not successful flash persistence or an agent acknowledgment.
+Status polling supplies the applied settings and persistence/action state.
+Identical in-flight submissions are suppressed. Each form retains at most one
+latest distinct user-submitted action and sends it after the current request;
+authentication failures discard that queued action rather than replaying it.
+Plain forms keep HTTP 303 as a fallback. Login and password forms retain their
+existing flow; authentication and same-origin protections are unchanged.
 
 ## Hardware Acceptance
 

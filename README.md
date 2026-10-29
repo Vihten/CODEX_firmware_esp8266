@@ -20,6 +20,25 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793277306745` adds in-place web control forms: brightness, power,
+schedule, alert/memorial tests and agent actions no longer navigate or reload
+the document. Accepted commands return HTTP 202; polling updates the applied
+state without replacing the preview or edited fields. Plain forms retain their
+redirect fallback. Commands are never automatically retried after a timeout.
+
+Settings > Sound adds relative buzzer volume 0-100%, independently persisted
+with flash-barrier protection and retry on save failure. PWM volume is nonlinear,
+not calibrated in dB. GPIO6 and the physical 30 FPS animation are unchanged.
+
+Validation: 549 firmware tests passed (two existing skips), native export,
+targeted Dart analysis, ESP32-S3 build and desktop/mobile browser checks passed.
+Browser coverage includes modal/preview continuity, submitters, duplicate and
+latest-intent handling, dirty edits, validation, auth errors and timeout without
+POST retries. Physical buzzer loudness and live installation have not been
+verified on hardware.
+
+## Previous Buzzer Test Release
+
 Version `1793276184323` adds a manual passive piezo buzzer test on GPIO6.
 Settings > Sound provides a password-protected button for one short 4 kHz,
 250 ms tone. Hardware LEDC timer 1/channel 2 are isolated from external lighting;

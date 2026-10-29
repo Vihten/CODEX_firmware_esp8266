@@ -102,6 +102,8 @@ struct TelemetryRequest { uint32_t id; uint32_t receivedAt; char packet[160]; };
 struct TelemetryReply { uint32_t id; bool accepted; char ack[64]; };
 struct View {
   bool buzzerReady = false;
+  uint8_t buzzerVolume = 100;
+  bool buzzerDirty = false, buzzerSaveFailed = false;
   external_light::Settings light;
   bool lightReady = false, lightDirty = false, lightSaveFailed = false, lightAllowed = false;
   agent_update::Table agentUpdates;
@@ -132,6 +134,10 @@ struct View {
   ColorOverride savedColors[kAgentCapacity] = {};
 };
 struct Model {
+  uint8_t buzzerVolume = 100;
+  bool buzzerPending = false;
+  bool buzzerDirty = false, buzzerSaveFailed = false;
+  uint32_t buzzerDirtyAt = 0;
   external_light::Settings light;
   bool lightDirty = false, lightSaveFailed = false, lightAllowed = false;
   agent_update::Table agentUpdates;
@@ -528,6 +534,39 @@ void serviceExternalLight() {
       model.control.maintenance != Maintenance::Restart && (!model.light.followMatrix || model.control.on);
   if (!external_light::apply(model.light.first, model.light.second, model.lightAllowed)) model.lightAllowed = false;
 }
+void loadBuzzerVolume() {
+  if (!model.nvsReady) return;
+  nvs_handle_t handle;
+  if (nvs_open("led_forge_s3", NVS_READONLY, &handle) != ESP_OK) return;
+  uint8_t volume = 100; size_t size = sizeof(volume);
+  const auto result = nvs_get_blob(handle, "buzzer_volume", &volume, &size);
+  nvs_close(handle);
+  if (result == ESP_OK && size == sizeof(volume) && volume <= 100) model.buzzerVolume = volume;
+}
+bool saveBuzzerVolume() {
+  if (!model.buzzerDirty) return true;
+  nvs_handle_t handle;
+  esp_err_t result = model.nvsReady ? nvs_open("led_forge_s3", NVS_READWRITE, &handle) : ESP_FAIL;
+  if (result == ESP_OK) {
+    result = nvs_set_blob(handle, "buzzer_volume", &model.buzzerVolume, sizeof(model.buzzerVolume));
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  model.buzzerSaveFailed = result != ESP_OK;
+  if (model.buzzerSaveFailed) return false;
+  model.buzzerDirty = false;
+  return true;
+}
+void serviceBuzzer() {
+  const bool allowed = !model.restarting && model.control.maintenance == Maintenance::None;
+  buzzer::service(uptimeMs(), allowed);
+  if (model.restarting || model.control.maintenance == Maintenance::Ota || model.control.maintenance == Maintenance::Restart)
+    model.buzzerPending = false;
+  if (allowed && model.buzzerPending) {
+    model.buzzerPending = false;
+    (void)buzzer::start(uptimeMs(), model.buzzerVolume);
+  }
+}
 const ColorOverride *findOverride(uint32_t id) {
   for (const auto &entry : model.settings.colors) if (entry.used && entry.clientId == id) return &entry;
   return nullptr;
@@ -851,8 +890,9 @@ void publishView() {
   view.scheduleEnabled = model.settings.scheduleEnabled; view.dirty = model.dirty; view.nvsReady = model.nvsReady;
   view.light = model.light; view.lightReady = external_light::ready(); view.lightAllowed = model.lightAllowed;
   view.buzzerReady = buzzer::ready();
+  view.buzzerVolume = model.buzzerVolume; view.buzzerDirty = model.buzzerDirty; view.buzzerSaveFailed = model.buzzerSaveFailed;
   view.lightDirty = model.lightDirty; view.lightSaveFailed = model.lightSaveFailed;
-  view.dirty = view.dirty || model.lightDirty;
+  view.dirty = view.dirty || model.lightDirty || model.buzzerDirty;
   view.restarting = model.restarting; view.maintenanceTimeouts = model.maintenanceTimeouts; view.udpPackets = model.udpPackets;
   view.memorialEnabled = model.memorialEnabled; view.memorialManual = model.memorial.manual;
   view.memorialSaveFailed = model.memorialSaveFailed; view.dirty = view.dirty || model.memorialDirty;
@@ -1378,6 +1418,8 @@ void writeSettings(Html &html, const View &view) {
   html.render("templates/settings/buzzer.html", [&](unsigned token) {
     if (token == 0) html.attribute(!view.buzzerReady || view.restarting ||
         view.control.maintenance != Maintenance::None ? "@disabled" : "");
+    else if (token == 1) html.format("%u", unsigned(view.buzzerVolume));
+    else if (token == 2) html.text(view.buzzerSaveFailed ? "Не вдалося зберегти. Повторюємо спробу." : view.buzzerDirty ? "Збереження…" : "");
   });
   html.file("templates/settings/system-open.html");
   html.render("templates/settings/device-id.html", [&](unsigned token) {
@@ -1663,6 +1705,8 @@ esp_err_t portalStatus(httpd_req_t *request) {
   boolean(root, "wifi", view.control.connected); boolean(root, "on", view.control.on);
   boolean(root, "maintenance", view.restarting || view.control.maintenance == Maintenance::Ota || view.control.maintenance == Maintenance::Restart);
   boolean(root, "buzzer_ready", view.buzzerReady && view.control.maintenance == Maintenance::None);
+  number(root, "buzzer_volume", view.buzzerVolume);
+  boolean(root, "buzzer_saving", view.buzzerDirty); boolean(root, "buzzer_save_failed", view.buzzerSaveFailed);
   cJSON *memorialStatus = cJSON_AddObjectToObject(root, "memorial");
   if (!memorialStatus) okay = false;
   else {
@@ -1844,6 +1888,12 @@ struct Form {
   }
   const char *get(const char *key) const { for (size_t i = 0; i < count; ++i) if (!std::strcmp(key, fields[i].key)) return fields[i].value; return ""; }
 };
+esp_err_t acceptedCommand(httpd_req_t *request) {
+  httpd_resp_set_status(request, "202 Accepted");
+  httpd_resp_set_type(request, "application/json");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  return httpd_resp_send(request, "{\"accepted\":true}", HTTPD_RESP_USE_STRLEN);
+}
 bool clockMinutes(const char *text, uint16_t &result) {
   if (std::strlen(text) != 5 || text[2] != ':') return false;
   char hour[3] = {text[0], text[1], 0}, minute[3] = {text[3], text[4], 0}; uint64_t h, m;
@@ -2028,6 +2078,7 @@ esp_err_t agentUpdatePost(httpd_req_t *request) {
     httpd_resp_set_type(request, "application/json");
     return httpd_resp_send(request, response, HTTPD_RESP_USE_STRLEN);
   }
+  if (!std::strcmp(form.get("__async"), "1")) return acceptedCommand(request);
   httpd_resp_set_status(request, "303 See Other"); httpd_resp_set_hdr(request, "Location", "/agents");
   return httpd_resp_send(request, nullptr, 0);
 }
@@ -2092,6 +2143,10 @@ esp_err_t commandPost(httpd_req_t *request) {
     if (!view.buzzerReady || view.control.maintenance != Maintenance::None)
       return error(request, "503 Service Unavailable", "Звуковий вихід недоступний. Спробуйте ще раз.");
     command.kind = CommandKind::BuzzerTest;
+  } else if (!std::strcmp(uri, "/buzzer-volume")) {
+    if (!unsignedValue(form.get("value"), 100, number))
+      return error(request, "400 Bad Request", "Гучність має бути від 0 до 100%.");
+    command.kind = CommandKind::BuzzerVolume; command.value = uint8_t(number);
   } else if (!std::strcmp(uri, "/schedule")) {
     command.kind = CommandKind::Schedule; command.enabled = !std::strcmp(form.get("enabled"), "1");
     if (!clockMinutes(form.get("start"), command.start) || !clockMinutes(form.get("end"), command.end)) return error(request, "400 Bad Request", "Invalid schedule time.");
@@ -2137,9 +2192,10 @@ esp_err_t commandPost(httpd_req_t *request) {
   const bool queued = !unavailable && xQueueSend(commandQueue, &command, 0) == pdTRUE;
   xSemaphoreGive(viewMutex);
   if (!queued) return error(request, "503 Service Unavailable", unavailable ? "Controller maintenance; retry." : "Command queue full; retry.");
+  if (!std::strcmp(form.get("__async"), "1")) return acceptedCommand(request);
   httpd_resp_set_status(request, "303 See Other");
   httpd_resp_set_hdr(request, "Location", command.kind == CommandKind::Color ? "/agents" :
-      command.kind == CommandKind::Wifi || command.kind == CommandKind::Update || command.kind == CommandKind::Restart || command.kind == CommandKind::BuzzerTest ||
+      command.kind == CommandKind::Wifi || command.kind == CommandKind::Update || command.kind == CommandKind::Restart || command.kind == CommandKind::BuzzerTest || command.kind == CommandKind::BuzzerVolume ||
       command.kind == CommandKind::AirAlertSave || command.kind == CommandKind::AirAlertTest || command.kind == CommandKind::AirAlertStop ||
       command.kind == CommandKind::MemorialSave || command.kind == CommandKind::MemorialPlay || command.kind == CommandKind::MemorialStop ? "/settings" : "/");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store"); httpd_resp_set_hdr(request, "Connection", "close");
@@ -2187,7 +2243,7 @@ bool initializeHttp() {
       !registerRoute("/device.png", HTTP_GET, deviceImage) ||
       !registerRoute("/favicon.svg", HTTP_GET, favicon) ||
       !registerRoute("/health", HTTP_GET, health) || !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
-  for (const char *uri : {"/save", "/power", "/brightness", "/external-light", "/buzzer-test", "/schedule", "/agent-color", "/restart", "/update", "/memorial", "/air-alert"})
+  for (const char *uri : {"/save", "/power", "/brightness", "/external-light", "/buzzer-test", "/buzzer-volume", "/schedule", "/agent-color", "/restart", "/update", "/memorial", "/air-alert"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();
   for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js", "/assets/js/boot.js"})
     if (!registerRoute(uri, HTTP_GET, staticAsset)) return failed();
@@ -2271,7 +2327,14 @@ void serviceCommands() {
         break;
       case CommandKind::BuzzerTest:
         if (!model.restarting && model.control.maintenance == Maintenance::None)
-          (void)buzzer::start(uptimeMs());
+          (void)buzzer::start(uptimeMs(), model.buzzerVolume);
+        else if (!model.restarting && model.control.maintenance == Maintenance::Persist)
+          model.buzzerPending = true;
+        break;
+      case CommandKind::BuzzerVolume:
+        if (command.value <= 100 && command.value != model.buzzerVolume) {
+          model.buzzerVolume = command.value; model.buzzerDirty = true; model.buzzerDirtyAt = uptimeMs();
+        }
         break;
       case CommandKind::Schedule:
         model.settings.scheduleEnabled = command.enabled; model.settings.start = command.start;
@@ -2651,6 +2714,7 @@ void serviceMaintenance() {
         saved = saveMemorialSettings() && saved;
         saved = saveAirAlertSettings() && saved;
         saved = saveExternalLight() && saved;
+        saved = saveBuzzerVolume() && saved;
         saved = web_auth::persist() && saved;
         if (model.confirmationPending && std::strcmp(webFilesVersion(), "unavailable") && model.render.watchdogReady && model.render.assetsReady && model.render.frames && model.render.ledError == 0 && model.wifiReady && model.httpReady && model.udp >= 0) {
           if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) model.confirmationPending = false;
@@ -2659,7 +2723,7 @@ void serviceMaintenance() {
         model.persistRetryAt = now + (saved ? 0 : 5000); releaseMaintenance(); break;
       }
       case Maintenance::Ota:
-        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty || model.lightDirty || web_auth::pendingSave() || web_auth::busy() || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || web_auth::pendingSave() || web_auth::busy() || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
         if (!model.render.assetsReady || model.render.ledError) {
           otaMessage("OTA refused: renderer unhealthy"); model.manifestReady = false; releaseMaintenance(); break;
         }
@@ -2670,7 +2734,7 @@ void serviceMaintenance() {
         if (model.otaVisualTimedOut) return;
         model.manifestReady = false; model.otaAt = uptimeMs() + 60000; releaseMaintenance(); break;
       case Maintenance::Restart:
-        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty || model.lightDirty || web_auth::pendingSave()) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || web_auth::pendingSave()) { releaseMaintenance(); break; }
         if (!activeHandlers.load() && !web_auth::busy() && !uxQueueMessagesWaiting(commandQueue)) esp_restart();
         else if (now - model.maintenanceAt >= kMaintenanceTimeout) {
           model.restarting = false; ++model.maintenanceTimeouts;
@@ -2694,16 +2758,17 @@ void serviceMaintenance() {
       (model.memorialDirty && due(now, model.persistRetryAt)) ||
       (model.airDirty && due(now, model.persistRetryAt)) ||
       (model.lightDirty && due(now, model.persistRetryAt)) ||
+      (model.buzzerDirty && now - model.buzzerDirtyAt >= 300 && due(now, model.persistRetryAt)) ||
       (model.weeklyDirty && (now - model.weeklySavedAt >= 300000 || model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
       (model.confirmationPending && std::strcmp(webFilesVersion(), "unavailable") && model.wifiReady && model.httpReady && model.udp >= 0 &&
        model.render.watchdogReady && model.render.assetsReady && model.render.frames && !model.render.ledError && due(now, model.persistRetryAt))) {
     requestMaintenance(Maintenance::Persist); return;
   }
   if (model.restarting) {
-    if (!model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && !model.lightDirty && !web_auth::pendingSave() && !web_auth::busy() && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
+    if (!model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !web_auth::pendingSave() && !web_auth::busy() && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
     return;
   }
-  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && !model.lightDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
+  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
   if (!model.connected || model.dirty || model.confirmationPending || !model.render.assetsReady || model.render.ledError) return;
   if (model.updateRequested || due(now, model.otaAt)) queueManifestCheck();
 }
@@ -2720,6 +2785,7 @@ void networkTask(void *) {
   // Complete all boot-time storage and PHY initialization before permitting RMT output.
   loadSettings();
   loadExternalLight();
+  loadBuzzerVolume();
   bootloader_random_enable();
   web_auth::initialize();
   bootloader_random_disable();
@@ -2761,7 +2827,7 @@ void networkTask(void *) {
     }
     serviceWifi(); serviceCommands(); serviceWeekly(); serviceTelemetry(); discover(); serviceManifestResults(); serviceAirAlert();
     updateControl(); serviceExternalLight();
-    buzzer::service(uptimeMs(), !model.restarting && model.control.maintenance == Maintenance::None);
+    serviceBuzzer();
     publishView(); serviceMaintenance();
     // A blocking flash transfer must not leave thousands of overdue polling ticks.
     if (xTaskGetTickCount() - wake > pdMS_TO_TICKS(100)) wake = xTaskGetTickCount();

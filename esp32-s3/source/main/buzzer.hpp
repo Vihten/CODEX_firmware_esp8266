@@ -10,7 +10,9 @@ constexpr uint32_t kDurationMs = 250;
 bool initialize();
 bool ready();
 // now is monotonic milliseconds modulo 2^32. Active requests are rejected.
-bool start(uint32_t now);
+// volume is 0..100; zero succeeds silently without starting a beep.
+// Relative PWM volume: perceived loudness is nonlinear, not calibrated amplitude.
+bool start(uint32_t now, uint8_t volume = 100);
 // Call regularly: stops on the first call at/after 250 ms, or when disallowed.
 // The caller must also authorize start(); service never starts or resumes sound.
 void service(uint32_t now, bool allowed);

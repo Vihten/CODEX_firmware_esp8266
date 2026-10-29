@@ -79,9 +79,12 @@ bool initialize() {
   return true;
 }
 
-bool start(uint32_t now) {
-  if (!initialized || active) return false;
-  if (ledc_set_duty(mode, channel, 512) != ESP_OK ||
+bool start(uint32_t now, uint8_t volume) {
+  if (!initialized || active || volume > 100) return false;
+  if (volume == 0) return true;
+  // Stay within 0..50% duty, where the fundamental increases monotonically.
+  const uint32_t duty = (uint32_t(volume) * 512U + 50U) / 100U;
+  if (ledc_set_duty(mode, channel, duty) != ESP_OK ||
       ledc_update_duty(mode, channel) != ESP_OK) return fail();
   startedAt = now;
   active = true;

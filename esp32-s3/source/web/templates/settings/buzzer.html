@@ -1,1 +1,10 @@
-<section class='section' aria-labelledby='buzzer-heading'><div class='section-head'><h2 id='buzzer-heading'>Звук</h2></div><form method='post' action='/buzzer-test'><button type='submit' class='secondary' data-buzzer-test {{0}}>Перевірити бузер</button></form></section>
+<section class='section' aria-labelledby='buzzer-heading'>
+<div class='section-head'><h2 id='buzzer-heading'>Звук</h2></div>
+<form id='buzzer-volume-form' method='post' action='/buzzer-volume'>
+<label for='buzzer-volume'>Гучність <output id='buzzer-volume-value' for='buzzer-volume'>{{1}}%</output></label>
+<input id='buzzer-volume' type='range' name='value' min='0' max='100' step='1' value='{{1}}'>
+<button type='submit'>Застосувати</button>
+</form>
+<p class='muted' data-buzzer-save role='status'>{{2}}</p>
+<form method='post' action='/buzzer-test'><button type='submit' class='secondary' data-buzzer-test {{0}}>Перевірити бузер</button></form>
+</section>

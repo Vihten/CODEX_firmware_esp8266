@@ -5,6 +5,16 @@
     const all = (selector, root = document) => Array.from(root.querySelectorAll(selector));
     const one = (selector, root = document) => root.querySelector(selector);
     const dirtyForms = new WeakSet();
+    const formRevisions = new WeakMap();
+    const submitting = new WeakSet();
+    const currentIntents = new WeakMap();
+    const queuedIntents = new WeakMap();
+    let authEpoch = 0;
+    const awaitingState = new Map();
+    const commandRoutes = new Set(['/save', '/power', '/brightness', '/external-light', '/schedule',
+      '/agent-color', '/restart', '/update', '/memorial', '/air-alert', '/buzzer-test', '/buzzer-volume',
+      '/agent-upgrade', '/agent-rename', '/agent-uninstall']);
+    let pollSequence = 0, refreshAfterActive = false;
     const memorialForm = one('#memorial-settings');
     const airAlertForm = one('#air-alert-settings');
     const liveNodes = new Map();
@@ -56,7 +66,82 @@
       node.dataset.state = state;
     });
     const automatic = () => pageActive && !document.hidden && (!toggle || toggle.checked);
-    const markDirty = form => { if (form) dirtyForms.add(form); };
+    const markDirty = form => {
+      if (!form) return;
+      dirtyForms.add(form);
+      formRevisions.set(form, (formRevisions.get(form) || 0) + 1);
+    };
+    // Include disabled controls in the edit snapshot: status polling may disable them.
+    const formSnapshot = form => JSON.stringify(Array.from(form.elements)
+      .filter(input => input.matches('input,select,textarea'))
+      .map(input => [input.name, input.value, input.checked,
+        input.multiple ? Array.from(input.selectedOptions, option => option.value) : null]));
+    const formFeedback = (form, message, login = false) => {
+      let node = one('[data-command-feedback]', form);
+      if (!node) {
+        node = document.createElement('p');
+        node.className = 'muted';
+        node.dataset.commandFeedback = '';
+        node.setAttribute('role', 'status');
+        node.setAttribute('aria-live', 'polite');
+        form.append(node);
+      }
+      node.textContent = message;
+      if (login) {
+        const link = document.createElement('a');
+        link.href = '/login'; link.textContent = 'Увійти';
+        node.append(' ', link);
+      }
+    };
+    const reflected = (record, status) => {
+      const data = record.data, value = name => data.get(name);
+      const agent = Array.isArray(status.agents) && status.agents.find(item =>
+        typeof item.id === 'string' && item.id.toUpperCase() === (value('client') || '').toUpperCase());
+      switch (record.path) {
+        case '/brightness': return status.brightness === Number(value('value'));
+        case '/buzzer-volume': return status.buzzer_volume === Number(value('value'));
+        case '/power': return status.power === value('mode');
+        case '/external-light': {
+          const light = status.external_light;
+          return light && light.first === (value('off') === '1' ? 0 : Number(value('first'))) &&
+            light.second === (value('off') === '1' ? 0 : Number(value('second'))) &&
+            light.follow_matrix === (value('follow_matrix') === '1');
+        }
+        case '/memorial': return value('mode') === 'save' && status.memorial &&
+          status.memorial.enabled === (value('enabled') === '1');
+        case '/air-alert': return value('mode') === 'save' && status.air_alert &&
+          status.air_alert.enabled === (value('enabled') === '1');
+        case '/agent-rename': return agent && agent.name === value('name');
+        case '/agent-color': return agent && (value('mode') === 'auto' ? agent.custom_color === false :
+          agent.custom_color === true && agent.color?.toLowerCase() === value('color')?.toLowerCase());
+        default: return false;
+      }
+    };
+    const tracksState = record => ['/brightness', '/buzzer-volume', '/power', '/external-light',
+      '/agent-rename', '/agent-color'].includes(record.path) ||
+      (['/memorial', '/air-alert'].includes(record.path) && record.data.get('mode') === 'save');
+    const acceptedMessage = record => {
+      switch (record.path) {
+        case '/buzzer-test': return 'Запит перевірки надіслано.';
+        case '/restart': return 'Запит перезапуску прийнято. Стан підключення оновлюється окремо.';
+        case '/update': return 'Запит перевірки оновлення прийнято. Перебіг відображається у стані оновлення.';
+        case '/memorial':
+        case '/air-alert': return 'Запит прийнято в чергу. Перебіг відображається у стані контролера.';
+        default: return 'Команду прийнято в чергу.';
+      }
+    };
+    const reconcileSubmissions = (status, sequence) => {
+      for (const [form, record] of awaitingState) {
+        if (!form.isConnected || record.revision !== (formRevisions.get(form) || 0) ||
+            record.snapshot !== formSnapshot(form)) { awaitingState.delete(form); continue; }
+        if (sequence < record.poll || !reflected(record, status)) continue;
+        dirtyForms.delete(form);
+        awaitingState.delete(form);
+        formFeedback(form, 'Стан контролера оновлено.');
+        const row = form.closest('[data-agent]');
+        if (row) agentStates.delete(row);
+      }
+    };
     const settingsDialog = one('#device-settings-dialog');
     if (settingsDialog) {
       const content = one('[data-device-settings-body]', settingsDialog);
@@ -300,7 +385,8 @@
       sortAgentRows();
       if (changed) filterAgents();
     };
-    const update = status => {
+    const update = (status, sequence) => {
+      reconcileSubmissions(status, sequence);
       const stamp = {uptime: status.uptime_ms, frames: status.frames, device: status.device_id, version: status.version};
       let fps = missing;
       if (baseline && stamp.device === baseline.device && stamp.version === baseline.version && stamp.uptime > baseline.uptime && stamp.frames >= baseline.frames) {
@@ -335,6 +421,21 @@
       }
       const memorial = status.memorial;
       all('[data-buzzer-test]').forEach(button => { button.disabled = status.buzzer_ready !== true || status.maintenance === true; });
+      const volumeForm = one('#buzzer-volume-form');
+      if (volumeForm && Number.isInteger(status.buzzer_volume) && status.buzzer_volume >= 0 && status.buzzer_volume <= 100) {
+        const volume = one('#buzzer-volume', volumeForm);
+        if (volume && !dirtyForms.has(volumeForm)) {
+          volume.value = String(status.buzzer_volume);
+          text('#buzzer-volume-value', `${status.buzzer_volume}%`);
+        }
+        const controls = one('fieldset', volumeForm);
+        if (controls) controls.disabled = status.buzzer_ready !== true || status.maintenance === true;
+        all('button[type=submit],button:not([type])', volumeForm).forEach(button => {
+          button.disabled = status.buzzer_ready !== true || status.maintenance === true;
+        });
+        text('[data-buzzer-save]', status.buzzer_save_failed === true ? 'Не вдалося зберегти гучність. Повторюємо спробу.' :
+          status.buzzer_saving === true ? 'Збереження…' : '');
+      }
       const light = status.external_light;
       const lightForm = one('#external-light-form');
       if (lightForm && light && ['first', 'second'].every(key => Number.isInteger(light[key]) && light[key] >= 0 && light[key] <= 100) &&
@@ -417,7 +518,7 @@
       baseline = null;
       connection(document.hidden || !pageActive ? 'Оновлення призупинено' : 'Автооновлення вимкнено');
     };
-    const poll = async (manual = false) => {
+    const poll = async (manual = false, feedback = true) => {
       if (!pageActive || document.hidden || (!manual && !automatic())) return;
       const manualFeedback = request => {
         request.manual = true;
@@ -426,28 +527,30 @@
         text('[data-weekly-state]', 'Оновлення рейтингу…');
       };
       if (active) {
-        if (manual && !active.manual && !active.reason) manualFeedback(active);
+        if (manual && feedback && !active.manual && !active.reason) manualFeedback(active);
         return;
       }
       if (timer !== null) clearTimeout(timer);
       timer = null;
-      const request = {controller: new AbortController(), reason: '', manual: false};
+      const request = {controller: new AbortController(), reason: '', manual: false, sequence: ++pollSequence};
       active = request;
-      if (manual) manualFeedback(request);
+      if (manual && feedback) manualFeedback(request);
       else if (!baseline) connection('Оновлення…');
       const timeout = setTimeout(() => { request.reason = 'timeout'; request.controller.abort(); }, 6000);
       try {
-        const response = await fetch('/status', {signal: request.controller.signal, cache: 'no-store', credentials: 'same-origin', redirect: 'error'});
-        if (response.status === 401) {
-          pageActive = false;
-          window.location.replace('/login');
+        const response = await fetch('/status', {signal: request.controller.signal, cache: 'no-store', credentials: 'same-origin'});
+        if (response.status === 401 || response.redirected || (response.headers.get('content-type') || '').includes('text/html')) {
+          ++authEpoch;
+          connection('Сеанс завершено. Увійдіть знову.', 'error');
+          for (const form of all('form')) if (commandRoutes.has(new URL(form.action, location.href).pathname))
+            formFeedback(form, 'Сеанс завершено.', true);
           return;
         }
         if (!response.ok) throw new Error('HTTP');
         const status = await response.json();
         if (!status || !finite(status.uptime_ms) || !finite(status.frames) || !Array.isArray(status.agents)) throw new Error('JSON');
         if (request.reason === 'pause' || document.hidden) return;
-        update(status);
+        update(status, request.sequence);
         failures = 0;
         connection(status.maintenance === true ? 'Контролер зайнятий' : 'Дані оновлено', 'ok');
       } catch (_) {
@@ -465,6 +568,74 @@
         active = null;
         if (request.manual) all('[data-refresh]').forEach(button => { button.disabled = false; });
         schedule(Math.min(30000, 5000 * Math.pow(2, Math.min(failures, 3))));
+        if (refreshAfterActive) { refreshAfterActive = false; setTimeout(() => poll(true, false), 0); }
+      }
+    };
+    const refreshCommandStatus = () => {
+      if (active) refreshAfterActive = true;
+      else void poll(true, false);
+    };
+    const sendCommand = async (form, record) => {
+      const {data, submitter, url} = record;
+      const epoch = authEpoch;
+      awaitingState.delete(form);
+      submitting.add(form);
+      currentIntents.set(form, record);
+      form.setAttribute('aria-busy', 'true');
+      const previousBusy = submitter?.getAttribute('aria-busy');
+      if (submitter) submitter.setAttribute('aria-busy', 'true');
+      formFeedback(form, 'Надсилання…');
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      try {
+        const response = await fetch(url.href, {method: 'POST', body: data, credentials: 'same-origin',
+          headers: {Accept: 'application/json'}, signal: controller.signal});
+        const type = response.headers.get('content-type') || '';
+        if (response.redirected || response.status === 401 || type.includes('text/html')) {
+          ++authEpoch;
+          formFeedback(form, 'Сеанс завершено або сервер не підтвердив команду. Перевірте вхід.', true);
+          return;
+        }
+        if (!response.ok) {
+          let detail = '';
+          if (type.includes('application/json')) {
+            const error = await response.json();
+            detail = typeof error.message === 'string' ? error.message : typeof error.error === 'string' ? error.error : '';
+          } else if (type.includes('text/plain')) detail = await response.text();
+          formFeedback(form, `Команду не прийнято (HTTP ${response.status}). ${detail.slice(0, 300)}`);
+          return;
+        }
+        const result = type.includes('application/json') && await response.json();
+        if (response.status !== 202 || !result || result.accepted !== true) {
+          formFeedback(form, 'Сервер не підтвердив прийняття команди. Перевірте стан контролера.');
+          return;
+        }
+        if (tracksState(record)) {
+          record.poll = pollSequence + 1;
+          awaitingState.set(form, record);
+          formFeedback(form, 'Команду прийнято в чергу. Очікуємо стан контролера.');
+        } else formFeedback(form, acceptedMessage(record));
+        refreshCommandStatus();
+        // Bounded GET follow-ups observe queue processing without retrying the command.
+        for (const delay of [500, 1500]) setTimeout(refreshCommandStatus, delay);
+      } catch (_) {
+        formFeedback(form, controller.signal.aborted ?
+          'Час очікування минув. Команда могла надійти; перевірте стан перед повтором.' :
+          'Немає підтвердження від контролера. Перевірте стан перед повтором.');
+      } finally {
+        clearTimeout(timeout);
+        submitting.delete(form);
+        currentIntents.delete(form);
+        form.removeAttribute('aria-busy');
+        if (submitter) {
+          if (previousBusy === null) submitter.removeAttribute('aria-busy');
+          else submitter.setAttribute('aria-busy', previousBusy);
+        }
+        const next = queuedIntents.get(form);
+        queuedIntents.delete(form);
+        if (next && epoch !== authEpoch) {
+          formFeedback(form, 'Сеанс завершено. Останній запит не надіслано. Увійдіть і повторіть дію.', true);
+        } else if (next && form.isConnected && pageActive) void sendCommand(form, next);
       }
     };
     document.addEventListener('input', event => {
@@ -477,6 +648,7 @@
         if (output) output.textContent = `${Math.round(Number(input.value) * 100 / 255)}%`;
       }
       if (input.matches('[data-light-range]')) text(`#${input.id}-value`, `${input.value}%`);
+      if (input.id === 'buzzer-volume') text('#buzzer-volume-value', `${input.value}%`);
       if (input.matches('.agent-color input[type=color]')) {
         const output = one('output', input.closest('form'));
         if (output) output.textContent = input.value.toUpperCase();
@@ -484,6 +656,10 @@
     });
     document.addEventListener('submit', event => {
       const form = event.target;
+      if (!(form instanceof HTMLFormElement) || event.defaultPrevented) return;
+      const submitter = event.submitter;
+      const method = (submitter?.getAttribute('formmethod') || form.getAttribute('method') || 'get').toLowerCase();
+      if (method === 'dialog') return;
       if (form instanceof Element && form.matches('form.agent-rename')) {
         const input = one('[data-agent-name-input]', form);
         if (input && typeof TextEncoder === 'function' && typeof input.setCustomValidity === 'function') {
@@ -491,7 +667,40 @@
           if (!input.checkValidity()) { event.preventDefault(); input.reportValidity(); return; }
         }
       }
-      if (form instanceof Element && form.matches('form[data-confirm]') && !window.confirm(form.dataset.confirm)) event.preventDefault();
+      const url = new URL(submitter?.getAttribute('formaction') || form.action, location.href);
+      if (method !== 'post' || url.origin !== location.origin || !commandRoutes.has(url.pathname) ||
+          !('fetch' in window) || !('AbortController' in window)) {
+        if (form.matches('form[data-confirm]') && !window.confirm(form.dataset.confirm)) event.preventDefault();
+        return;
+      }
+      event.preventDefault();
+      if (!form.noValidate && !submitter?.formNoValidate && !form.reportValidity()) return;
+      // Capture the user's intent now, including the submitter and hidden fields.
+      const data = new URLSearchParams();
+      for (const [name, value] of new FormData(form)) data.append(name, String(value));
+      if (submitter?.name) data.append(submitter.name, submitter.value);
+      data.set('__async', '1');
+      const signature = `${url.href}\n${data.toString()}`;
+      const current = currentIntents.get(form);
+      if (current?.signature === signature) {
+        // Returning to the in-flight intent supersedes an intervening queued action.
+        markDirty(form);
+        current.revision = formRevisions.get(form);
+        current.snapshot = formSnapshot(form);
+        queuedIntents.delete(form);
+        formFeedback(form, 'Надсилання…');
+        return;
+      }
+      if (queuedIntents.get(form)?.signature === signature) return;
+      if (form.matches('form[data-confirm]') && !window.confirm(form.dataset.confirm)) return;
+      markDirty(form);
+      awaitingState.delete(form);
+      const record = {data, submitter, url, signature, path: url.pathname,
+        revision: formRevisions.get(form), snapshot: formSnapshot(form)};
+      if (submitting.has(form)) {
+        queuedIntents.set(form, record);
+        formFeedback(form, 'Останній запит буде надіслано після поточного.');
+      } else void sendCommand(form, record);
     });
     document.addEventListener('change', event => {
       const input = event.target;
@@ -535,12 +744,15 @@
     document.addEventListener('reset', event => {
       const form = event.target;
       setTimeout(() => {
-        dirtyForms.delete(form);
+        markDirty(form);
+        awaitingState.delete(form);
         const row = form instanceof Element && form.closest('[data-agent]');
         if (row) agentStates.delete(row);
         const range = one('#brightness', form);
         const output = one('#brightnessValue');
         if (range && output) output.textContent = `${Math.round(Number(range.value) * 100 / 255)}%`;
+        const volume = one('#buzzer-volume', form);
+        if (volume) text('#buzzer-volume-value', `${volume.value}%`);
       }, 0);
     });
     document.addEventListener('visibilitychange', () => {

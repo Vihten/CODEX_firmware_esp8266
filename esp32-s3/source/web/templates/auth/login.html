@@ -1,6 +1,9 @@
 <h2>Вхід</h2>
-<form method='post' action='/login'>
+<form id='login-form' method='post' action='/login'>
 <input type='hidden' name='csrf' value='{{csrf}}'>
-<label>Пароль<input type='password' name='password' autocomplete='current-password' maxlength='128' required></label>
+<label for='login-password'>Пароль</label>
+<input id='login-password' type='password' name='password' autocomplete='current-password' aria-describedby='login-feedback' minlength='10' maxlength='128' required>
+<label class='login-toggle' hidden><input id='login-show-password' type='checkbox' aria-controls='login-password'>Показати пароль</label>
 <button type='submit'>Увійти</button>
+<p id='login-feedback' class='muted' role='status' aria-live='polite' aria-atomic='true'></p>
 </form>

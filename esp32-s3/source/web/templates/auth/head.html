@@ -13,8 +13,14 @@ label{display:grid;gap:.4rem}input,button{font:inherit;min-width:0;max-width:100
 input{width:100%;background:#1a1e20;color:#edf2ee}button{cursor:pointer;background:#56d39b;color:#111315;font-weight:600;white-space:normal}
 a{color:#79ddb1;text-underline-offset:.2em}.muted{color:#a6b0aa;font-size:.9375rem}small{font-size:.9375rem;color:#a6b0aa}
 :focus-visible{outline:2px solid #e8bc72;outline-offset:3px}.secondary{background:transparent;color:#edf2ee}
+.login-toggle{display:flex;align-items:center;gap:.65rem;min-height:44px}.login-toggle[hidden]{display:none}
+.login-toggle input{width:20px;height:20px;flex:none;margin:0;padding:0}
+#login-form input:not([type=hidden]),#login-form button{min-height:44px}
+#login-form button:disabled{cursor:wait;background:#303833;color:#b2bcb5}
+#login-feedback{margin:0;min-height:1.5em}#login-password[aria-invalid=true]{border-color:#f2a09a}
 @media(max-width:36rem){main{margin-top:1.5rem}}
 </style>
+<script src='/auth/login.js' defer></script>
 </head>
 <body><main>
 <h1>Доступ до контролера</h1>

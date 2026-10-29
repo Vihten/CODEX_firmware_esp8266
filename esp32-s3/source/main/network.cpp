@@ -1842,8 +1842,13 @@ esp_err_t health(httpd_req_t *request) {
       view.dirty, view.nvsReady, (unsigned long)view.udpPackets, (unsigned long)view.otaDone,
       (unsigned long)view.otaTotal, unsigned(esp_reset_reason()));
   if (count < 0 || count >= int(sizeof(body))) return error(request, "503 Service Unavailable", "Diagnostics too large.");
+  const int authCount = std::snprintf(body + count, sizeof(body) - size_t(count),
+      "auth_check_ms=%lu auth_http_stack_free=%lu\n", (unsigned long)web_auth::lastCheckMs(),
+      (unsigned long)web_auth::httpStackFree());
+  if (authCount < 0 || size_t(authCount) >= sizeof(body) - size_t(count))
+    return error(request, "503 Service Unavailable", "Diagnostics too large.");
   httpd_resp_set_type(request, "text/plain; charset=utf-8"); httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-  return httpd_resp_send(request, body, count);
+  return httpd_resp_send(request, body, count + authCount);
 }
 bool readBody(httpd_req_t *request, char *body, size_t capacity) {
   if (request->content_len >= capacity) return false;
@@ -2622,7 +2627,9 @@ bool installFirmware() {
 
 void requestMaintenance(Maintenance kind) {
   if (model.releasePending || model.control.maintenance != Maintenance::None) return;
-  web_auth::setMaintenance(true);
+  if (kind == Maintenance::Persist) {
+    if (!web_auth::tryMaintenance()) return;
+  } else web_auth::setMaintenance(true);
   previewStreamSealed.store(true);
   model.control.otaVisualSequence = 0; model.control.otaVisualPercent = 0;
   model.control.otaVisualAnimate = false;

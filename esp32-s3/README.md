@@ -140,10 +140,21 @@ committed to NVS. The footer's password/access link opens password change and
 sign-out. A reboot invalidates sessions, not the saved password.
 
 Credentials use a random salt and PBKDF2-HMAC-SHA256, not a plaintext password.
-The 100,000-round derivation reuses SHA-256 HMAC pad states through PSA hash
-cloning. Bounded scheduler yields replace idle-priority execution. The output
+The 100,000-round derivation reuses SHA-256 HMAC pad states through a local
+software SHA-256 adapter, avoiding per-block access to the shared SHA/AES engine.
+The adapter uses the builtin private SHA API in the pinned ESP-IDF 6 / Mbed TLS 4
+toolchain; do not update that dependency without rebuilding and verifying vectors.
+Elapsed-time checks every eight rounds yield after about 4 ms of CPU work.
+The output
 and credential layout remain compatible with previously saved passwords;
 iteration count, session expiry and failed-attempt limits are unchanged.
+Login errors leave the form available. JavaScript shows inline errors and the
+actual retry countdown; a plain POST receives the same form with an error notice.
+Password checks and persistence admission exclude each other atomically. The
+protected `/health` endpoint includes `auth_check_ms` and `auth_http_stack_free`
+to measure real-device latency and HTTP-task stack headroom without credentials.
+These changes do not establish the cause of any prior hardware reset; capture
+the reset reason and UART panic log if resets recur.
 The separate credential record is saved by the network task only after the
 existing renderer/preview maintenance acknowledgement. Failed or corrupt reads
 do not silently unlock the interface. Password changes preserve Wi-Fi, agent
@@ -405,9 +416,9 @@ eligible. Requests expire after ten minutes and are not persisted across a
 controller restart. Queued is not installed: the portal waits for a committed
 new version to be reported.
 
-Anyone who can reach the portal on the LAN can request an available signed
-update; there is intentionally no operator authentication. Automatic enrollment
-also has no operator authentication. HTTP does not encrypt the channel secret.
+Browser requests for a signed agent update require the portal's password session.
+Automatic machine enrollment has no operator authentication. HTTP does not encrypt
+the channel secret.
 Operate only on a trusted, isolated LAN; never expose these routes to the Internet.
 Polls and responses use HMAC-SHA256 with a fresh controller boot/window challenge,
 fresh agent random suffix and consumed monotonic counter. This is not a defense
@@ -457,9 +468,9 @@ The controller accepts only the authenticated poll; enrollment and new command
 requests still require an online agent. Reinstalling explicitly resets the local
 uninstall command record without deleting user data.
 
-There is intentionally no operator password. Anyone on the trusted LAN who can
-reach this portal can request rename/uninstall, just as they can request an
-available signed update. Do not expose the controller HTTP server to the Internet.
+Browser rename/uninstall and signed-update requests require the portal password
+session. Machine telemetry and enrollment remain separate LAN protocols.
+Do not expose the controller HTTP server to the Internet.
 
 ## Weekly Agent Tokens
 
@@ -514,8 +525,8 @@ Status polling supplies the applied settings and persistence/action state.
 Identical in-flight submissions are suppressed. Each form retains at most one
 latest distinct user-submitted action and sends it after the current request;
 authentication failures discard that queued action rather than replaying it.
-Plain forms keep HTTP 303 as a fallback. Login and password forms retain their
-existing flow; authentication and same-origin protections are unchanged.
+Plain control forms keep HTTP 303 as a fallback. Login has its own retryable
+JSON/form flow; authentication and same-origin protections remain enforced.
 
 ## Hardware Acceptance
 

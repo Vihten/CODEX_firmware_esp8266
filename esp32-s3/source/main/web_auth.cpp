@@ -1,5 +1,6 @@
 #include "web_auth.hpp"
 #include "web_files.hpp"
+#include "password_sha256.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -37,6 +38,7 @@ unsigned active = 0, failures = 0;
 int64_t nextAttempt = 0;
 uint32_t generation = 0;
 std::atomic<uint32_t> revision{0};
+std::atomic<uint32_t> lastCheckDuration{0}, lastHttpStackFree{0};
 int64_t nowMs() { return esp_timer_get_time() / 1000; }
 void erase(void *data, size_t size) {
   volatile uint8_t *bytes = static_cast<volatile uint8_t *>(data);
@@ -212,6 +214,11 @@ bool readForm(httpd_req_t *request, Form &form) {
     else if (!std::strcmp(key, "new_password")) { target = form.next; bit = 4; }
     else if (!std::strcmp(key, "confirm_password")) { target = form.confirm; bit = 8; }
     else if (!std::strcmp(key, "csrf")) { target = form.csrf; capacity = 65; bit = 16; }
+    else if (!std::strcmp(key, "__async")) {
+      char value[2];
+      if ((form.fields & 32) || !decode(separator + 1, size_t(end - separator - 1), value, sizeof(value)) || std::strcmp(value, "1")) return false;
+      form.fields |= 32; p = *end ? end + 1 : end; continue;
+    }
     else return false;
     if ((form.fields & bit) || !decode(separator + 1, size_t(end - separator - 1), target, capacity)) return false;
     form.fields |= bit; p = *end ? end + 1 : end;
@@ -219,34 +226,26 @@ bool readForm(httpd_req_t *request, Form &form) {
   return std::strlen(form.csrf) == 64 && equal(form.csrf, bootToken, 64);
 }
 struct PasswordHmac {
-  psa_hash_operation_t inner = PSA_HASH_OPERATION_INIT, outer = PSA_HASH_OPERATION_INIT;
-  psa_hash_operation_t work = PSA_HASH_OPERATION_INIT;
+  password_sha256::Hash inner, outer, work;
   uint8_t pad[64] = {}, digest[32] = {};
   ~PasswordHmac() {
-    psa_hash_abort(&work); psa_hash_abort(&inner); psa_hash_abort(&outer);
     erase(pad, sizeof(pad)); erase(digest, sizeof(digest));
   }
   bool setup(const char *password) {
     const size_t size = std::strlen(password);
-    size_t written = 0;
     if (size > sizeof(pad)) {
-      if (psa_hash_compute(PSA_ALG_SHA_256, reinterpret_cast<const uint8_t *>(password), size,
-              pad, sizeof(pad), &written) != PSA_SUCCESS || written != sizeof(digest)) return false;
+      if (!password_sha256::Hash::compute(reinterpret_cast<const uint8_t *>(password),
+              size, pad)) return false;
     } else std::memcpy(pad, password, size);
     for (auto &byte : pad) byte ^= 0x36;
-    if (psa_hash_setup(&inner, PSA_ALG_SHA_256) != PSA_SUCCESS ||
-        psa_hash_update(&inner, pad, sizeof(pad)) != PSA_SUCCESS) return false;
+    if (!inner.start() || !inner.update(pad, sizeof(pad))) return false;
     for (auto &byte : pad) byte ^= 0x36 ^ 0x5c;
-    const bool okay = psa_hash_setup(&outer, PSA_ALG_SHA_256) == PSA_SUCCESS &&
-        psa_hash_update(&outer, pad, sizeof(pad)) == PSA_SUCCESS;
+    const bool okay = outer.start() && outer.update(pad, sizeof(pad));
     erase(pad, sizeof(pad)); return okay;
   }
-  bool hash(const psa_hash_operation_t &seed, const uint8_t *bytes, size_t size, uint8_t *out) {
-    size_t written = 0;
-    const bool okay = psa_hash_clone(&seed, &work) == PSA_SUCCESS &&
-        psa_hash_update(&work, bytes, size) == PSA_SUCCESS &&
-        psa_hash_finish(&work, out, sizeof(digest), &written) == PSA_SUCCESS && written == sizeof(digest);
-    psa_hash_abort(&work); return okay;
+  bool hash(const password_sha256::Hash &seed, const uint8_t *bytes, size_t size, uint8_t *out) {
+    work.cloneFrom(seed);
+    return work.update(bytes, size) && work.finish(out);
   }
   bool compute(const uint8_t *bytes, size_t size, uint8_t *out) {
     return hash(inner, bytes, size, digest) && hash(outer, digest, sizeof(digest), out);
@@ -254,7 +253,8 @@ struct PasswordHmac {
 };
 bool derive(const char *password, const uint8_t (&salt)[16], uint8_t (&out)[32]) {
   // RFC 8018, one SHA-256 output block. Reuse HMAC pad states instead of
-  // hashing both pads again on every iteration; PSA still owns all hashing.
+  // hashing both pads again on every iteration. Local software SHA avoids
+  // acquiring/toggling the shared SHA/AES hardware engine for each final block.
   PasswordHmac hmac;
   uint8_t first[20] = {}, current[32] = {};
   std::memcpy(first, salt, sizeof(salt)); first[19] = 1;
@@ -267,7 +267,7 @@ bool derive(const char *password, const uint8_t (&salt)[16], uint8_t (&out)[32])
     for (size_t i = 0; i < sizeof(out); ++i) out[i] ^= current[i];
     // Block periodically so idle0 can service its watchdog, without running
     // the entire KDF at idle priority. Never sleep once per KDF iteration.
-    if ((iteration & 63U) == 0 && nowMs() - yielded >= 10) {
+    if ((iteration & 7U) == 0 && nowMs() - yielded >= 4) {
       vTaskDelay(1); yielded = nowMs();
     }
   }
@@ -310,7 +310,7 @@ bool templateFile(httpd_req_t *request, const char *path) {
   }
   okay = okay && !std::ferror(file); std::fclose(file); return okay;
 }
-esp_err_t loginPage(httpd_req_t *request) {
+esp_err_t renderLoginPage(httpd_req_t *request, const char *notice = nullptr) {
   bool ready = false, setup = false, waiting = false, authenticated = false, failed = false, blocked = false;
   char token[65];
   {
@@ -321,7 +321,7 @@ esp_err_t loginPage(httpd_req_t *request) {
     }
   }
   responseHeaders(request); httpd_resp_set_type(request, "text/html; charset=utf-8");
-  httpd_resp_set_hdr(request, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+  if (httpd_resp_set_hdr(request, "Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'") != ESP_OK) return ESP_FAIL;
   if (!templateFile(request, "templates/auth/head.html")) return ESP_FAIL;
   const char *message = !ready ? "Доступ заблоковано: не вдалося прочитати налаштування захисту. Перезапустіть контролер або зверніться до адміністратора." :
       waiting ? (failed ? "Пароль ще не збережено. Попередній пароль залишається чинним. Контролер повторить спробу збереження." :
@@ -332,12 +332,44 @@ esp_err_t loginPage(httpd_req_t *request) {
         httpd_resp_send_chunk(request, message, HTTPD_RESP_USE_STRLEN) != ESP_OK ||
         httpd_resp_send_chunk(request, "</p><p><a href='/login'>Оновити стан</a></p>", HTTPD_RESP_USE_STRLEN) != ESP_OK) return ESP_FAIL;
   }
+  if (notice && (httpd_resp_send_chunk(request, "<p role='alert'>", HTTPD_RESP_USE_STRLEN) != ESP_OK ||
+      httpd_resp_send_chunk(request, notice, HTTPD_RESP_USE_STRLEN) != ESP_OK ||
+      httpd_resp_send_chunk(request, "</p>", HTTPD_RESP_USE_STRLEN) != ESP_OK)) return ESP_FAIL;
   if (ready && !blocked && (!waiting || (!setup && !authenticated))) {
     const char *form = authenticated ? "templates/auth/account.html" : setup ? "templates/auth/setup.html" : "templates/auth/login.html";
     if (!templateFile(request, form)) return ESP_FAIL;
   }
   if (!templateFile(request, "templates/auth/foot.html")) return ESP_FAIL;
   return httpd_resp_send_chunk(request, nullptr, 0);
+}
+esp_err_t loginPage(httpd_req_t *request) { return renderLoginPage(request); }
+esp_err_t loginScript(httpd_req_t *request) {
+  return serveWebFile(request, "assets/js/login.js", "text/javascript; charset=utf-8");
+}
+bool wantsJson(httpd_req_t *request) {
+  char accept[192];
+  return header(request, "Accept", accept) && std::strstr(accept, "application/json");
+}
+esp_err_t authError(httpd_req_t *request, const char *status, const char *message, unsigned retry = 0) {
+  httpd_resp_set_status(request, status);
+  httpd_resp_set_hdr(request, "Connection", "close");
+  char retryText[12];
+  if (retry) { std::snprintf(retryText, sizeof(retryText), "%u", retry); httpd_resp_set_hdr(request, "Retry-After", retryText); }
+  if (!wantsJson(request)) return renderLoginPage(request, message);
+  responseHeaders(request);
+  httpd_resp_set_type(request, "application/json; charset=utf-8");
+  // Callers supply static messages only, never passwords or request fields.
+  char body[768]; size_t used = 0;
+  const char prefix[] = "{\"error\":\"";
+  std::memcpy(body, prefix, sizeof(prefix) - 1); used = sizeof(prefix) - 1;
+  for (const char *p = message; *p; ++p) {
+    if (used + 40 >= sizeof(body)) return reject(request, "503 Service Unavailable", "Спробуйте ще раз.");
+    if (*p == '\"' || *p == '\\') body[used++] = '\\';
+    if (uint8_t(*p) < 0x20) body[used++] = ' ';
+    else body[used++] = *p;
+  }
+  std::snprintf(body + used, sizeof(body) - used, "\",\"retry_after\":%u}", retry);
+  return httpd_resp_send(request, body, HTTPD_RESP_USE_STRLEN);
 }
 esp_err_t state(httpd_req_t *request) {
   bool okay = false, setup = false, waiting = false, authenticated = false;
@@ -349,15 +381,16 @@ esp_err_t state(httpd_req_t *request) {
   return httpd_resp_send(request, body, HTTPD_RESP_USE_STRLEN);
 }
 esp_err_t mutate(httpd_req_t *request) {
-  if (!sameOrigin(request)) return reject(request, "403 Forbidden", "Запит має надходити зі сторінки цього контролера.");
+  if (!sameOrigin(request)) return authError(request, "403 Forbidden", "Запит має надходити зі сторінки цього контролера.");
   Operation operation;
-  if (!operation.admitted) return reject(request, "503 Service Unavailable", "Контролер зайнятий або доступ заблоковано. Спробуйте пізніше.");
+  if (!operation.admitted) return authError(request, "503 Service Unavailable", "Контролер зайнятий або доступ заблоковано. Спробуйте пізніше.", 1);
   Form form;
-  if (!readForm(request, form)) return reject(request, "400 Bad Request", "Некоректна форма. Поверніться на /login і повторіть спробу.");
+  if (!readForm(request, form)) return authError(request, "400 Bad Request", "Некоректна форма. Оновіть сторінку входу та повторіть спробу.");
   char token[65] = {};
   const bool hasCookie = cookie(request, token);
   const bool login = pathIs(request, "/login"), setup = pathIs(request, "/auth/setup"), logout = pathIs(request, "/auth/logout");
   Credential snapshot; uint32_t version = 0; bool admitted = false, limited = false;
+  unsigned retrySeconds = 0;
   {
     Lock lock;
     if (lock.held && !maintenance && healthy && !saving) {
@@ -366,12 +399,13 @@ esp_err_t mutate(httpd_req_t *request) {
         invalidateSessions(); admitted = true;
       } else if ((!pending || login) && ((login && configured) || (setup && !configured) || (!login && !setup && !logout && authenticated && configured))) {
         limited = nowMs() < nextAttempt;
+        if (limited) retrySeconds = unsigned((nextAttempt - nowMs() + 999) / 1000);
         if (!limited) { nextAttempt = nowMs() + 1000; snapshot = credential; version = generation; admitted = true; }
       }
     }
   }
-  if (limited) { httpd_resp_set_hdr(request, "Retry-After", "60"); return reject(request, "429 Too Many Requests", "Забагато спроб. Зачекайте хвилину та повторіть."); }
-  if (!admitted) return reject(request, "403 Forbidden", "Дію відхилено. Оновіть /login і перевірте стан входу.");
+  if (limited) return authError(request, "429 Too Many Requests", "Зачекайте завершення паузи та повторіть спробу.", std::max(1U, retrySeconds));
+  if (!admitted) return authError(request, "403 Forbidden", "Дію відхилено. Оновіть сторінку входу та перевірте стан.");
   if (logout) {
     httpd_resp_set_hdr(request, "Set-Cookie", "codex_session=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/");
     return redirect(request, "/login");
@@ -379,18 +413,21 @@ esp_err_t mutate(httpd_req_t *request) {
   const char *password = login ? form.password : form.next;
   const bool valid = passwordValid(password) && (login || (passwordValid(form.current) || setup)) &&
       (login || !std::strcmp(form.next, form.confirm));
-  if (!valid) return reject(request, "400 Bad Request", "Щонайменше 10 символів. Максимум 128 латинських або 64 українські літери. Новий пароль і підтвердження мають збігатися.");
+  if (!valid) return authError(request, "400 Bad Request", "Пароль має містити щонайменше 10 символів і не більше 128 байтів. Новий пароль і підтвердження мають збігатися.");
   bool cryptoOkay = true;
+  const int64_t checkStarted = nowMs();
   const bool matched = setup || verify(login ? form.password : form.current, snapshot, cryptoOkay);
+  lastCheckDuration.store(uint32_t(std::max<int64_t>(0, nowMs() - checkStarted)));
+  lastHttpStackFree.store(uint32_t(uxTaskGetStackHighWaterMark(nullptr)));
   if (!matched) {
-    { Lock lock; if (lock.held) failedAttempt(); }
+    { Lock lock; if (lock.held && cryptoOkay) { failedAttempt(); retrySeconds = unsigned((nextAttempt - nowMs() + 999) / 1000); } }
     erase(&snapshot, sizeof(snapshot));
-    return reject(request, cryptoOkay ? "401 Unauthorized" : "503 Service Unavailable", cryptoOkay ? "Неправильний пароль. Поверніться на /login та спробуйте ще раз." : "Перевірка пароля недоступна. Спробуйте пізніше.");
+    return authError(request, cryptoOkay ? "401 Unauthorized" : "503 Service Unavailable", cryptoOkay ? "Неправильний пароль. Спробуйте ще раз." : "Перевірка пароля недоступна. Спробуйте пізніше.", retrySeconds);
   }
   Credential replacement;
   if (!login) {
     esp_fill_random(replacement.salt, sizeof(replacement.salt));
-    if (!derive(form.next, replacement.salt, replacement.digest)) return reject(request, "503 Service Unavailable", "Не вдалося підготувати пароль. Спробуйте пізніше.");
+    if (!derive(form.next, replacement.salt, replacement.digest)) return authError(request, "503 Service Unavailable", "Не вдалося підготувати пароль. Спробуйте пізніше.");
     replacement.checksum = checksum(replacement);
   }
   bool accepted = false;
@@ -414,10 +451,14 @@ esp_err_t mutate(httpd_req_t *request) {
     }
   }
   erase(&snapshot, sizeof(snapshot)); erase(&replacement, sizeof(replacement)); erase(token, sizeof(token));
-  if (!accepted) return reject(request, "409 Conflict", "Стан контролера змінився. Оновіть /login і повторіть дію.");
+  if (!accepted) return authError(request, "409 Conflict", "Стан контролера змінився. Оновіть сторінку входу та повторіть дію.");
   if (login) httpd_resp_set_hdr(request, "Set-Cookie", sessionCookie);
   // IDF retains header pointers until the response is sent.
-  const esp_err_t result = redirect(request, login ? "/" : "/login?pending=1");
+  esp_err_t result;
+  if (login && wantsJson(request)) {
+    responseHeaders(request); httpd_resp_set_type(request, "application/json; charset=utf-8");
+    result = httpd_resp_send(request, "{\"authenticated\":true,\"redirect\":\"/\"}", HTTPD_RESP_USE_STRLEN);
+  } else result = redirect(request, login ? "/" : "/login?pending=1");
   erase(sessionCookie, sizeof(sessionCookie));
   return result;
 }
@@ -444,7 +485,8 @@ bool registerRoutes(httpd_handle_t server) {
   struct Route { const char *uri; httpd_method_t method; esp_err_t (*handler)(httpd_req_t *); };
   const Route routes[] = {{"/login", HTTP_GET, loginPage}, {"/login", HTTP_POST, mutate},
       {"/auth/setup", HTTP_POST, mutate}, {"/auth/logout", HTTP_POST, mutate},
-      {"/auth/password", HTTP_POST, mutate}, {"/auth/state", HTTP_GET, state}};
+      {"/auth/password", HTTP_POST, mutate}, {"/auth/state", HTTP_GET, state},
+      {"/auth/login.js", HTTP_GET, loginScript}};
   for (const auto &entry : routes) {
     httpd_uri_t route{}; route.uri = entry.uri; route.method = entry.method; route.handler = entry.handler;
     if (httpd_register_uri_handler(server, &route) != ESP_OK) return false;
@@ -481,6 +523,14 @@ void setMaintenance(bool enabled) {
   if (xSemaphoreTake(mutex, portMAX_DELAY) == pdTRUE) { maintenance = enabled; xSemaphoreGive(mutex); }
 }
 uint32_t sessionRevision() { return revision.load(); }
+uint32_t lastCheckMs() { return lastCheckDuration.load(); }
+uint32_t httpStackFree() { return lastHttpStackFree.load(); }
+bool tryMaintenance() {
+  Lock lock;
+  if (!lock.held || active || saving) return false;
+  maintenance = true;
+  return true;
+}
 bool persist() {
   Credential record; uint32_t version = 0;
   {

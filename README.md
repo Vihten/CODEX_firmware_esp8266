@@ -20,6 +20,25 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793288180502` fixes retryable password login. Incorrect passwords keep
+the form available, show an inline error and use the actual retry countdown.
+Plain HTML retries retain the form and CSP within the HTTP response-header limit.
+
+PBKDF2 keeps 100,000 SHA-256 rounds and the existing credential layout/digests.
+A local software SHA adapter avoids per-block SHA/AES peripheral locking;
+bounded scheduler yields leave time for network work. Persist admission and
+active password operations now exclude each other atomically. Protected health
+diagnostics add password-check duration and HTTP stack headroom, without secrets.
+No saved password/configuration reset is required. Physical animation remains 30 FPS.
+
+Validation: 553 firmware tests passed (two existing skips), native export,
+targeted Dart analysis, ESP32-S3 build, and desktop/mobile login browser checks.
+Actual S3 login latency and the reported reset/LED glitches remain unverified:
+the controller was unavailable over Wi-Fi and no USB port was present. This
+release does not claim to establish or fix the cause of those hardware symptoms.
+
+## Previous In-place Controls Release
+
 Version `1793277306745` adds in-place web control forms: brightness, power,
 schedule, alert/memorial tests and agent actions no longer navigate or reload
 the document. Accepted commands return HTTP 202; polling updates the applied

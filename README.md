@@ -20,6 +20,25 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793371461999` synchronizes follow-matrix exterior illumination with
+the matrix power animation. GPIO4/5 smoothly reach the configured channel levels
+over 700 ms before opening starts. They hold through the complete closing
+animation, then fade out over 700 ms after a successfully transmitted black frame.
+Rapid reversals continue from the current PWM envelope. Independent mode,
+saved levels, GPIO assignments, matrix colors and physical 30 FPS are unchanged.
+
+The renderer owns PWM writes; persistence pauses the envelope, OTA/restart force
+it off, and a matrix output error forces it off by the next render iteration.
+OTA progress cannot bypass the opening barrier after an aborted update. Web
+status reports applied channel levels instead of their configured targets.
+
+Validation: 576 firmware tests passed (two existing skips), 48 final focused
+tests, targeted Dart analysis, ESP32-S3 build, and native renderer-loop checks
+for complete power cycles, failed closing transfer and OTA abort/release passed.
+Physical fade appearance and installation on the controller are unverified.
+
+## Previous Login Format Release
+
 Version `1793353196752` fixes a login request-format regression: browser
 URLSearchParams emits `application/x-www-form-urlencoded;charset=UTF-8`, but
 the previous handler required a space before `charset`. Correct credentials

@@ -12,6 +12,12 @@ Hardware LEDC runs at 1 kHz / 10-bit resolution without a PWM task or ISR.
 Zero disables a channel; the separate OFF button disables both. Follow-matrix
 mode respects the matrix's schedule and manual power state. Disable this option
 for independent lighting. OTA and requested restart force both channels off.
+In follow-matrix mode, a nonblocking 700 ms PWM fade completes before the matrix
+opens. During shutdown the light holds until the closing animation's final black
+frame has been transmitted, then fades out over 700 ms. Rapid reversals resume
+from the current light level; flash persistence pauses the fade clock. Core 1
+owns all PWM writes, with settings delivered through the existing control queue.
+Independent mode and the saved channel brightness values are unchanged.
 
 Both GPIOs are driven LOW before boot-time storage/assets/network work. A new
 installation starts with both levels zero. Previously saved levels are restored

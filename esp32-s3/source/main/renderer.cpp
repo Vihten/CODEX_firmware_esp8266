@@ -7,6 +7,8 @@
 #include "air_alert_visual.hpp"
 #include "quota_recovery.hpp"
 #include "ota_visual.hpp"
+#include "external_light.hpp"
+#include "light_sequence.hpp"
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
 #include "esp_log.h"
@@ -42,6 +44,10 @@ uint16_t effectSubTick = 0;
 uint32_t sceneFrameMilli = 0;
 uint32_t quotaFrameMilli = 0, skySampleAt = 0;
 bool skySampleReady = false;
+external_light::Sequence lightSequence;
+bool matrixDark = true;
+bool lightPresentationActive = false;
+bool lightOpeningReady = true;
 air_alert::Visual airAlertVisual;
 quota_recovery::Motion quotaRecovery;
 
@@ -935,7 +941,7 @@ void drawSmoothMeteor(const MeteorState &meteor) {
   composeMeteorLayer();
 }
 
-bool matrixRequestsLight() { return control.on; }
+bool matrixRequestsLight() { return control.on && lightOpeningReady; }
 bool otaCheckPending() { return control.maintenance != Maintenance::None; }
 void drawEventEffects() {
   // The legacy network maintenance interval is now an explicit IPC request.
@@ -1151,9 +1157,14 @@ void publishStatus() {
   xQueueOverwrite(renderStatusQueue, &status);
 }
 
-bool showFrame() {
+bool showFrame(bool dark = false) {
   const bool completed = strip.show();
   status.ledError = strip.lastError();
+  // Only an explicit, successfully transmitted clear is a closing ACK. Dark
+  // artwork, zero brightness, or a failed transfer must not end the sequence.
+  matrixDark = completed && dark;
+  if (completed) lightPresentationActive = !dark &&
+      control.maintenance != Maintenance::Ota && control.maintenance != Maintenance::Restart;
   if (completed) {
     ++status.frames;
     if (control.maintenance == Maintenance::None)
@@ -1214,7 +1225,7 @@ void renderTask(void *) {
   if (outputReady) {
     strip.setBrightness(255);
     strip.clear();
-    if (showFrame() && control.maintenance == Maintenance::None) {
+    if (showFrame(true) && control.maintenance == Maintenance::None) {
       strip.setPixelColor(0, strip.Color(0, 0, 192));
       if (showFrame()) {
         vTaskDelay(pdMS_TO_TICKS(1200));
@@ -1222,7 +1233,7 @@ void renderTask(void *) {
       }
     }
     strip.clear();
-    showFrame();
+    showFrame(true);
     strip.setBrightness(control.brightness);
   }
   feedWatchdog();
@@ -1250,6 +1261,23 @@ void renderTask(void *) {
     feedWatchdog();
     const int64_t started = esp_timer_get_time();
     const bool fresh = xQueueReceive(controlQueue, &control, 0) == pdTRUE;
+    const bool lightForcedOff = control.lightForcedOff ||
+        !outputReady || status.ledError != 0 ||
+        control.maintenance == Maintenance::Ota || control.maintenance == Maintenance::Restart;
+    const bool lightFollows = control.lightFollowMatrix && external_light::ready() &&
+        (control.lightFirst || control.lightSecond);
+    if (lightForcedOff) lightPresentationActive = false;
+    lightSequence.update(millis(), lightFollows, control.on, matrixDark,
+                         lightForcedOff, control.maintenance == Maintenance::Persist);
+    const bool lightApplied = external_light::applyScaled(control.lightFirst,
+        control.lightSecond, lightSequence.gain());
+    lightOpeningReady = !lightApplied || !lightFollows ||
+        lightSequence.readyToOpen() || lightPresentationActive;
+    status.lightAllowed = lightApplied && !lightForcedOff && lightSequence.gain() != 0;
+    status.lightFirstOutput = lightApplied
+        ? external_light::outputPercent(control.lightFirst, lightSequence.gain()) : 0;
+    status.lightSecondOutput = lightApplied
+        ? external_light::outputPercent(control.lightSecond, lightSequence.gain()) : 0;
     // A false status with this epoch proves that Core 1 consumed the release.
     if (control.maintenance == Maintenance::None) status.maintenanceEpoch = control.maintenanceEpoch;
     if (control.maintenance == Maintenance::None && parked) {
@@ -1269,7 +1297,7 @@ void renderTask(void *) {
       if (fresh) applyControlAgents();
       const uint32_t now = millis();
       airAlertVisual.update(control.airAlertLevel, now);
-      const bool memorialActive = control.on && control.memorialActive &&
+      const bool memorialActive = control.on && lightOpeningReady && control.memorialActive &&
           memorial::active(now, control.memorialStartedAt, control.memorialDurationMs);
       const bool previousMemorialTransition = status.memorialTransition;
       const bool memorialOff = !control.on && previousMemorialTransition;
@@ -1333,7 +1361,7 @@ void renderTask(void *) {
         bool complete = strip.isQuiescent();
         if (control.maintenance == Maintenance::Ota || control.maintenance == Maintenance::Restart) {
           strip.clear();
-          complete = showFrame() && strip.isQuiescent();
+          complete = showFrame(true) && strip.isQuiescent();
           if (complete) { sceneVisible = false; sceneProgress = 0; }
         }
         if (complete) {
@@ -1396,10 +1424,10 @@ void renderTask(void *) {
         sceneTargetOn = false;
         sceneProgress = 0;
         strip.clear();
-        if (showFrame()) memorialForceOff = false;
+        if (showFrame(true)) memorialForceOff = false;
       } else if (!status.assetsReady) {
         strip.clear();
-        showFrame();
+        showFrame(true);
       } else {
         strip.setBrightness(control.brightness);
         if (control.connected && (!previousConnected || std::strncmp(displayedIp, control.ip, sizeof(displayedIp)) != 0)) {
@@ -1409,13 +1437,13 @@ void renderTask(void *) {
         previousConnected = control.connected;
         if (!control.connected) { ipHold = false; ipPresented = false; }
         if (ipHold && ipPresented && millis() - holdStarted >= 5000UL) ipHold = false;
-        const bool requestedOn = control.on;
+        const bool requestedOn = control.on && lightOpeningReady;
         if (sceneVisible) advanceSceneTimeline(maintenance ? sceneTargetOn
             : requestedOn || (flying && sceneProgress == SCENE_DURATION_MS));
         if (!requestedOn && (!sceneVisible || sceneProgress == 0)) {
           sceneVisible = false;
           strip.clear();
-          showFrame();
+          showFrame(true);
         } else if (!flying && requestedOn && (!control.connected || !control.accountLinked || ipHold)) {
           sceneVisible = false;
           drawIpAddress();
@@ -1443,7 +1471,7 @@ void renderTask(void *) {
             sceneVisible = false;
             sceneProgress = 0;
             strip.clear();
-            showFrame();
+            showFrame(true);
           }
         }
       }

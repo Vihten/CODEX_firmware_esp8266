@@ -38,11 +38,20 @@ inline bool valid(const Settings &settings) {
       settings.reserved == 0 && settings.checksum == checksum(settings);
 }
 
-// Initialize once in app_main before task creation; networkTask owns apply thereafter.
+// Initialize once in app_main before task creation; renderTask owns apply thereafter.
 // No startup activation. Any initialization/write failure latches OFF until reboot.
 bool initialize();
 bool ready();
 bool apply(uint8_t first, uint8_t second, bool allowed);
+bool applyScaled(uint8_t first, uint8_t second, uint16_t gain);
+
+inline uint16_t scaledDuty(uint8_t percent, uint16_t gain) {
+  const uint32_t duty = (uint32_t(percent > 100 ? 100 : percent) * 1023U + 50U) / 100U;
+  return uint16_t((duty * (gain > 1023 ? 1023 : gain) + 511U) / 1023U);
+}
+inline uint8_t outputPercent(uint8_t percent, uint16_t gain) {
+  return uint8_t((uint32_t(scaledDuty(percent, gain)) * 100U + 511U) / 1023U);
+}
 
 // Generic PWM only: an IRF520 is not guaranteed to switch fully at a 3.3 V gate.
 }  // namespace external_light

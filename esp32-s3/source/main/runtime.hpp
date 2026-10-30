@@ -29,6 +29,10 @@ struct ControlFrame {
   uint8_t activityPercent = 0;
   uint8_t brightness = PROJECT_BRIGHTNESS;
   uint8_t airAlertLevel = 0;
+  uint8_t lightFirst = 0;
+  uint8_t lightSecond = 0;
+  bool lightFollowMatrix = true;
+  bool lightForcedOff = false;
   bool connected = false;
   bool accountLinked = false;
   bool on = true;
@@ -56,6 +60,9 @@ struct RenderStatus {
   bool quiescent = false;
   bool sceneVisible = false;
   bool memorialTransition = false;
+  bool lightAllowed = false;
+  uint8_t lightFirstOutput = 0;
+  uint8_t lightSecondOutput = 0;
 };
 
 enum class CommandKind : uint8_t { Wifi, Power, Brightness, Schedule, Color, Restart, Update, AgentPoll, AgentUpgrade, AgentRename, AgentUninstall, MemorialSave, MemorialPlay, MemorialStop, AirAlertSave, AirAlertTest, AirAlertStop, ExternalLight, BuzzerTest, BuzzerVolume };

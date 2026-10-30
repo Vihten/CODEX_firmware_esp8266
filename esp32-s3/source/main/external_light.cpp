@@ -1,13 +1,15 @@
 #include "external_light.hpp"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include <atomic>
 
 namespace external_light {
 namespace {
 constexpr gpio_num_t pins[] = {static_cast<gpio_num_t>(kFirstPin),
                                static_cast<gpio_num_t>(kSecondPin)};
 constexpr ledc_channel_t channels[] = {LEDC_CHANNEL_0, LEDC_CHANNEL_1};
-bool attempted = false, initialized = false, timerAttempted = false;
+bool attempted = false, timerAttempted = false;
+std::atomic<bool> initialized{false};
 unsigned channelsAttempted = 0;
 uint32_t duties[2] = {};
 
@@ -53,9 +55,6 @@ bool fail() {
   return false;
 }
 
-uint32_t dutyFor(uint8_t percent) {
-  return (uint32_t(percent > 100 ? 100 : percent) * 1023U + 50U) / 100U;
-}
 }  // namespace
 
 bool ready() { return initialized; }
@@ -88,13 +87,16 @@ bool initialize() {
 }
 
 bool apply(uint8_t first, uint8_t second, bool allowed) {
+  return applyScaled(first, second, allowed ? 1023 : 0);
+}
+
+bool applyScaled(uint8_t first, uint8_t second, uint16_t gain) {
   if (!initialized) {
     // A premature call must not prevent the later, explicit initialization.
     if (!attempted && !driveLow()) return fail();
     return false;
   }
-  const uint32_t next[] = {allowed ? dutyFor(first) : 0,
-                           allowed ? dutyFor(second) : 0};
+  const uint32_t next[] = {scaledDuty(first, gain), scaledDuty(second, gain)};
   for (unsigned i = 0; i < 2; ++i) {
     if (next[i] == duties[i]) continue;
     // stop gives an immediate LOW; set/update resumes a previously stopped channel.

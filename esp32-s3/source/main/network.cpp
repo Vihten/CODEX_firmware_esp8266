@@ -530,9 +530,8 @@ bool saveExternalLight() {
   return true;
 }
 void serviceExternalLight() {
-  model.lightAllowed = !model.restarting && model.control.maintenance != Maintenance::Ota &&
-      model.control.maintenance != Maintenance::Restart && (!model.light.followMatrix || model.control.on);
-  if (!external_light::apply(model.light.first, model.light.second, model.lightAllowed)) model.lightAllowed = false;
+  // PWM is owned by Core 1, synchronized with successfully transmitted frames.
+  model.lightAllowed = external_light::ready() && model.render.lightAllowed;
 }
 void loadBuzzerVolume() {
   if (!model.nvsReady) return;
@@ -842,6 +841,10 @@ void updateControl() {
   if (remaining <= 100) model.control.remainingPercent = uint8_t(remaining);
   model.control.connected = model.connected; model.control.accountLinked = model.linked;
   model.control.brightness = model.settings.brightness; model.control.on = scheduledOn();
+  model.control.lightFirst = model.light.first;
+  model.control.lightSecond = model.light.second;
+  model.control.lightFollowMatrix = model.light.followMatrix;
+  model.control.lightForcedOff = model.restarting;
   model.control.airAlertLevel = uint8_t(model.air.effective(now, model.airSettings.enabled,
       model.connected, !model.airFetchFailed));
   model.memorial.update(now, memorialClock(), model.memorialEnabled, model.control.on);
@@ -1688,8 +1691,8 @@ esp_err_t portalStatus(httpd_req_t *request) {
   if (!light) okay = false;
   else {
     number(light, "first", view.light.first); number(light, "second", view.light.second);
-    number(light, "first_output", view.lightAllowed ? view.light.first : 0);
-    number(light, "second_output", view.lightAllowed ? view.light.second : 0);
+    number(light, "first_output", view.lightAllowed ? view.render.lightFirstOutput : 0);
+    number(light, "second_output", view.lightAllowed ? view.render.lightSecondOutput : 0);
     boolean(light, "ready", view.lightReady); boolean(light, "allowed", view.lightAllowed);
     boolean(light, "follow_matrix", view.light.followMatrix); boolean(light, "saving", view.lightDirty);
     boolean(light, "save_failed", view.lightSaveFailed);

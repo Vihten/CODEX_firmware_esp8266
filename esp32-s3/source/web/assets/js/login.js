@@ -56,7 +56,7 @@
       const timeout = setTimeout(() => controller.abort(), 20000);
       try {
         const response = await fetch(url.href, {method: 'POST', body, credentials: 'same-origin',
-          headers: {Accept: 'application/json'}, signal: controller.signal});
+          headers: {Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded'}, signal: controller.signal});
         const headerDelay = secondsValue(response.headers.get('Retry-After'));
         if (headerDelay) cooldownUntil = Date.now() + headerDelay * 1000;
         if (response.redirected || !(response.headers.get('content-type') || '').includes('application/json')) {

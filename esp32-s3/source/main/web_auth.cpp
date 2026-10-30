@@ -189,10 +189,35 @@ struct Form {
   unsigned fields = 0;
   ~Form() { erase(this, sizeof(*this)); }
 };
+bool formContentType(const char *type) {
+  const auto space = [](char c) { return c == ' ' || c == '\t'; };
+  const auto matches = [&](const char *first, const char *last, const char *expected) {
+    while (first != last && space(*first)) ++first;
+    while (first != last && space(last[-1])) --last;
+    while (first != last && *expected) {
+      const char c = *first++;
+      if ((c >= 'A' && c <= 'Z' ? char(c + ('a' - 'A')) : c) != *expected++) return false;
+    }
+    return first == last && !*expected;
+  };
+  const char *end = type + std::strlen(type), *separator = std::strchr(type, ';');
+  if (!matches(type, separator ? separator : end, "application/x-www-form-urlencoded")) return false;
+  if (!separator) return true;
+  const char *parameter = separator + 1, *equal = std::strchr(parameter, '=');
+  // Only the optional UTF-8 charset is accepted; duplicate/ambiguous parameters fail.
+  if (!equal || std::strchr(parameter, ';') || !matches(parameter, equal, "charset")) return false;
+  const char *value = equal + 1;
+  while (value != end && space(*value)) ++value;
+  while (value != end && space(end[-1])) --end;
+  if (value != end && *value == '"') {
+    if (end - value < 2 || end[-1] != '"') return false;
+    ++value; --end;
+  }
+  return matches(value, end, "utf-8");
+}
 bool readForm(httpd_req_t *request, Form &form) {
   char type[96];
-  if (!header(request, "Content-Type", type) ||
-      (std::strcmp(type, "application/x-www-form-urlencoded") && std::strcmp(type, "application/x-www-form-urlencoded; charset=UTF-8"))) return false;
+  if (!header(request, "Content-Type", type) || !formContentType(type)) return false;
   struct Body { char bytes[2049] = {}; ~Body() { erase(bytes, sizeof(bytes)); } } body;
   if (!request->content_len || request->content_len >= sizeof(body.bytes)) return false;
   size_t used = 0; const int64_t started = nowMs();

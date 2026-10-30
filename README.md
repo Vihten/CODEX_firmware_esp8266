@@ -20,6 +20,21 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793353196752` fixes a login request-format regression: browser
+URLSearchParams emits `application/x-www-form-urlencoded;charset=UTF-8`, but
+the previous handler required a space before `charset`. Correct credentials
+were therefore rejected as an invalid form before password verification.
+The bounded parser now accepts equivalent UTF-8 media-type spellings; the
+client also sends an explicit compatible Content-Type. Passwords and settings
+are unchanged. Authentication, CSRF and rate limits remain enforced.
+
+Validation: 102 native authentication/network tests, including real browser-format
+login and malformed media-type cases; targeted Dart analysis, native export,
+ESP32-S3 build and desktop/mobile browser checks passed. Installation on hardware
+is unconfirmed.
+
+## Previous Login Reliability Release
+
 Version `1793288180502` fixes retryable password login. Incorrect passwords keep
 the form available, show an inline error and use the actual retry countdown.
 Plain HTML retries retain the form and CSP within the HTTP response-header limit.

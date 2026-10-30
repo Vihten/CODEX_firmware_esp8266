@@ -150,6 +150,10 @@ and credential layout remain compatible with previously saved passwords;
 iteration count, session expiry and failed-attempt limits are unchanged.
 Login errors leave the form available. JavaScript shows inline errors and the
 actual retry countdown; a plain POST receives the same form with an error notice.
+Form media-type parsing accepts the browser's URLSearchParams UTF-8 header with
+or without a space after the semicolon; the login client explicitly sends the
+bare URL-encoded media type for compatibility. Incorrect/ambiguous media types
+and unsupported charsets are rejected before password verification.
 Password checks and persistence admission exclude each other atomically. The
 protected `/health` endpoint includes `auth_check_ms` and `auth_http_stack_free`
 to measure real-device latency and HTTP-task stack headroom without credentials.

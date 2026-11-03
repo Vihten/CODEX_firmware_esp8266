@@ -332,7 +332,7 @@ struct Text {
     level = Level::Unknown;
     if (!alert && !clear) return true;
     if (conflict || ((yellow || drone) && (red || missile)) || (clear && (yellow || drone || red || missile))) return false;
-    level = clear ? Level::Clear : yellow && drone ? Level::Yellow : red && missile ? Level::Red : Level::Unspecified;
+    level = clear ? Level::Clear : yellow ? Level::Yellow : red ? Level::Red : Level::Unspecified;
     return true;
   }
 };

@@ -20,6 +20,16 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793693656829` recognizes an explicit yellow alert level as the drone
+indicator and an explicit red level as the missile indicator, without requiring
+the additional threat-description phrase. Conflicting levels/descriptions remain
+rejected; alerts without a stated level retain the unspecified warning symbol.
+Official headline, forwarded-message and all-clear validation are unchanged.
+Validation: 16 native parser scenarios and native renderer export passed;
+ESP32-S3 build verified. Hardware installation is not confirmed.
+
+## Previous Lighting Synchronization Release
+
 Version `1793371461999` synchronizes follow-matrix exterior illumination with
 the matrix power animation. GPIO4/5 smoothly reach the configured channel levels
 over 700 ms before opening starts. They hold through the complete closing

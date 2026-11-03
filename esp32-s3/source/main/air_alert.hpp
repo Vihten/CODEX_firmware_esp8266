@@ -7,6 +7,12 @@
 namespace air_alert {
 
 enum class Level : uint8_t { Clear = 0, Yellow = 1, Red = 2, Unknown = 3, Unspecified = 4 };
+
+// Reclassify an existing warning, never invent an all-clear or downgrade a type.
+constexpr bool sameEventLevel(Level previous, Level next) {
+  return previous == next || (previous == Level::Unspecified &&
+      (next == Level::Yellow || next == Level::Red));
+}
 enum class Failure : uint8_t { None, Memory, Dns, Tls, Write, Read, Http, Payload, Timeout };
 
 constexpr const char *failureName(Failure failure) {
@@ -80,7 +86,7 @@ struct State {
         (result.headId < result.messageId || result.messageTime < 1577836800 ||
          result.headId < telegramHeadId || result.messageId < telegramMessageId ||
          (result.messageId == telegramMessageId &&
-          (result.level != last || result.messageTime != telegramMessageTime)))) return false;
+          (!sameEventLevel(last, result.level) || result.messageTime != telegramMessageTime)))) return false;
     accept(result.level, result.valid, now);
     if (result.valid && result.messageId) {
       telegramHeadId = result.headId;

@@ -20,6 +20,16 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793709240897` moves mbedTLS dynamic allocations into the mandatory
+8 MiB PSRAM to avoid TLS setup failures when internal RAM is fragmented.
+Certificate and hostname verification remain enabled for Telegram and GitHub.
+The same verified Telegram event ID and timestamp may now refine an unspecified
+warning to yellow/red, without accepting an all-clear or a different known type.
+Validation: 48 native air-alert tests, native renderer export and Dart analysis
+passed. ESP32-S3 build/configuration verified; live recovery is not yet confirmed.
+
+## Previous Alert-Level Release
+
 Version `1793693656829` recognizes an explicit yellow alert level as the drone
 indicator and an explicit red level as the missile indicator, without requiring
 the additional threat-description phrase. Conflicting levels/descriptions remain

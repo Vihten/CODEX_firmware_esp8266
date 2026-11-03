@@ -319,7 +319,7 @@ PollResult poll(const PollJob &job) {
           page.eventTime <= headTime &&
           page.eventId >= job.knownEventId && page.eventTime >= job.knownEventTime &&
           (page.eventId != job.knownEventId ||
-           (page.level == job.knownLevel && page.eventTime == job.knownEventTime));
+           (sameEventLevel(job.knownLevel, page.level) && page.eventTime == job.knownEventTime));
       break;
     }
     if (job.knownEventId && page.oldestId <= job.knownHeadId) {

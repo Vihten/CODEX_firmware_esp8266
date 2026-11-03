@@ -6,6 +6,11 @@ S3 as its primary target; ESP8266 releases remain only in Git history.
 
 ## External Illumination
 
+TLS dynamic allocations use the mandatory external PSRAM rather than the
+fragmented internal heap. Certificate-chain and hostname checks remain enabled.
+An unchanged Telegram event ID/timestamp may refine an unspecified active alert
+to yellow/red, but cannot clear it or replace an already identified threat type.
+
 Overview provides two independent 0-100 percent PWM channels: GPIO4 for the
 first LED pair and GPIO5 for the second. GPIO18 remains the matrix data output.
 Hardware LEDC runs at 1 kHz / 10-bit resolution without a PWM task or ISR.

@@ -20,6 +20,17 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793712299571` updates the gray device render from CodexLimiterNewFinalNew,
+including the revised end caps and exterior LED mounting platforms. The live
+matrix aperture transform and clickable housing contours match the new geometry.
+Matrix frame colors, brightness processing and physical 30 FPS are unchanged.
+Only the rendered asset is published; the original CAD model is not included.
+Validation: antialiased gray asset checks, 36 preview tests, native renderer
+export, desktop/mobile browser inspection and ESP32-S3 build passed.
+Installation on the physical controller is unconfirmed.
+
+## Previous TLS Memory Release
+
 Version `1793709240897` moves mbedTLS dynamic allocations into the mandatory
 8 MiB PSRAM to avoid TLS setup failures when internal RAM is fragmented.
 Certificate and hostname verification remain enabled for Telegram and GitHub.

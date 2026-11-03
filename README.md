@@ -20,6 +20,17 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793714006780` separates the housing hover contours from the exterior
+LED mounting platforms. Each of the four platforms has an independent hit area
+and opens the existing exterior-light form in the device settings dialog.
+Closing restores the original form and focus without duplicating controls.
+The matrix preview transform, RGB processing and physical 30 FPS are unchanged.
+Validation: desktop/mobile browser checks click all four unobscured platforms
+and verify the exterior-light modal. Native renderer export and S3 build pass.
+Physical installation is not confirmed.
+
+## Previous Device Model Release
+
 Version `1793712299571` updates the gray device render from CodexLimiterNewFinalNew,
 including the revised end caps and exterior LED mounting platforms. The live
 matrix aperture transform and clickable housing contours match the new geometry.

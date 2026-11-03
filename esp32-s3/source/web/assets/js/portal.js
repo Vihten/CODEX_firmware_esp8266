@@ -150,6 +150,7 @@
         brightness: {title: 'Яскравість матриці', form: one('form[action="/brightness"]')},
         power: {title: 'Живлення матриці', form: one('form[action="/power"]')},
         schedule: {title: 'Розклад матриці', form: one('form[action="/schedule"]')},
+        lighting: {title: 'Зовнішня підсвітка', form: one('form[action="/external-light"]')},
       };
       const controls = one('[data-device-controls]');
       if (controls && content && heading && typeof settingsDialog.showModal === 'function' &&

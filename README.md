@@ -20,6 +20,17 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793714687229` replaces approximate hover outlines with contours traced
+from CAD body-ID passes in the exact device render camera. Housing contours
+respect occluding caps; each LED platform includes its matching shutter and
+visible LED bodies. Four independent lighting hit targets remain unchanged.
+The image, live matrix projection, colors, brightness and physical 30 FPS are
+unchanged. Desktop/mobile browser checks click all four mounting platforms;
+36 preview tests, native renderer export and S3 build pass.
+Controller installation is not confirmed.
+
+## Previous Interactive Mounts Release
+
 Version `1793714006780` separates the housing hover contours from the exterior
 LED mounting platforms. Each of the four platforms has an independent hit area
 and opens the existing exterior-light form in the device settings dialog.

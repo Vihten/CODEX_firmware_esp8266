@@ -20,6 +20,16 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793717704114` hides the duplicate exterior-light panel below the device
+when interactive device settings are available. LED mounting-platform clicks
+continue moving the original light form into the modal, preserving settings and
+restoring it to the hidden panel on close. Without JavaScript/native dialog
+support the standalone panel remains available as a fallback.
+Desktop/mobile browser checks verify the panel stays hidden through all four
+platform clicks and modal close. Matrix rendering and brightness are unchanged.
+
+## Previous CAD Contours Release
+
 Version `1793714687229` replaces approximate hover outlines with contours traced
 from CAD body-ID passes in the exact device render camera. Housing contours
 respect occluding caps; each LED platform includes its matching shutter and

@@ -153,6 +153,9 @@
         lighting: {title: 'Зовнішня підсвітка', form: one('form[action="/external-light"]')},
       };
       const controls = one('[data-device-controls]');
+      const lightPanel = one('#external-light-panel');
+      if (lightPanel && content && heading && targets.lighting.form &&
+          typeof settingsDialog.showModal === 'function') lightPanel.hidden = true;
       if (controls && content && heading && typeof settingsDialog.showModal === 'function' &&
           Object.values(targets).every(target => target.form)) controls.hidden = true;
       let moved = null, placeholder = null, trigger = null;

@@ -420,8 +420,15 @@ class Parser {
         hasText_ = true; textDepth_ = depth_ + 1; text_ = detail::Text{};
       }
       if (postDepth_ && !textDepth_ && !excluded && detail::nameEqual(tag.name, "time")) {
-        if (hasTime_ || !detail::timestamp(tag.date, time_) || tag.empty) return false;
-        hasTime_ = true;
+        // Telegram also uses <time> for video duration, without a datetime.
+        // Ignore only that known metadata shape; publication dates stay mandatory.
+        bool duration, durationScript;
+        if (!detail::classToken(tag.classes, "message_video_duration", duration) ||
+            !detail::classToken(tag.classes, "js-message_video_duration", durationScript)) return false;
+        if (!(duration && durationScript && !tag.date.data)) {
+          if (hasTime_ || !detail::timestamp(tag.date, time_) || tag.empty) return false;
+          hasTime_ = true;
+        }
       }
       if (textDepth_ && !parentHidden && (block(tag.name) || exclude(tag.name))) text_.newline();
       if (detail::nameEqual(tag.name, "script") || detail::nameEqual(tag.name, "style")) {

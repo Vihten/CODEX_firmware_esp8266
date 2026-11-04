@@ -98,7 +98,7 @@ struct WifiEvent {
   uint16_t reason = 0;
   esp_netif_ip_info_t ip = {};
 };
-struct TelemetryRequest { uint32_t id; uint32_t receivedAt; char packet[160]; };
+struct TelemetryRequest { uint32_t id; uint32_t receivedAt; char packet[200]; };
 struct TelemetryReply { uint32_t id; bool accepted; char ack[64]; };
 struct View {
   bool buzzerReady = false;
@@ -109,6 +109,8 @@ struct View {
   agent_update::Table agentUpdates;
   bool agentUpdateKeyReady = false;
   weekly::Store weekly;
+  weekly::Store lifetime;
+  bool lifetimeDirty = false, lifetimeSaveFailed = false;
   bool weeklyDirty = false, weeklySaveFailed = false;
   ControlFrame control;
   RenderStatus render;
@@ -143,7 +145,10 @@ struct Model {
   agent_update::Table agentUpdates;
   uint64_t actionSequence = 0;
   weekly::Store weekly;
+  weekly::Store lifetime;
+  bool lifetimeDirty = false, lifetimeSaveFailed = false;
   bool weeklyDirty = false, weeklySaveFailed = false;
+  bool rankingReadFailed = false;
   uint32_t weeklySavedAt = 0;
   Settings settings;
   memorial::State memorial;
@@ -276,30 +281,53 @@ bool uninstallAcknowledgmentWindow(const agent_update::Table &table, uint32_t id
 void loadWeekly() {
   if (!model.nvsReady) return;
   nvs_handle_t handle;
-  if (nvs_open("led_forge_s3", NVS_READONLY, &handle) != ESP_OK) return;
-  weekly::Store stored;
-  size_t size = sizeof(stored);
-  const esp_err_t result = nvs_get_blob(handle, "weekly_tokens", &stored, &size);
+  const esp_err_t opened = nvs_open("led_forge_s3", NVS_READONLY, &handle);
+  if (opened == ESP_ERR_NVS_NOT_FOUND) return;
+  if (opened != ESP_OK) {
+    model.weeklySaveFailed = model.lifetimeSaveFailed = model.rankingReadFailed = true; return;
+  }
+  weekly::RankingStore rankings;
+  size_t size = sizeof(rankings);
+  const esp_err_t result = nvs_get_blob(handle, "token_rankings", &rankings, &size);
+  if (result == ESP_ERR_NVS_NOT_FOUND) {
+    // Preserve the existing weekly history, without inventing lifetime totals.
+    weekly::Store stored;
+    size = sizeof(stored);
+    const esp_err_t legacy = nvs_get_blob(handle, "weekly_tokens", &stored, &size);
+    if (legacy == ESP_OK && size == sizeof(stored) && weekly::valid(stored)) model.weekly = stored;
+    else if (legacy != ESP_ERR_NVS_NOT_FOUND) {
+      model.weeklySaveFailed = true; model.rankingReadFailed = true;
+    }
+  } else if (result == ESP_OK && size == sizeof(rankings) && weekly::valid(rankings)) {
+    model.weekly = rankings.week;
+    model.lifetime = rankings.total;
+  } else {
+    // Do not overwrite corrupt authoritative history with empty defaults.
+    model.weeklySaveFailed = model.lifetimeSaveFailed = true;
+    model.rankingReadFailed = true;
+  }
   nvs_close(handle);
-  if (result == ESP_ERR_NVS_NOT_FOUND) return;
-  if (result == ESP_OK && size == sizeof(stored) && weekly::valid(stored)) model.weekly = stored;
-  else model.weeklySaveFailed = true;
 }
 bool saveWeekly() {
-  if (!model.weeklyDirty) return true;
-  if (!model.nvsReady) { model.weeklySaveFailed = true; return false; }
-  weekly::Store stored = model.weekly;
+  if (!model.weeklyDirty && !model.lifetimeDirty) return true;
+  if (!model.nvsReady || model.rankingReadFailed) {
+    model.weeklySaveFailed = model.lifetimeSaveFailed = true; return false;
+  }
+  weekly::RankingStore stored;
+  stored.week = model.weekly; stored.total = model.lifetime;
+  stored.week.crc = weekly::checksum(stored.week);
+  stored.total.crc = weekly::checksum(stored.total);
   stored.crc = weekly::checksum(stored);
   nvs_handle_t handle;
   esp_err_t result = nvs_open("led_forge_s3", NVS_READWRITE, &handle);
   if (result == ESP_OK) {
-    result = nvs_set_blob(handle, "weekly_tokens", &stored, sizeof(stored));
+    result = nvs_set_blob(handle, "token_rankings", &stored, sizeof(stored));
     if (result == ESP_OK) result = nvs_commit(handle);
     nvs_close(handle);
   }
-  model.weeklySaveFailed = result != ESP_OK;
-  if (result != ESP_OK) return false;
-  model.weeklyDirty = false;
+  model.weeklySaveFailed = model.lifetimeSaveFailed = result != ESP_OK;
+  if (result != ESP_OK) { model.weeklyDirty = model.lifetimeDirty = true; return false; }
+  model.weeklyDirty = model.lifetimeDirty = false;
   model.weeklySavedAt = uptimeMs();
   return true;
 }
@@ -698,35 +726,41 @@ bool parseTelemetry(const char *packet, AgentInput &agent, bool &legacy, uint8_t
   if (!agent.name[0]) std::snprintf(agent.name, sizeof(agent.name), "%08lX", (unsigned long)agent.clientId);
   return true;
 }
-bool parseWeeklyTelemetry(const char *packet, weekly::Entry &entry, uint32_t &week) {
+bool parseWeeklyTelemetry(const char *packet, weekly::Entry &entry, uint32_t &week,
+                          uint64_t *lifetimeTokens = nullptr) {
   const size_t length = std::strlen(packet);
-  if (!length || length >= 160) return false;
-  char buffer[160]; std::memcpy(buffer, packet, length + 1);
-  char *fields[7] = {buffer}; size_t count = 1;
+  if (!length || length >= 200) return false;
+  entry = weekly::Entry{};
+  char buffer[200]; std::memcpy(buffer, packet, length + 1);
+  char *fields[9] = {buffer}; size_t count = 1;
   for (size_t i = 0; i < length; ++i) if (buffer[i] == ',') {
-    if (count == 7) return false;
+    if (count == 9) return false;
     buffer[i] = 0; fields[count++] = buffer + i + 1;
   }
+  const bool v2 = !std::strcmp(fields[0], "LFT2");
+  const unsigned color = v2 ? 7 : 5, name = color + 1;
   uint32_t account;
-  if (count != 7 || std::strcmp(fields[0], "LFT1") ||
+  if (count != (v2 ? 9U : 7U) || (!v2 && std::strcmp(fields[0], "LFT1")) ||
       !hexValue(fields[1], 1, 8, account) || account != PROJECT_ACCOUNT_FINGERPRINT ||
       !hexValue(fields[2], 1, 8, entry.clientId) || !entry.clientId ||
-      std::strlen(fields[3]) != 8 || !hexValue(fields[5], 6, 6, entry.rgb)) return false;
+      std::strlen(fields[3]) != 8 || !hexValue(fields[color], 6, 6, entry.rgb)) return false;
   week = 0;
   for (const char *c = fields[3]; *c; ++c) {
     if (*c < '0' || *c > '9') return false;
     week = week * 10 + unsigned(*c - '0');
   }
-  entry.tokens = 0;
-  if (!fields[4][0]) return false;
-  for (const char *c = fields[4]; *c; ++c) {
-    if (*c < '0' || *c > '9' || entry.tokens > (weekly::maximum - unsigned(*c - '0')) / 10) return false;
-    entry.tokens = entry.tokens * 10 + unsigned(*c - '0');
+  if (!unsignedValue(fields[4], weekly::maximum, entry.tokens)) return false;
+  if (v2) {
+    uint64_t all = 0, revision = 0;
+    if (!unsignedValue(fields[5], weekly::maximum, all) || all < entry.tokens ||
+        !unsignedValue(fields[6], weekly::maxRevision, revision)) return false;
+    weekly::setRevision(entry, revision);
+    if (lifetimeTokens) *lifetimeTokens = all;
   }
-  const size_t nameLength = std::strlen(fields[6]);
+  const size_t nameLength = std::strlen(fields[name]);
   if (nameLength > 96 || (nameLength & 1)) return false;
   for (size_t i = 0; i < nameLength / 2; ++i) {
-    const int high = hexDigit(fields[6][i * 2]), low = hexDigit(fields[6][i * 2 + 1]);
+    const int high = hexDigit(fields[name][i * 2]), low = hexDigit(fields[name][i * 2 + 1]);
     if (high < 0 || low < 0) return false;
     entry.name[i] = char((high << 4) | low);
   }
@@ -735,18 +769,31 @@ bool parseWeeklyTelemetry(const char *packet, weekly::Entry &entry, uint32_t &we
   return true;
 }
 bool acceptWeeklyTelemetry(const char *packet, char (&ack)[64]) {
-  weekly::Entry entry; uint32_t week = 0;
-  if (!parseWeeklyTelemetry(packet, entry, week) || week != currentWeek()) return false;
-  serviceWeekly();
+  weekly::Entry entry; uint32_t week = 0; uint64_t lifetimeTokens = 0;
+  if (model.rankingReadFailed) return false;
+  if (!parseWeeklyTelemetry(packet, entry, week, &lifetimeTokens) || !week || week != currentWeek()) return false;
   if (const auto *override = findOverride(entry.clientId)) entry.rgb = override->rgb;
-  bool changed = false;
-  if (!weekly::merge(model.weekly, week, entry, changed)) return false;
+  bool changed = false, allChanged = false;
+  if (weekly::v2(entry)) {
+    if (!weekly::mergeV2(model.weekly, model.lifetime, week, entry, lifetimeTokens, changed, allChanged)) return false;
+  } else {
+    // Lifetime's marker persists when the weekly table rolls over.
+    for (const auto &all : model.lifetime.entries)
+      if (all.clientId == entry.clientId && weekly::v2(all)) {
+        std::snprintf(ack, sizeof(ack), "LFT1_ACK,%06lX,%08lX", (unsigned long)model.deviceId, (unsigned long)entry.clientId);
+        return true;
+      }
+    serviceWeekly();
+    if (!weekly::merge(model.weekly, week, entry, changed)) return false;
+  }
   model.weeklyDirty |= changed;
-  std::snprintf(ack, sizeof(ack), "LFT1_ACK,%06lX,%08lX", (unsigned long)model.deviceId, (unsigned long)entry.clientId);
+  model.lifetimeDirty |= allChanged;
+  std::snprintf(ack, sizeof(ack), "%s_ACK,%06lX,%08lX", weekly::v2(entry) ? "LFT2" : "LFT1",
+      (unsigned long)model.deviceId, (unsigned long)entry.clientId);
   return true;
 }
 bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
-  if (!std::strncmp(packet, "LFT1,", 5)) return acceptWeeklyTelemetry(packet, ack);
+  if (!std::strncmp(packet, "LFT1,", 5) || !std::strncmp(packet, "LFT2,", 5)) return acceptWeeklyTelemetry(packet, ack);
   AgentInput incoming; bool legacy = false; uint8_t remaining = 100, activity = 0;
   if (!parseTelemetry(packet, incoming, legacy, remaining, activity)) return false;
   const uint32_t now = uptimeMs();
@@ -799,10 +846,10 @@ void serviceTelemetry() {
   }
   if (model.udp < 0) return;
   for (unsigned i = 0; i < 8; ++i) {
-    char packet[161]; sockaddr_in peer{}; socklen_t size = sizeof(peer);
+    char packet[201]; sockaddr_in peer{}; socklen_t size = sizeof(peer);
     const int received = recvfrom(model.udp, packet, sizeof(packet), MSG_DONTWAIT, reinterpret_cast<sockaddr *>(&peer), &size);
     if (received < 0) break;
-    if (!received || received >= 160 || std::memchr(packet, 0, received)) continue;
+    if (!received || received >= 200 || std::memchr(packet, 0, received)) continue;
     packet[received] = 0; char ack[64] = {};
     if (acceptTelemetry(packet, ack, uptimeMs())) sendto(model.udp, ack, std::strlen(ack), 0, reinterpret_cast<sockaddr *>(&peer), size);
   }
@@ -875,17 +922,29 @@ void restoreWeeklyAgents(View &view) {
     }
   }
 }
+void overlayRanking(weekly::Store &store) {
+  for (auto &entry : store.entries) {
+    if (!entry.clientId) continue;
+    for (const auto &agent : model.control.agents) {
+      if (agent.clientId == entry.clientId && agent.name[0]) {
+        copy(entry.name, agent.name);
+        entry.rgb = agent.rgb;
+        break;
+      }
+    }
+    if (const auto *color = findOverride(entry.clientId)) entry.rgb = color->rgb;
+  }
+}
 void publishView() {
   View view;
   view.agentUpdates = model.agentUpdates;
   view.agentUpdateKeyReady = agentUpdateKey[0] != 0;
   view.weekly = model.weekly;
+  view.lifetime = model.lifetime;
+  view.lifetimeDirty = model.lifetimeDirty; view.lifetimeSaveFailed = model.lifetimeSaveFailed;
   view.weeklyDirty = model.weeklyDirty; view.weeklySaveFailed = model.weeklySaveFailed;
-  for (auto &entry : view.weekly.entries) {
-    if (const auto *color = findOverride(entry.clientId)) entry.rgb = color->rgb;
-    else for (const auto &agent : model.control.agents)
-      if (agent.clientId == entry.clientId && agent.name[0]) { entry.rgb = agent.rgb; break; }
-  }
+  overlayRanking(view.weekly);
+  overlayRanking(view.lifetime);
   view.control = model.control; view.render = model.render;
   copy(view.ssid, model.settings.ssid); copy(view.ap, model.apName); copy(view.message, model.message); copy(view.ota, model.ota);
   view.deviceId = model.deviceId; view.rssi = model.rssi; view.power = model.settings.power;
@@ -1463,15 +1522,17 @@ void writeTokenCount(Html &html, uint64_t value) {
     const char digit[2] = {digits[i], 0}; html.text(digit);
   }
 }
-void writeWeekly(Html &html, const View &view) {
-  html.file("templates/weekly/open.html");
-  if (view.weekly.week) html.format("%02lu.%02lu.%04lu · понеділок–неділя, Київ", (unsigned long)(view.weekly.week % 100),
-      (unsigned long)(view.weekly.week / 100 % 100), (unsigned long)(view.weekly.week / 10000));
+void writeRanking(Html &html, const View &view, bool lifetime) {
+  const auto &store = lifetime ? view.lifetime : view.weekly;
+  html.file(lifetime ? "templates/lifetime/open.html" : "templates/weekly/open.html");
+  if (lifetime) html.text("За доступними журналами агентів");
+  else if (store.week) html.format("%02lu.%02lu.%04lu · понеділок–неділя, Київ", (unsigned long)(store.week % 100),
+      (unsigned long)(store.week / 100 % 100), (unsigned long)(store.week / 10000));
   else html.text("Очікування синхронізації часу");
-  html.file("templates/weekly/table.html");
+  html.file(lifetime ? "templates/lifetime/table.html" : "templates/weekly/table.html");
   const weekly::Entry *sorted[weekly::capacity] = {};
   size_t count = 0; double total = 0;
-  for (const auto &entry : view.weekly.entries) if (entry.clientId) { sorted[count++] = &entry; total += double(entry.tokens); }
+  for (const auto &entry : store.entries) if (entry.clientId) { sorted[count++] = &entry; total += double(entry.tokens); }
   std::sort(sorted, sorted + count, [](const weekly::Entry *a, const weekly::Entry *b) {
     return a->tokens != b->tokens ? a->tokens > b->tokens : a->clientId < b->clientId;
   });
@@ -1486,9 +1547,12 @@ void writeWeekly(Html &html, const View &view) {
     if (tenths % 10) html.format(",%u", tenths % 10);
     html.text("%</td></tr>");
   }
-  html.file("templates/weekly/close.html");
-  html.format("<p class='muted' data-weekly-empty%s>Ще немає даних за цей тиждень.</p></section>", count ? " hidden" : "");
+  html.file(lifetime ? "templates/lifetime/close.html" : "templates/weekly/close.html");
+  html.format("<p class='muted' data-%s-empty%s>%s</p></section>", lifetime ? "lifetime" : "weekly",
+      count ? " hidden" : "", lifetime ? "Ще немає даних із журналів агентів." : "Ще немає даних за цей тиждень.");
 }
+void writeWeekly(Html &html, const View &view) { writeRanking(html, view, false); }
+void writeLifetime(Html &html, const View &view) { writeRanking(html, view, true); }
 esp_err_t page(httpd_req_t *request) {
   HandlerScope scope; View view;
   if (!snapshot(view)) return error(request, "503 Service Unavailable", "Controller busy; retry.");
@@ -1523,7 +1587,7 @@ esp_err_t page(httpd_req_t *request) {
   if (view.dirty) html.file("templates/shell/saving-notice.html");
   if (view.restarting) html.file("templates/shell/restart-notice.html");
   if (!view.render.assetsReady || view.render.ledError) html.file("templates/shell/matrix-error-notice.html");
-  if (agentsPage) { writeWeekly(html, view); html.file("templates/shell/section-open.html"); writeAgents(html, view); html.file("templates/summary/section-close.html"); }
+  if (agentsPage) { writeWeekly(html, view); writeLifetime(html, view); html.file("templates/shell/section-open.html"); writeAgents(html, view); html.file("templates/summary/section-close.html"); }
   else if (settingsPage) writeSettings(html, view);
   else writeOverview(html, view);
   html.file("templates/shell/footer.html");
@@ -1796,15 +1860,17 @@ esp_err_t portalStatus(httpd_req_t *request) {
         uptimeMs() - update->polledAt < agent_update::freshMs);
     number(item, "management_state", update ? update->actionState : 0);
   }
-  cJSON *ranking = cJSON_AddObjectToObject(root, "weekly");
+  for (unsigned kind = 0; kind < 2; ++kind) {
+  const auto &store = kind ? view.lifetime : view.weekly;
+  cJSON *ranking = cJSON_AddObjectToObject(root, kind ? "lifetime" : "weekly");
   if (!ranking) okay = false;
   else {
-    number(ranking, "week", view.weekly.week);
-    boolean(ranking, "dirty", view.weeklyDirty);
-    boolean(ranking, "save_failed", view.weeklySaveFailed);
+    if (!kind) number(ranking, "week", store.week);
+    boolean(ranking, "dirty", kind ? view.lifetimeDirty : view.weeklyDirty);
+    boolean(ranking, "save_failed", kind ? view.lifetimeSaveFailed : view.weeklySaveFailed);
     cJSON *rows = cJSON_AddArrayToObject(ranking, "entries");
     if (!rows) okay = false;
-    else for (const auto &entry : view.weekly.entries) {
+    else for (const auto &entry : store.entries) {
       if (!entry.clientId) continue;
       cJSON *item = cJSON_CreateObject();
       if (!item) { okay = false; break; }
@@ -1814,6 +1880,7 @@ esp_err_t portalStatus(httpd_req_t *request) {
       string(item, "id", id); string(item, "name", entry.name); string(item, "color", color);
       number(item, "tokens", double(entry.tokens));
     }
+  }
   }
   // Keep the bounded response off both the HTTP stack and TLS's scarce internal heap.
   std::unique_ptr<char, decltype(&heap_caps_free)> body(
@@ -2733,7 +2800,7 @@ void serviceMaintenance() {
         model.persistRetryAt = now + (saved ? 0 : 5000); releaseMaintenance(); break;
       }
       case Maintenance::Ota:
-        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || web_auth::pendingSave() || web_auth::busy() || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.lifetimeDirty || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || web_auth::pendingSave() || web_auth::busy() || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
         if (!model.render.assetsReady || model.render.ledError) {
           otaMessage("OTA refused: renderer unhealthy"); model.manifestReady = false; releaseMaintenance(); break;
         }
@@ -2744,7 +2811,7 @@ void serviceMaintenance() {
         if (model.otaVisualTimedOut) return;
         model.manifestReady = false; model.otaAt = uptimeMs() + 60000; releaseMaintenance(); break;
       case Maintenance::Restart:
-        if (model.dirty || model.weeklyDirty || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || web_auth::pendingSave()) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.lifetimeDirty || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || web_auth::pendingSave()) { releaseMaintenance(); break; }
         if (!activeHandlers.load() && !web_auth::busy() && !uxQueueMessagesWaiting(commandQueue)) esp_restart();
         else if (now - model.maintenanceAt >= kMaintenanceTimeout) {
           model.restarting = false; ++model.maintenanceTimeouts;
@@ -2769,16 +2836,16 @@ void serviceMaintenance() {
       (model.airDirty && due(now, model.persistRetryAt)) ||
       (model.lightDirty && due(now, model.persistRetryAt)) ||
       (model.buzzerDirty && now - model.buzzerDirtyAt >= 300 && due(now, model.persistRetryAt)) ||
-      (model.weeklyDirty && (now - model.weeklySavedAt >= 300000 || model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
+      ((model.weeklyDirty || model.lifetimeDirty) && (now - model.weeklySavedAt >= 300000 || model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
       (model.confirmationPending && std::strcmp(webFilesVersion(), "unavailable") && model.wifiReady && model.httpReady && model.udp >= 0 &&
        model.render.watchdogReady && model.render.assetsReady && model.render.frames && !model.render.ledError && due(now, model.persistRetryAt))) {
     requestMaintenance(Maintenance::Persist); return;
   }
   if (model.restarting) {
-    if (!model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !web_auth::pendingSave() && !web_auth::busy() && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
+    if (!model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !web_auth::pendingSave() && !web_auth::busy() && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
     return;
   }
-  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
+  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
   if (!model.connected || model.dirty || model.confirmationPending || !model.render.assetsReady || model.render.ledError) return;
   if (model.updateRequested || due(now, model.otaAt)) queueManifestCheck();
 }

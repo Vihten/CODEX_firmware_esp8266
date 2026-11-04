@@ -80,3 +80,23 @@ preview JavaScript suites plus the native firmware network contract tests.
 Verify overview, agents, and settings with JavaScript enabled and disabled,
 including escaped values, active navigation, checked schedule days, disabled
 maintenance controls, mobile layout, and live preview.
+
+## Lifetime ranking integration
+
+Render two unframed sections using the existing weekly streaming boundaries.
+For lifetime emit `lifetime/open.html`, then escaped literal
+`За доступними журналами агентів`, then `lifetime/table.html`, then the
+same four-cell row markup as weekly, then `lifetime/close.html`.
+As for weekly, close.html ends the table wrapper only: the server must emit
+its own empty paragraph with `data-lifetime-empty` (hidden only when rows
+exist), then close the section. All three fragments have no numbered slots.
+Use `lifetime-ranking`, `lifetime-heading`, and `data-lifetime-*`; retain
+weekly IDs/selectors unchanged. Shared weekly CSS classes are intentional.
+The weekly period remains Monday–Sunday in Kyiv.
+
+`/status` supplies independent `weekly` and `lifetime` objects. Lifetime is
+`{entries:[{id,name,color,tokens}],dirty,save_failed}`. Tokens must be
+nonnegative safe JS integers; unsafe numbers are rejected, never rounded
+into fabricated totals. Percentages use exact BigInt sums. Missing ranking
+objects show unavailable text, not zero. Manual refresh is a human click
+using the existing `/status` request and sequential polling machinery.

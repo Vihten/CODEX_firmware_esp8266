@@ -24,10 +24,11 @@
       liveNodes.get(key).push(node);
     });
     const agentStates = new WeakMap();
-    const weeklyRoot = one('#weekly-ranking');
-    const weeklyRows = weeklyRoot && one('[data-weekly-rows]', weeklyRoot);
-    const weeklyEmpty = weeklyRoot && one('[data-weekly-empty]', weeklyRoot);
-    const weeklyRecords = new Map();
+    const rankings = ['weekly', 'lifetime'].map(kind => {
+      const root = one(`#${kind}-ranking`);
+      return {kind, root, rows: root && one(`[data-${kind}-rows]`, root),
+        empty: root && one(`[data-${kind}-empty]`, root), records: new Map()};
+    });
     const numeric = new Intl.NumberFormat('uk-UA');
     const decimal = new Intl.NumberFormat('uk-UA', {maximumFractionDigits: 1});
     const integer = new Intl.NumberFormat('uk-UA', {maximumFractionDigits: 0});
@@ -194,28 +195,41 @@
             event.clientY < bounds.top || event.clientY > bounds.bottom) settingsDialog.close();
       });
     }
-    const updateWeekly = (ranking, agents = []) => {
-      const root = weeklyRoot;
-      if (!root || !ranking || !Array.isArray(ranking.entries)) return;
+    const updateRanking = (view, ranking, agents = []) => {
+      const {root, rows: rankingRows, empty, records, kind} = view;
+      if (!root || !rankingRows) return;
+      if (!ranking || !Array.isArray(ranking.entries)) {
+        text(`[data-${kind}-state]`, 'Рейтинг недоступний у цій версії контролера', root);
+        text(`[data-${kind}-pending]`, '', root);
+        if (empty) { empty.hidden = false; empty.textContent = 'Немає доступних даних рейтингу'; }
+        if (rankingRows.children.length) rankingRows.replaceChildren();
+        records.clear();
+        return;
+      }
+      const seen = new Set();
       const entries = ranking.entries.filter(row => row && /^[0-9a-f]{8}$/i.test(row.id) &&
         Number.isSafeInteger(row.tokens) && row.tokens >= 0 && /^#[0-9a-f]{6}$/i.test(row.color))
-        .slice(0, 12).sort((a, b) => b.tokens - a.tokens || a.id.localeCompare(b.id));
-      const total = entries.reduce((sum, row) => sum + row.tokens, 0);
+        .filter(row => {
+          const id = row.id.toUpperCase();
+          if (seen.has(id) || id === '00000000') return false;
+          seen.add(id); return true;
+        }).slice(0, 12).sort((a, b) => b.tokens - a.tokens || a.id.localeCompare(b.id));
+      const total = entries.reduce((sum, row) => sum + BigInt(row.tokens), 0n);
       const retained = new Set();
       const rows = entries.map((row, index) => {
         const id = row.id.toUpperCase();
         retained.add(id);
-        let record = weeklyRecords.get(id);
+        let record = records.get(id);
         if (!record) {
           const tr = document.createElement('tr');
           const cells = Array.from({length: 4}, () => tr.appendChild(document.createElement('td')));
           const color = document.createElement('span');
           color.className = 'weekly-agent-color'; color.setAttribute('aria-hidden', 'true');
           record = {tr, cells, color, values: []};
-          weeklyRecords.set(id, record);
+          records.set(id, record);
         }
         const values = [String(index + 1), typeof row.name === 'string' ? row.name : row.id,
-          number(row.tokens), `${decimal.format(total ? 100 * row.tokens / total : 0)}%`];
+          number(row.tokens), `${decimal.format(total ? Number((BigInt(row.tokens) * 1000n + total / 2n) / total) / 10 : 0)}%`];
         values.forEach((value, column) => {
           if (record.values[column] === value) return;
           const td = record.cells[column];
@@ -226,19 +240,23 @@
         if (record.rgb !== row.color) { record.color.style.backgroundColor = row.color; record.rgb = row.color; }
         return record.tr;
       });
-      for (const id of weeklyRecords.keys()) if (!retained.has(id)) weeklyRecords.delete(id);
-      if (weeklyRows.children.length !== rows.length || rows.some((row, index) => weeklyRows.children[index] !== row))
-        weeklyRows.replaceChildren(...rows);
-      weeklyEmpty.hidden = entries.length > 0;
+      for (const id of records.keys()) if (!retained.has(id)) records.delete(id);
+      if (rankingRows.children.length !== rows.length || rows.some((row, index) => rankingRows.children[index] !== row))
+        rankingRows.replaceChildren(...rows);
+      if (empty) {
+        empty.hidden = entries.length > 0;
+        const label = kind === 'lifetime' ? 'Немає доступної статистики за журналами агентів' : 'За цей тиждень ще немає статистики токенів';
+        if (empty.textContent !== label) empty.textContent = label;
+      }
       const known = new Set(entries.map(row => row.id.toUpperCase()));
       const pending = Array.isArray(agents) ? agents.filter(agent => agent && agent.online &&
         typeof agent.id === 'string' && !known.has(agent.id.toUpperCase())).slice(0, 12) : [];
-      text('[data-weekly-pending]', pending.length ? `Очікується статистика токенів: ${pending.map(agent =>
+      text(`[data-${kind}-pending]`, pending.length ? `Очікується статистика токенів: ${pending.map(agent =>
         typeof agent.name === 'string' ? agent.name : agent.id).join(', ')}` : '', root);
       const week = String(ranking.week);
-      text('[data-weekly-period]', /^\d{8}$/.test(week) ?
+      if (kind === 'weekly') text('[data-weekly-period]', /^\d{8}$/.test(week) ?
         `${week.slice(6, 8)}.${week.slice(4, 6)}.${week.slice(0, 4)} · понеділок–неділя, Київ` : 'Очікування синхронізації часу', root);
-      text('[data-weekly-state]', ranking.save_failed ? 'Не вдалося зберегти статистику. Повторна спроба автоматично.' :
+      text(`[data-${kind}-state]`, ranking.save_failed ? 'Не вдалося зберегти статистику. Повторна спроба автоматично.' :
         ranking.dirty ? 'Є нові дані · збереження кожні 5 хвилин' : 'Збережено на контролері', root);
     };
     const duration = milliseconds => {
@@ -508,7 +526,7 @@
         all('[data-air-alert-play],[data-air-alert-stop]').forEach(button => { button.disabled = true; });
       }
       updateAgents(status.agents);
-      updateWeekly(status.weekly, status.agents);
+      rankings.forEach(view => updateRanking(view, status[view.kind], status.agents));
     };
     const schedule = delay => {
       if (timer !== null) clearTimeout(timer);
@@ -528,7 +546,7 @@
         request.manual = true;
         all('[data-refresh]').forEach(button => { button.disabled = true; });
         connection('Оновлення…');
-        text('[data-weekly-state]', 'Оновлення рейтингу…');
+        text('[data-weekly-state],[data-lifetime-state]', 'Оновлення рейтингу…');
       };
       if (active) {
         if (manual && feedback && !active.manual && !active.reason) manualFeedback(active);
@@ -562,7 +580,7 @@
           ++failures;
           baseline = null;
           live('fps', missing);
-          text('[data-weekly-state]', 'Не вдалося оновити рейтинг. Спробуйте ще раз.');
+          text('[data-weekly-state],[data-lifetime-state]', 'Не вдалося оновити рейтинг. Спробуйте ще раз.');
           text('[data-air-alert-state]', 'Немає актуальних даних');
           text('[data-air-alert-updated]', 'Зв’язок із контролером втрачено');
           connection(request.reason === 'timeout' ? 'Контролер не відповів вчасно' : 'Не вдалося оновити дані', 'error');

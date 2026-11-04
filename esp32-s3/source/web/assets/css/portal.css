@@ -171,14 +171,26 @@ table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
 .agent-name-row input{flex:1 1 12rem;min-width:0}
 .agent-uninstall{margin-top:1rem}
 .weekly-refresh{display:inline-flex;align-items:center;gap:.5rem}
-[data-weekly-pending]{overflow-wrap:anywhere}
-.weekly-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+[data-weekly-pending],[data-lifetime-pending]{overflow-wrap:anywhere}
+.weekly-table{width:100%;min-width:36rem;border-collapse:collapse;font-variant-numeric:tabular-nums}
 .weekly-table th,.weekly-table td{padding:.75rem .5rem;text-align:right;border-bottom:1px solid var(--line)}
 .weekly-table th{color:var(--muted);font-size:.8125rem;font-weight:500}
 .weekly-table th:nth-child(2),.weekly-table td:nth-child(2){text-align:left;overflow-wrap:anywhere;max-width:20rem}
 .weekly-table th:first-child,.weekly-table td:first-child{text-align:left;padding-left:0}
 .weekly-table td:nth-child(3),.weekly-table td:nth-child(4){white-space:nowrap}
 .weekly-table td:nth-child(3){font-size:.875rem}
+@media(max-width:640px){
+  .weekly-table{min-width:0}
+  .weekly-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+  .weekly-table tbody{display:block}
+  .weekly-table tr{display:grid;grid-template-columns:1.75rem minmax(0,1fr) auto;column-gap:.5rem;padding:.75rem 0;border-bottom:1px solid var(--line)}
+  .weekly-table td{display:block;border:0;padding:0;min-width:0}
+  .weekly-table td:first-child{grid-column:1;grid-row:1 / 3;padding-top:.125rem}
+  .weekly-table td:nth-child(2){grid-column:2 / 4;grid-row:1;max-width:none;text-align:left}
+  .weekly-table td:nth-child(3){grid-column:2;grid-row:2;text-align:left;white-space:normal;overflow-wrap:anywhere;margin-top:.375rem}
+  .weekly-table td:nth-child(3)::before{content:'Токени: ';color:var(--muted);font-size:.75rem}
+  .weekly-table td:nth-child(4){grid-column:3;grid-row:2;margin-top:.375rem;font-size:.8125rem;color:var(--muted)}
+}
 .weekly-agent-color{display:inline-block;width:.7rem;height:.7rem;margin-right:.5rem;border-radius:2px}
 .pill{display:inline-block;color:var(--muted);font-size:.8125rem}
 @media(hover:hover) and (pointer:fine){button:not(:disabled):hover{filter:brightness(1.08)}.secondary:not(:disabled):hover,.quickbuttons button:hover,.filter button:hover,.button:hover{border-color:var(--accent)}a:hover{color:var(--text)}}

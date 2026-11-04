@@ -20,6 +20,32 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793785261989` adds independent lifetime and Kyiv weekly token rankings.
+LFT2 snapshots include both totals and a persistent revision, allowing corrected
+lower totals without re-adding inherited fork history. Weekly/lifetime tables and
+revision authority share an atomic CRC-protected NVS blob; old weekly history is
+retained and old LFT1 reports cannot overwrite a corrected LFT2 agent.
+
+Bundled agent `20261104094100` rebuilds V1 checkpoints from available local logs,
+backs up old state, accounts for inherited fork baselines and independent counter
+resets, and keeps identity/name/color/settings. Lifetime is local-log usage, not
+account billing. Identical reports do not churn controller NVS revisions.
+Existing agents require one manual bootstrap update because the historical
+signing private key is unavailable; signed web updates work after that bootstrap.
+No signature checks or trust protections are disabled.
+
+Telegram polling also distinguishes video-duration `time` elements from official
+publication dates, fixing the reproduced HTTP-200 payload rejection. TLS,
+forward/quote filtering and stale-state warnings remain enforced.
+
+Validation: Windows PowerShell token/migration/HTTP/backlog/signing suites,
+native firmware tests, native renderer export, ESP32-S3 build and Chromium
+desktop/mobile ranking checks passed. Physical matrix remains 30 FPS. Actual
+controller installation, live Telegram recovery and remote agent deployment
+have not been confirmed.
+
+## Previous Duplicate Panel Release
+
 Version `1793717704114` hides the duplicate exterior-light panel below the device
 when interactive device settings are available. LED mounting-platform clicks
 continue moving the original light form into the modal, preserving settings and

@@ -4,6 +4,33 @@ This is a separate ESP-IDF firmware target for ESP32-S3-WROOM-1-N16R8:
 16 MiB quad flash and 8 MiB octal PSRAM. The firmware repository now publishes
 S3 as its primary target; ESP8266 releases remain only in Git history.
 
+## Token Rankings
+
+The agents page contains independent lifetime and Kyiv Monday-to-Sunday weekly
+rankings. Lifetime means usage reconstructed from the available local session
+logs, not account billing or a guarantee of complete historical usage.
+
+Updated agents send LFT2 snapshots with weekly/lifetime totals and a persistent
+monotonic revision. A newer corrected snapshot may reduce an inflated historical
+total. Duplicate snapshots do not add tokens or force NVS writes. Once an agent
+has reported LFT2, its legacy LFT1 packets cannot restore old inflated values.
+Both tables and revision authority share one CRC-protected NVS blob, written
+behind the existing renderer/preview maintenance barrier. Existing weekly-only
+history is retained on migration; it is never copied into lifetime rankings.
+
+Agent V2 checkpoints rebuild from local logs and preserve the old checkpoint as
+`weekly-token-state.json.pre-v2.bak`. Forked sessions seed inherited counters
+using lineage/predecessor evidence instead of counting their full first snapshot.
+Names, colors, controller discovery settings and account binding are preserved.
+The current signing key differs from the historical agent release. Existing
+agents must run the new bootstrap archive's update command once to enroll the
+current public key; trust is never replaced by an unauthenticated network reply.
+After that, the existing signed web-update workflow remains available.
+
+Telegram publication timestamps are distinguished from video-duration `time`
+elements. Video posts no longer invalidate an otherwise valid official feed;
+forwarded/quoted messages, invalid dates and stale data remain filtered.
+
 ## External Illumination
 
 TLS dynamic allocations use the mandatory external PSRAM rather than the

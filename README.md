@@ -20,6 +20,14 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793801971740` bundles signed LAN agent `20261104161600`.
+Update polling now uses one isolated background runspace instead of spawning
+PowerShell every 15 seconds. Limit queries reuse one initialized Codex app-server
+connection, with bounded failure cooldown and worker-shutdown cleanup. Agent
+identity, statistics, signing trust and rollback checks remain unchanged.
+
+## Previous Agent Release
+
 Version `1793800016030` bundles signed LAN agent `20261104154800`.
 Periodic update checks now launch PowerShell with `UseShellExecute=false` and
 `CreateNoWindow=true`, preventing a console from appearing every polling cycle.

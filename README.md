@@ -20,6 +20,14 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793800016030` bundles signed LAN agent `20261104154800`.
+Periodic update checks now launch PowerShell with `UseShellExecute=false` and
+`CreateNoWindow=true`, preventing a console from appearing every polling cycle.
+The publisher key, signature validation, rollback and saved agent state remain
+unchanged. Existing bootstrapped agents can install this release through the web.
+
+## Previous Web Reliability Release
+
 Version `1793792992670` hardens authenticated web asset delivery: bounded 2 KiB
 request headers and shorter firmware/bundle cache validators. This reduces
 header pressure when a browser revalidates scripts and the device image.

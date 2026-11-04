@@ -2298,6 +2298,10 @@ bool machineRoute(const char *uri, httpd_method_t method) {
 bool initializeHttp() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG(); config.core_id = 0; config.stack_size = 16384;
   config.max_uri_handlers = 48; config.max_open_sockets = 4; config.lru_purge_enable = true;
+  // Cookies and browser cache validators share this buffer. The 1 KiB IDF
+  // default can reject authenticated asset requests before our handlers run.
+  // Keep the limit bounded; do not increase socket count or task stack use.
+  config.max_req_hdr_len = 2048;
   config.recv_wait_timeout = 2; config.send_wait_timeout = 2;
   if (httpd_start(&model.http, &config) != ESP_OK) return false;
   const auto failed = []() { httpd_stop(model.http); model.http = nullptr; return false; };
@@ -2523,6 +2527,9 @@ ManifestResult fetchManifest(const ManifestJob &job) {
     if (used == sizeof(body) - 1) return fail("Manifest too large");
   }
   if (!download.complete()) return fail("Manifest incomplete");
+  // The body is complete and local: release TLS/socket allocations before
+  // allocating the JSON tree. close() is idempotent with the RAII destructor.
+  download.close();
   body[used] = 0;
   const char *end = nullptr; cJSON *json = cJSON_ParseWithLengthOpts(body, used + 1, &end, true);
   if (!json) return fail("Manifest JSON invalid");

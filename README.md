@@ -20,6 +20,16 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793792992670` hardens authenticated web asset delivery: bounded 2 KiB
+request headers and shorter firmware/bundle cache validators. This reduces
+header pressure when a browser revalidates scripts and the device image.
+Manifest downloads now release TLS/socket resources before JSON parsing to
+reduce overlapping heap allocations during update checks.
+Physical animation remains 30 FPS. Password verification and stored settings
+are unchanged. This does not claim to resolve an unrecorded hardware reset.
+
+## Previous Release
+
 Version `1793785261989` adds independent lifetime and Kyiv weekly token rankings.
 LFT2 snapshots include both totals and a persistent revision, allowing corrected
 lower totals without re-adding inherited fork history. Weekly/lifetime tables and

@@ -23,7 +23,7 @@ extern const uint8_t bundleEnd[] asm("_binary_web_bundle_bin_end");
 char root[32] = {}, version[65] = {};
 bool ready = false;
 
-struct CachedAsset { const char *path; char etag[136]; };
+struct CachedAsset { const char *path; char etag[40]; };
 CachedAsset cachedAssets[] = {
   {"assets/css/portal.css", {}}, {"assets/css/preview.css", {}},
   {"assets/js/portal.js", {}}, {"assets/js/preview.js", {}},
@@ -31,12 +31,13 @@ CachedAsset cachedAssets[] = {
   {"assets/js/boot.js", {}}
 };
 void initializeAssetEtags() {
-  char firmware[65];
+  // Two independent 64-bit SHA prefixes keep validators within the header budget.
+  char firmware[17];
   const auto *app = esp_app_get_description();
-  for (size_t i = 0; i < sizeof(app->app_elf_sha256); ++i)
+  for (size_t i = 0; i < 8; ++i)
     std::snprintf(firmware + i * 2, 3, "%02x", app->app_elf_sha256[i]);
   for (size_t i = 0; i < sizeof(cachedAssets) / sizeof(cachedAssets[0]); ++i)
-    std::snprintf(cachedAssets[i].etag, sizeof(cachedAssets[i].etag), "\"%s-%s-%u\"", firmware, version, unsigned(i));
+    std::snprintf(cachedAssets[i].etag, sizeof(cachedAssets[i].etag), "\"%s-%.16s-%u\"", firmware, version, unsigned(i));
 }
 const char *assetEtag(const char *path) {
   if (ready) for (const auto &asset : cachedAssets)

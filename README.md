@@ -20,6 +20,15 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793803002698` bundles signed LAN agent `20261104163700`.
+The Windows recovery/logon task now uses a validated GUI launcher rather than
+starting a console PowerShell directly every minute. Web-updated supervisors
+migrate their own legacy recovery task once; foreign tasks/shortcuts are rejected
+before mutation. Recovery stays enabled, with the same user and privileges.
+The fixed launcher is generated from signed code; agent state and trust remain.
+
+## Previous Polling Release
+
 Version `1793801971740` bundles signed LAN agent `20261104161600`.
 Update polling now uses one isolated background runspace instead of spawning
 PowerShell every 15 seconds. Limit queries reuse one initialized Codex app-server

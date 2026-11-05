@@ -20,6 +20,17 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793865051917` hardens network recovery while retaining GPIO18 and 30 FPS.
+Wi-Fi reconciles association/netif/IP once per second when queued events are lost,
+debounces negative samples and preserves reconnect backoff/DHCP bring-up. UDP
+refuses to run if nonblocking setup fails. Preview streams allow a bounded FIN
+grace period and shut down reads before releasing async ownership, leaving final
+socket closure to HTTPD. The compiled lwIP socket budget is 16 (HTTP stays at four
+clients). Health diagnostics include network stage/progress and minimum internal
+heap. These changes do not prove the cause of an earlier unrecorded freeze.
+
+## Previous Agent Recovery Release
+
 Version `1793803002698` bundles signed LAN agent `20261104163700`.
 The Windows recovery/logon task now uses a validated GUI launcher rather than
 starting a console PowerShell directly every minute. Web-updated supervisors

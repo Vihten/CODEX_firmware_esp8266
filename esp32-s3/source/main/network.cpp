@@ -2,6 +2,7 @@
 #include "web_files.hpp"
 #include "web_auth.hpp"
 #include "preview.hpp"
+#include "network_progress.hpp"
 #include "weekly.hpp"
 #include "agent_update.hpp"
 #include "agent_release.hpp"
@@ -15,6 +16,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -53,6 +55,28 @@
 
 namespace {
 constexpr char kTag[] = "network";
+portMUX_TYPE networkProgressMux = portMUX_INITIALIZER_UNLOCKED;
+network_progress::Progress networkProgress;
+
+void markNetworkProgress(network_progress::Stage stage) {
+  portENTER_CRITICAL(&networkProgressMux);
+  networkProgress.enter(stage, uptimeMs());
+  portEXIT_CRITICAL(&networkProgressMux);
+}
+
+void completeNetworkProgress() {
+  portENTER_CRITICAL(&networkProgressMux);
+  networkProgress.completeLoop(uptimeMs());
+  portEXIT_CRITICAL(&networkProgressMux);
+}
+
+network_progress::Heartbeat snapshotNetworkProgress() {
+  portENTER_CRITICAL(&networkProgressMux);
+  const auto progress = networkProgress.snapshot();
+  portEXIT_CRITICAL(&networkProgressMux);
+  return progress;
+}
+
 constexpr char kFirmwareUrl[] = "https://api.github.com/repos/Vihten/CODEX_firmware_esp8266/contents/esp32-s3/firmware.bin?ref=main";
 constexpr uint32_t kAgentTimeout = 7000, kMaintenanceTimeout = 10000;
 constexpr uint32_t kOtaInterval = 15 * 60 * 1000;
@@ -176,6 +200,9 @@ struct Model {
   uint32_t otaDone = 0, otaTotal = 0, requestedRgb[kAgentCapacity] = {};
   esp_ota_handle_t otaAbortHandle = 0;
   bool otaVisualTimedOut = false, otaBootSelected = false;
+  uint32_t wifiSampleAt = 0, wifiEventsDropped = 0, wifiReconciledLosses = 0;
+  uint8_t wifiNegativeSamples = 0;
+  bool wifiSampled = false;
   uint16_t disconnectReason = 0;
   uint8_t legacyActivity = 0, legacyRemaining = 100, stationAttempts = 0;
   bool legacySeen = false, directSeen = false, linked = false, connected = false;
@@ -200,6 +227,7 @@ alignas(4) uint8_t manifestResultBytes[sizeof(ManifestResult)];
 QueueHandle_t wifiEvents = nullptr, telemetryQueue = nullptr, telemetryReplies = nullptr;
 QueueHandle_t manifestJobs = nullptr, manifestResults = nullptr;
 std::atomic<uint32_t> requestSequence{0}, activeHandlers{0};
+std::atomic<uint32_t> wifiEventDrops{0};
 char agentUpdateKey[33] = {};
 char agentUpdateBoot[17] = {};
 
@@ -980,7 +1008,7 @@ void wifiEvent(void *, esp_event_base_t base, int32_t id, void *data) {
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
     event.kind = WifiEvent::GotIp; event.ip = static_cast<ip_event_got_ip_t *>(data)->ip_info;
   } else return;
-  xQueueSend(wifiEvents, &event, 0);
+  if (xQueueSend(wifiEvents, &event, 0) != pdTRUE) wifiEventDrops.fetch_add(1, std::memory_order_relaxed);
 }
 bool stationConfig() {
   wifi_config_t station{};
@@ -1018,23 +1046,58 @@ bool initializeWifi() {
 }
 void serviceWifi() {
   const uint32_t now = uptimeMs();
+  const uint32_t dropped = wifiEventDrops.load(std::memory_order_relaxed);
+  if (dropped != model.wifiEventsDropped) {
+    model.wifiEventsDropped = dropped;
+    ESP_LOGW(kTag, "Wi-Fi event queue drops=%lu", (unsigned long)dropped);
+  }
   WifiEvent event;
+  bool gotIp = false;
   for (unsigned i = 0; i < 16 && xQueueReceive(wifiEvents, &event, 0) == pdTRUE; ++i) {
-    if (event.kind == WifiEvent::GotIp) {
-      model.connected = true; model.stationConnecting = false; model.stationAttempts = 0;
-      std::snprintf(model.control.ip, sizeof(model.control.ip), IPSTR, IP2STR(&event.ip.ip));
-      if (!model.sntpStarted) {
-        esp_sntp_setoperatingmode(SNTP_OPMODE_POLL); esp_sntp_setservername(0, const_cast<char *>("pool.ntp.org"));
-        esp_sntp_init(); model.sntpStarted = true;
-      }
-    } else if (event.kind == WifiEvent::Disconnected) {
+    if (event.kind == WifiEvent::GotIp) gotIp = true;
+    // GOT_IP is only a hint: queued events can describe an obsolete connection.
+    if (event.kind == WifiEvent::Disconnected) {
       model.connected = false; model.stationConnecting = false; model.disconnectReason = event.reason; ++model.disconnects;
+      model.rssi = -127; model.wifiNegativeSamples = 0;
       copy(model.control.ip, "192.168.4.1");
       model.stationRetryAt = now + (model.stationAttempts < 3 ? 2000 : 30000);
     }
   }
-  wifi_ap_record_t accessPoint{};
-  if (model.connected && esp_wifi_sta_get_ap_info(&accessPoint) == ESP_OK) model.rssi = accessPoint.rssi;
+  // Poll independently of events, which can be dropped while the owner is busy.
+  // Debounce negative samples; cached IP alone never proves association.
+  const bool sampleDue = !model.wifiSampled || now - model.wifiSampleAt >= 1000;
+  if (sampleDue || gotIp) {
+    if (sampleDue) { model.wifiSampled = true; model.wifiSampleAt = now; }
+    wifi_ap_record_t accessPoint{};
+    esp_netif_ip_info_t ip{};
+    const bool associated = esp_wifi_sta_get_ap_info(&accessPoint) == ESP_OK;
+    const bool usable = associated && model.sta && esp_netif_is_netif_up(model.sta) &&
+        esp_netif_get_ip_info(model.sta, &ip) == ESP_OK && ip.ip.addr != 0;
+    if (usable) {
+      model.connected = true; model.stationConnecting = false; model.stationAttempts = 0;
+      model.wifiNegativeSamples = 0;
+      if (sampleDue) model.rssi = accessPoint.rssi;
+      std::snprintf(model.control.ip, sizeof(model.control.ip), IPSTR, IP2STR(&ip.ip));
+      if (!model.sntpStarted) {
+        esp_sntp_setoperatingmode(SNTP_OPMODE_POLL); esp_sntp_setservername(0, const_cast<char *>("pool.ntp.org"));
+        esp_sntp_init(); model.sntpStarted = true;
+      }
+    } else {
+      if (sampleDue && model.wifiNegativeSamples < 3) ++model.wifiNegativeSamples;
+      if (model.connected && model.wifiNegativeSamples >= 3) {
+        model.connected = false; model.rssi = -127;
+        copy(model.control.ip, "192.168.4.1");
+        ++model.wifiReconciledLosses; ++model.disconnects;
+        model.stationRetryAt = now + (model.stationAttempts < 3 ? 2000 : 30000);
+        ESP_LOGW(kTag, "Wi-Fi state reconciled: associated=%u netif/IP unavailable; losses=%lu",
+                 unsigned(associated), (unsigned long)model.wifiReconciledLosses);
+      }
+      // Do not interrupt DHCP or static-IP netif bring-up with repeated connect calls.
+      if (associated && !model.connected && !model.stationConnecting && due(now, model.stationRetryAt)) {
+        model.stationConnecting = true; model.stationAt = now;
+      }
+    }
+  }
   if (model.stationConnecting && now - model.stationAt >= 20000) {
     esp_wifi_disconnect(); model.stationConnecting = false;
     model.stationRetryAt = now + 30000;
@@ -1049,7 +1112,12 @@ void initializeUdp() {
   model.udp = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
   if (model.udp < 0) { message("UDP socket unavailable."); return; }
   int enabled = 1; setsockopt(model.udp, SOL_SOCKET, SO_BROADCAST, &enabled, sizeof(enabled));
-  fcntl(model.udp, F_SETFL, O_NONBLOCK);
+  if (fcntl(model.udp, F_SETFL, O_NONBLOCK) < 0) {
+    close(model.udp); model.udp = -1;
+    message("UDP nonblocking setup failed.");
+    ESP_LOGE(kTag, "UDP nonblocking setup failed");
+    return;
+  }
   sockaddr_in address{}; address.sin_family = AF_INET; address.sin_port = htons(kUdpPort); address.sin_addr.s_addr = htonl(INADDR_ANY);
   if (bind(model.udp, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0) {
     close(model.udp); model.udp = -1; message("UDP port 4210 is unavailable.");
@@ -1649,6 +1717,24 @@ bool previewStreamAllowed() {
   return allowed && !previewStreamSealed.load();
 }
 
+void finishPreviewSocket(int socket, bool graceful) {
+  if (socket < 0) return;
+  if (graceful && shutdown(socket, SHUT_WR) == 0) {
+    // Allow the terminal chunk/FIN to drain before shutting down reads. A peer
+    // that never sends FIN must not retain one of the four HTTP sessions.
+    const uint32_t started = uptimeMs();
+    while (uint32_t(uptimeMs() - started) < 200) {
+      char byte;
+      const int received = recv(socket, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+      if (received >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) break;
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
+  }
+  // Still own the async request here: the descriptor cannot be reused. Make
+  // HTTPD observe EOF after completion; HTTPD remains the sole close() owner.
+  (void)shutdown(socket, SHUT_RDWR);
+}
+
 void previewStreamTask(void *) {
   httpd_req_t *request = nullptr;
   uint8_t bytes[kPreviewFrameBytes];
@@ -1686,9 +1772,7 @@ void previewStreamTask(void *) {
     }
     if (writable && sent) writable = httpd_resp_send_chunk(request, nullptr, 0) == ESP_OK;
     if (!writable) ++previewStreamSendErrors;
-    // Preserve queued data/FIN on clean renewal; force shutdown only after an error.
-    // The HTTP server still owns close().
-    if (socket >= 0) (void)shutdown(socket, writable && sent ? SHUT_WR : SHUT_RDWR);
+    finishPreviewSocket(socket, writable && sent);
     (void)httpd_req_async_handler_complete(request);
     --activeHandlers;
     std::memset(authToken, 0, sizeof(authToken));
@@ -1896,7 +1980,7 @@ esp_err_t health(httpd_req_t *request) {
   HandlerScope scope; View view;
   if (!snapshot(view)) return error(request, "503 Service Unavailable", "Controller busy; retry.");
   unsigned agents = 0; for (const auto &agent : view.control.agents) agents += agent.present;
-  char body[1536];
+  char body[2048];
   const int count = std::snprintf(body, sizeof(body),
       "firmware=%llu board=esp32-s3-n16r8 controllerId=%06lX network_core=0 http_core=0 render_core=1 led_transport=rmt-dma led_pin=%d fps=%d uptime_ms=%lu render_frames=%lu render_missed=%lu render_last_us=%lu render_stack=%lu render_watchdog=%u network_stack=%lu network_loops=%lu assets_ready=%u led_error=%ld heap=%u largest_block=%u psram=%u psram_free=%u wifi_connected=%u wifi_rssi=%d wifi_sleep=none wifi_disconnects=%lu wifi_disconnect_reason=%u agent_count=%u activity=%u remaining=%u maintenance=%u maintenance_epoch=%lu render_epoch=%lu quiescent=%u maintenance_timeouts=%lu settings_dirty=%u nvs_ready=%u udp_packets=%lu ota_done=%lu ota_total=%lu reset_reason=%u\n",
       (unsigned long long)PROJECT_FIRMWARE_VERSION, (unsigned long)view.deviceId, PROJECT_DATA_PIN, PROJECT_FPS,
@@ -1917,8 +2001,23 @@ esp_err_t health(httpd_req_t *request) {
       (unsigned long)web_auth::httpStackFree());
   if (authCount < 0 || size_t(authCount) >= sizeof(body) - size_t(count))
     return error(request, "503 Service Unavailable", "Diagnostics too large.");
+  // Only the HTTP server task samples this observer. Snapshot independently of
+  // View so a blocked network owner cannot hide behind its last published view.
+  static network_progress::Observer observer;
+  const auto progress = snapshotNetworkProgress();
+  const auto progressHealth = observer.sample(progress, uptimeMs(), 5000);
+  const size_t used = size_t(count) + size_t(authCount);
+  const int progressCount = std::snprintf(body + used, sizeof(body) - used,
+      "network_stage=%s network_stage_age_ms=%lu network_last_progress_ms=%lu network_heartbeat=%lu network_completed_loops=%lu network_progress_started=%u network_stale=%u network_stale_episodes=%lu network_stale_samples=%lu heap_internal_min=%u\n",
+      network_progress::name(progress.stage), (unsigned long)progressHealth.stageAgeMs,
+      (unsigned long)progress.enteredAtMs, (unsigned long)progress.heartbeat,
+      (unsigned long)progress.completedLoops, unsigned(progress.started), unsigned(progressHealth.stale),
+      (unsigned long)progressHealth.staleEpisodes, (unsigned long)progressHealth.staleSamples,
+      unsigned(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+  if (progressCount < 0 || size_t(progressCount) >= sizeof(body) - used)
+    return error(request, "503 Service Unavailable", "Diagnostics too large.");
   httpd_resp_set_type(request, "text/plain; charset=utf-8"); httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-  return httpd_resp_send(request, body, count + authCount);
+  return httpd_resp_send(request, body, int(used) + progressCount);
 }
 bool readBody(httpd_req_t *request, char *body, size_t capacity) {
   if (request->content_len >= capacity) return false;
@@ -2859,6 +2958,7 @@ void serviceMaintenance() {
 } // namespace
 
 void networkTask(void *) {
+  markNetworkProgress(network_progress::Stage::Starting);
   viewMutex = xSemaphoreCreateMutexStatic(&viewMutexStorage);
   wifiEvents = xQueueCreateStatic(16, sizeof(WifiEvent), wifiEventBytes, &wifiEventStorage);
   telemetryQueue = xQueueCreateStatic(4, sizeof(TelemetryRequest), telemetryBytes, &telemetryStorage);
@@ -2898,6 +2998,7 @@ void networkTask(void *) {
   TickType_t wake = xTaskGetTickCount();
   bool renderReported = false;
   for (;;) {
+    markNetworkProgress(network_progress::Stage::RenderStatus);
     ++model.loops;
     RenderStatus render;
     if (xQueueReceive(renderStatusQueue, &render, 0) == pdTRUE) {
@@ -2909,12 +3010,33 @@ void networkTask(void *) {
         renderReported = true;
       }
     }
-    serviceWifi(); serviceCommands(); serviceWeekly(); serviceTelemetry(); discover(); serviceManifestResults(); serviceAirAlert();
-    updateControl(); serviceExternalLight();
+    markNetworkProgress(network_progress::Stage::Wifi);
+    serviceWifi();
+    markNetworkProgress(network_progress::Stage::Commands);
+    serviceCommands();
+    markNetworkProgress(network_progress::Stage::Weekly);
+    serviceWeekly();
+    markNetworkProgress(network_progress::Stage::Telemetry);
+    serviceTelemetry();
+    markNetworkProgress(network_progress::Stage::Discovery);
+    discover();
+    markNetworkProgress(network_progress::Stage::ManifestResults);
+    serviceManifestResults();
+    markNetworkProgress(network_progress::Stage::AirAlert);
+    serviceAirAlert();
+    markNetworkProgress(network_progress::Stage::Control);
+    updateControl();
+    markNetworkProgress(network_progress::Stage::ExternalLight);
+    serviceExternalLight();
+    markNetworkProgress(network_progress::Stage::Buzzer);
     serviceBuzzer();
-    publishView(); serviceMaintenance();
+    markNetworkProgress(network_progress::Stage::Publish);
+    publishView();
+    markNetworkProgress(network_progress::Stage::Maintenance);
+    serviceMaintenance();
     // A blocking flash transfer must not leave thousands of overdue polling ticks.
     if (xTaskGetTickCount() - wake > pdMS_TO_TICKS(100)) wake = xTaskGetTickCount();
+    completeNetworkProgress();
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(20));
   }
 }

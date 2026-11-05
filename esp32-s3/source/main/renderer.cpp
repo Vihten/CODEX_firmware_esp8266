@@ -995,11 +995,11 @@ void applyControlAgents() {
 
 // Renderer-owned, fixed-storage fade-through-black. No pixel/frame snapshots.
 struct IpAddressTransition {
-  static constexpr uint32_t kHalfMs = 150;
+  static constexpr uint32_t kHalfMs = 350;
   char shown[16] = {}, target[16] = {};
   uint32_t started = 0;
   uint8_t from = 255;
-  enum class Phase : uint8_t { Stable, Out, In } phase = Phase::Stable;
+  enum class Phase : uint8_t { Stable, Out, In, Leaving } phase = Phase::Stable;
 
   static void address(char (&out)[16], const char *value) {
     std::strncpy(out, value, sizeof(out) - 1);
@@ -1008,15 +1008,17 @@ struct IpAddressTransition {
   uint8_t alpha(uint32_t now) const {
     if (phase == Phase::Stable) return 255;
     const uint32_t elapsed = uint32_t(now - started);
-    if (elapsed >= kHalfMs) return phase == Phase::Out ? 0 : 255;
+    if (elapsed >= kHalfMs) return phase == Phase::Out || phase == Phase::Leaving ? 0 : 255;
     // Smoothstep gives a soft, stationary brightness change without moving digits.
     const uint32_t t = elapsed * 255 / kHalfMs;
     const uint32_t eased = t * t * (765 - 2 * t) / (255 * 255);
-    return uint8_t(phase == Phase::Out ? uint32_t(from) * (255 - eased) / 255 : eased);
+    return uint8_t(phase == Phase::Out || phase == Phase::Leaving
+        ? uint32_t(from) * (255 - eased) / 255
+        : uint32_t(from) + (255 - uint32_t(from)) * eased / 255);
   }
   void advance(uint32_t now) {
     if (phase == Phase::Out && uint32_t(now - started) >= kHalfMs) {
-      address(shown, target); started += kHalfMs; phase = Phase::In;
+      address(shown, target); started += kHalfMs; from = 0; phase = Phase::In;
     }
     if (phase == Phase::In && uint32_t(now - started) >= kHalfMs) phase = Phase::Stable;
   }
@@ -1024,8 +1026,11 @@ struct IpAddressTransition {
     advance(now);
     if (!shown[0]) {
       address(shown, value); address(target, value);
-      phase = Phase::Stable; // First visible frame must be readable, not blank.
-    } else if (std::strncmp(target, value, sizeof(target)) != 0) {
+      from = 0; started = now; phase = Phase::In;
+    } else if (phase == Phase::Leaving && std::strncmp(shown, value, sizeof(shown)) == 0) {
+      from = alpha(now); started = now; phase = Phase::In;
+      address(target, value);
+    } else if (std::strncmp(target, value, sizeof(target)) != 0 || phase == Phase::Leaving) {
       const uint8_t current = alpha(now);
       address(target, value);
       // During fade-out only the destination changes; do not prolong the fade.
@@ -1035,6 +1040,18 @@ struct IpAddressTransition {
     }
     return alpha(now);
   }
+  bool visible() const { return shown[0] != 0; }
+  uint8_t sampleHide(uint32_t now) {
+    advance(now);
+    if (phase != Phase::Leaving) {
+      from = alpha(now); started = now; phase = Phase::Leaving;
+    }
+    return alpha(now);
+  }
+  bool hidden(uint32_t now) const {
+    return phase == Phase::Leaving && uint32_t(now - started) >= kHalfMs;
+  }
+  void reset() { *this = IpAddressTransition{}; }
   bool complete() const { return phase == Phase::Stable; }
   void pause(uint32_t elapsed) { if (!complete()) started += elapsed; }
 };
@@ -1503,19 +1520,24 @@ void renderTask(void *) {
         if (!control.connected) { ipHold = false; ipPresented = false; }
         if (ipHold && ipPresented && millis() - holdStarted >= 5000UL) ipHold = false;
         const bool requestedOn = control.on && lightOpeningReady;
+        const bool wantsIp = !control.connected || !control.accountLinked || ipHold;
         if (sceneVisible) advanceSceneTimeline(maintenance ? sceneTargetOn
             : requestedOn || (flying && sceneProgress == SCENE_DURATION_MS));
         if (!requestedOn && (!sceneVisible || sceneProgress == 0)) {
           sceneVisible = false;
           strip.clear();
-          showFrame(true);
-        } else if (!flying && requestedOn && (!control.connected || !control.accountLinked || ipHold)) {
+          if (showFrame(true)) ipTransition.reset();
+        } else if (!flying && requestedOn && (wantsIp || ipTransition.visible())) {
           sceneVisible = false;
-          const uint8_t ipAlpha = ipTransition.sample(control.ip, millis());
+          const uint32_t ipNow = millis();
+          const uint8_t ipAlpha = wantsIp ? ipTransition.sample(control.ip, ipNow)
+              : ipTransition.sampleHide(ipNow);
           drawIpAddress(ipTransition.shown, ipAlpha);
           drawAirAlertIndicator(true);
           if (showFrame()) {
-            if (control.connected && ipHold && !ipPresented && ipTransition.complete()) {
+            // Keep rendering the final black IP frame until its output succeeds.
+            if (!wantsIp && ipTransition.hidden(ipNow)) ipTransition.reset();
+            if (wantsIp && control.connected && ipHold && !ipPresented && ipTransition.complete()) {
               holdStarted = millis();
               ipPresented = true;
             }
@@ -1529,7 +1551,7 @@ void renderTask(void *) {
           }
           if (renderScene(animationFile, effectMaskFile, frame, flying)) {
             drawAirAlertIndicator(false);
-            showFrame();
+            if (showFrame()) ipTransition.reset();
           }
           else {
             status.assetsReady = false;

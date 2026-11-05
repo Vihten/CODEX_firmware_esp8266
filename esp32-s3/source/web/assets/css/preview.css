@@ -7,6 +7,9 @@
 #matrix-canvas{display:block;width:100%;height:auto;aspect-ratio:348/233;background:#080a09;image-rendering:pixelated}
 .device-visual{position:relative;width:100%;max-width:956px;margin-inline:auto;aspect-ratio:768/550}
 .device-visual>img{display:block;width:100%;height:auto;aspect-ratio:768/550;pointer-events:none;filter:drop-shadow(0 8px 12px rgba(0,0,0,.32))}
+/* Image-space housing paths only: never tint the matrix or capture pointer input. */
+.device-light-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.device-light-wash{stroke:none;opacity:calc(clamp(0,var(--light-output,0),1)*.6);pointer-events:none}
 .device-display{position:absolute;left:20.521549%;top:22.935917%;width:90.625%;height:90.181818%;transform-origin:0 0;transform:matrix(.63736205,-.05900006,0,.68243364,0,0);display:flex;align-items:center;justify-content:center;background:#080a09;overflow:hidden}
 html:has(#device-settings-dialog){scrollbar-gutter:stable}
 html:has(#device-settings-dialog[open]){overflow:hidden}

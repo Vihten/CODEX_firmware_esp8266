@@ -46,6 +46,18 @@
     let selectedFilter = 'all';
     const missing = 'Немає даних';
     const finite = value => typeof value === 'number' && Number.isFinite(value);
+    // Decorative housing paths mirror measured output, never the editable setpoints.
+    const lightWashes = all('.device-light-wash');
+    const setLightOutputs = light => {
+      const enabled = light?.ready === true && light.allowed === true;
+      lightWashes.forEach(node => {
+        const channel = node.dataset.lightChannel;
+        const output = enabled && (channel === 'first' || channel === 'second') ? light[`${channel}_output`] : null;
+        const next = finite(output) && output >= 0 && output <= 100 ? String(output / 100) : '0';
+        if (node.style.getPropertyValue('--light-output') !== next) node.style.setProperty('--light-output', next);
+      });
+    };
+    setLightOutputs(null);
     const number = value => finite(value) ? numeric.format(value) : missing;
     const percent = value => finite(value) && value >= 0 && value <= 100 ? `${Math.round(value)}%` : missing;
     let clock;
@@ -459,6 +471,7 @@
           status.buzzer_saving === true ? 'Збереження…' : '');
       }
       const light = status.external_light;
+      setLightOutputs(light);
       const lightForm = one('#external-light-form');
       if (lightForm && light && ['first', 'second'].every(key => Number.isInteger(light[key]) && light[key] >= 0 && light[key] <= 100) &&
           ['ready', 'allowed', 'follow_matrix', 'saving', 'save_failed'].every(key => typeof light[key] === 'boolean')) {
@@ -538,6 +551,7 @@
       timer = null;
       if (active) { active.reason = 'pause'; active.controller.abort(); }
       baseline = null;
+      setLightOutputs(null);
       connection(document.hidden || !pageActive ? 'Оновлення призупинено' : 'Автооновлення вимкнено');
     };
     const poll = async (manual = false, feedback = true) => {
@@ -563,6 +577,7 @@
         const response = await fetch('/status', {signal: request.controller.signal, cache: 'no-store', credentials: 'same-origin'});
         if (response.status === 401 || response.redirected || (response.headers.get('content-type') || '').includes('text/html')) {
           ++authEpoch;
+          setLightOutputs(null);
           connection('Сеанс завершено. Увійдіть знову.', 'error');
           for (const form of all('form')) if (commandRoutes.has(new URL(form.action, location.href).pathname))
             formFeedback(form, 'Сеанс завершено.', true);
@@ -579,6 +594,7 @@
         if (request.reason !== 'pause' && !document.hidden) {
           ++failures;
           baseline = null;
+          setLightOutputs(null);
           live('fps', missing);
           text('[data-weekly-state],[data-lifetime-state]', 'Не вдалося оновити рейтинг. Спробуйте ще раз.');
           text('[data-air-alert-state]', 'Немає актуальних даних');
@@ -615,6 +631,7 @@
         const type = response.headers.get('content-type') || '';
         if (response.redirected || response.status === 401 || type.includes('text/html')) {
           ++authEpoch;
+          setLightOutputs(null);
           formFeedback(form, 'Сеанс завершено або сервер не підтвердив команду. Перевірте вхід.', true);
           return;
         }

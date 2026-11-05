@@ -993,14 +993,72 @@ void applyControlAgents() {
   activityPercent = min(control.activityPercent, uint8_t(100));
 }
 
-void drawIpLine(const char *text, int16_t y) {
+// Renderer-owned, fixed-storage fade-through-black. No pixel/frame snapshots.
+struct IpAddressTransition {
+  static constexpr uint32_t kHalfMs = 150;
+  char shown[16] = {}, target[16] = {};
+  uint32_t started = 0;
+  uint8_t from = 255;
+  enum class Phase : uint8_t { Stable, Out, In } phase = Phase::Stable;
+
+  static void address(char (&out)[16], const char *value) {
+    std::strncpy(out, value, sizeof(out) - 1);
+    out[sizeof(out) - 1] = 0;
+  }
+  uint8_t alpha(uint32_t now) const {
+    if (phase == Phase::Stable) return 255;
+    const uint32_t elapsed = uint32_t(now - started);
+    if (elapsed >= kHalfMs) return phase == Phase::Out ? 0 : 255;
+    // Smoothstep gives a soft, stationary brightness change without moving digits.
+    const uint32_t t = elapsed * 255 / kHalfMs;
+    const uint32_t eased = t * t * (765 - 2 * t) / (255 * 255);
+    return uint8_t(phase == Phase::Out ? uint32_t(from) * (255 - eased) / 255 : eased);
+  }
+  void advance(uint32_t now) {
+    if (phase == Phase::Out && uint32_t(now - started) >= kHalfMs) {
+      address(shown, target); started += kHalfMs; phase = Phase::In;
+    }
+    if (phase == Phase::In && uint32_t(now - started) >= kHalfMs) phase = Phase::Stable;
+  }
+  uint8_t sample(const char *value, uint32_t now) {
+    advance(now);
+    if (!shown[0]) {
+      address(shown, value); address(target, value);
+      phase = Phase::Stable; // First visible frame must be readable, not blank.
+    } else if (std::strncmp(target, value, sizeof(target)) != 0) {
+      const uint8_t current = alpha(now);
+      address(target, value);
+      // During fade-out only the destination changes; do not prolong the fade.
+      if (phase != Phase::Out) {
+        from = current; started = now; phase = Phase::Out;
+      }
+    }
+    return alpha(now);
+  }
+  bool complete() const { return phase == Phase::Stable; }
+  void pause(uint32_t elapsed) { if (!complete()) started += elapsed; }
+};
+
+// Called exactly once when leaving maintenance, never on individual parked ticks.
+void resumeIpPresentation(IpAddressTransition &transition, bool hold, bool presented,
+                          uint32_t &holdStarted, uint32_t &previousRenderAt,
+                          uint32_t parkedAt, uint32_t now) {
+  const uint32_t elapsed = uint32_t(now - parkedAt);
+  transition.pause(elapsed);
+  if (hold && presented) holdStarted += elapsed;
+  // Memorial's per-frame pause must see only the non-parked frame interval.
+  previousRenderAt += elapsed;
+}
+
+void drawIpLine(const char *text, int16_t y, uint8_t alpha = 255) {
   const size_t length = std::strlen(text);
   const int16_t width = length ? length * 6 - 1 : 0;
   const int16_t origin = max(0, (MATRIX_WIDTH - width) / 2);
   for (size_t character = 0; character < length; ++character) {
     const uint8_t glyph = ipGlyphIndex(text[character]);
     const uint32_t color = text[character] == '.'
-        ? strip.Color(255, 118, 24) : strip.Color(54, 214, 255);
+        ? strip.Color(alpha, uint16_t(118) * alpha / 255, uint16_t(24) * alpha / 255)
+        : strip.Color(uint16_t(54) * alpha / 255, uint16_t(214) * alpha / 255, alpha);
     for (uint8_t column = 0; column < 5; ++column) {
       for (uint8_t row = 0; row < 7; ++row) {
         const int16_t x = origin + character * 6 + column;
@@ -1012,9 +1070,9 @@ void drawIpLine(const char *text, int16_t y) {
   }
 }
 
-void drawIpAddress() {
+void drawIpAddress(const char *address = control.ip, uint8_t alpha = 255) {
   char first[16], second[16] = {};
-  std::memcpy(first, control.ip, sizeof(first));
+  std::memcpy(first, address, sizeof(first));
   first[sizeof(first) - 1] = 0;
   char *dot = std::strchr(first, '.');
   dot = dot ? std::strchr(dot + 1, '.') : nullptr;
@@ -1023,8 +1081,8 @@ void drawIpAddress() {
     *dot = 0;
   }
   strip.clear();
-  drawIpLine(first, second[0] ? 2 : 7);
-  if (second[0]) drawIpLine(second, 11);
+  drawIpLine(first, second[0] ? 2 : 7, alpha);
+  if (second[0]) drawIpLine(second, 11, alpha);
 }
 
 void drawAirAlertIndicator(bool alternateScreen) {
@@ -1240,10 +1298,12 @@ void renderTask(void *) {
   uint16_t frame = 0;
   uint32_t holdStarted = 0;
   bool ipHold = false, ipPresented = false;
-  char displayedIp[16] = {};
+  char requestedIp[16] = {};
+  IpAddressTransition ipTransition;
   bool previousConnected = false;
   uint32_t acknowledgedEpoch = 0;
   bool parked = false;
+  uint32_t ipParkedAt = 0;
   bool memorialWasActive = false;
   bool memorialSceneVisible = false, memorialSceneTargetOn = false;
   uint32_t memorialSceneProgress = 0, memorialQuota = 0;
@@ -1281,6 +1341,8 @@ void renderTask(void *) {
     // A false status with this epoch proves that Core 1 consumed the release.
     if (control.maintenance == Maintenance::None) status.maintenanceEpoch = control.maintenanceEpoch;
     if (control.maintenance == Maintenance::None && parked) {
+      resumeIpPresentation(ipTransition, ipHold, ipPresented, holdStarted,
+                           previousRenderAt, ipParkedAt, millis());
       parked = false;
       if (memorialExiting) memorialExitAt += uint32_t(millis() - memorialParkedAt);
       sceneTimelineAt = skySampleAt = millis();
@@ -1343,6 +1405,7 @@ void renderTask(void *) {
         sceneTimelineAt = skySampleAt = now;
         effectOrigin = started - (int64_t(effectTick) * 256 + effectSubTick) * 1000000 / (EVENT_FPS * 256);
         if (ipHold && ipPresented) holdStarted += uint32_t(now - previousRenderAt);
+        ipTransition.pause(uint32_t(now - previousRenderAt));
         lastMeteorMaintenanceAt = now;
       }
       previousRenderAt = now;
@@ -1368,6 +1431,7 @@ void renderTask(void *) {
           acknowledgedEpoch = control.maintenanceEpoch;
           status.otaVisualSequence = 0;
           memorialParkedAt = now;
+          ipParkedAt = millis();
           parked = true;
           status.quiescent = true;
           status.maintenanceEpoch = acknowledgedEpoch;
@@ -1430,9 +1494,10 @@ void renderTask(void *) {
         showFrame(true);
       } else {
         strip.setBrightness(control.brightness);
-        if (control.connected && (!previousConnected || std::strncmp(displayedIp, control.ip, sizeof(displayedIp)) != 0)) {
+        if (control.connected && (!previousConnected || std::strncmp(requestedIp, control.ip, sizeof(requestedIp)) != 0)) {
           ipHold = true;
           ipPresented = false;
+          IpAddressTransition::address(requestedIp, control.ip);
         }
         previousConnected = control.connected;
         if (!control.connected) { ipHold = false; ipPresented = false; }
@@ -1446,11 +1511,11 @@ void renderTask(void *) {
           showFrame(true);
         } else if (!flying && requestedOn && (!control.connected || !control.accountLinked || ipHold)) {
           sceneVisible = false;
-          drawIpAddress();
+          const uint8_t ipAlpha = ipTransition.sample(control.ip, millis());
+          drawIpAddress(ipTransition.shown, ipAlpha);
           drawAirAlertIndicator(true);
           if (showFrame()) {
-            std::memcpy(displayedIp, control.ip, sizeof(displayedIp));
-            if (control.connected && ipHold && !ipPresented) {
+            if (control.connected && ipHold && !ipPresented && ipTransition.complete()) {
               holdStarted = millis();
               ipPresented = true;
             }
@@ -1478,6 +1543,7 @@ void renderTask(void *) {
       memorialWasActive = memorialActive;
     } else if (control.maintenance != Maintenance::None && strip.isQuiescent()) {
       // Failed initialization can ACK only when the adapter confirms no DMA.
+      ipParkedAt = millis();
       parked = true;
       acknowledgedEpoch = control.maintenanceEpoch;
       status.otaVisualSequence = 0;

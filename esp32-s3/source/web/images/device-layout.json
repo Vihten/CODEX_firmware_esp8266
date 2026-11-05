@@ -1,6 +1,6 @@
 {
   "image": { "width": 768, "height": 550 },
-  "raster": { "width": 1482, "height": 1061 },
+  "raster": { "width": 1483, "height": 1061 },
   "mirrored": true,
   "crop": { "x": 430, "y": 110 },
   "apertureMm": { "width": 348, "height": 248 },

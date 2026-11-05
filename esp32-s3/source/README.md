@@ -221,7 +221,7 @@ web/
   assets/css/preview.css
   assets/js/portal.js
   assets/js/preview.js
-  images/device.png
+  images/device.webp
   templates/                 HTML layout and reusable server-rendered fragments
     shell/
     overview/

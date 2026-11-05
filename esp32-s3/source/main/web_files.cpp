@@ -27,7 +27,7 @@ struct CachedAsset { const char *path; char etag[40]; };
 CachedAsset cachedAssets[] = {
   {"assets/css/portal.css", {}}, {"assets/css/preview.css", {}},
   {"assets/js/portal.js", {}}, {"assets/js/preview.js", {}},
-  {"images/device.png", {}}, {"images/favicon.svg", {}},
+  {"images/device.webp", {}}, {"images/favicon.svg", {}},
   {"assets/js/boot.js", {}}
 };
 void initializeAssetEtags() {

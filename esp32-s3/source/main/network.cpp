@@ -1705,7 +1705,7 @@ esp_err_t page(httpd_req_t *request) {
 }
 esp_err_t deviceImage(httpd_req_t *request) {
   HandlerScope scope;
-  return serveWebFile(request, "images/device.png", "image/png");
+  return serveWebFile(request, "images/device.webp", "image/webp");
 }
 esp_err_t favicon(httpd_req_t *request) {
   HandlerScope scope;

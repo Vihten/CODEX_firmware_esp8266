@@ -1,4 +1,5 @@
 #include "web_auth.hpp"
+#include "diagnostics.hpp"
 #include "web_files.hpp"
 #include "password_sha256.hpp"
 
@@ -376,6 +377,14 @@ bool wantsJson(httpd_req_t *request) {
   return header(request, "Accept", accept) && std::strstr(accept, "application/json");
 }
 esp_err_t authError(httpd_req_t *request, const char *status, const char *message, unsigned retry = 0) {
+  // Task-context journal call: numeric status only, never request/auth data.
+  uint16_t code = 0;
+  diagnostic_log::Snapshot snapshot{};
+  if (!std::strcmp(status, "401 Unauthorized")) { code = 0x0300; snapshot.reason = 401; }
+  else if (!std::strcmp(status, "429 Too Many Requests")) { code = 0x0301; snapshot.reason = 429; }
+  else if (!std::strcmp(status, "400 Bad Request")) { code = 0x0302; snapshot.reason = 400; }
+  else if (!std::strcmp(status, "503 Service Unavailable")) { code = 0x0303; snapshot.reason = 503; }
+  if (code) diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Http, code, snapshot);
   httpd_resp_set_status(request, status);
   httpd_resp_set_hdr(request, "Connection", "close");
   char retryText[12];

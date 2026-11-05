@@ -1,6 +1,7 @@
 #include "runtime.hpp"
 #include "external_light.hpp"
 #include "buzzer.hpp"
+#include "diagnostics.hpp"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_flash.h"
@@ -34,6 +35,8 @@ extern "C" void app_main() {
     ESP_LOGE("boot", "Cannot create bounded IPC queues");
     return;
   }
+  if (!diagnostics::initialize(PROJECT_FIRMWARE_VERSION))
+    ESP_LOGW("boot", "Diagnostic journal unavailable; firmware continues");
   loadAssets();
   TaskHandle_t render = nullptr;
   // Neither owner may touch peripherals before both tasks exist.

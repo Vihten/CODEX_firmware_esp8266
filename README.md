@@ -20,6 +20,21 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1793869356521` adds a bounded, password-protected warning/error journal.
+It retains the latest 256 entries in PSRAM (at most 64 KiB), coalesces adjacent
+repeats, and exports safe numeric context, codes and timestamps through `/logs`
+and `/logs.txt`. Settings links expose both routes. Raw requests, passwords,
+tokens and upstream response bodies are never ingested. Healthy samples are not
+journal entries: an independent 2-second monitor updates recent context and
+records only anomalies. Each export has an absolute nonblocking send deadline.
+
+The RAM journal is cleared on reboot. A CRC-protected double-buffered RTC summary
+retains a small previous-boot checkpoint across supported warm resets; it is not
+the previous journal and is not persistent across loss of power. No logger flash
+writes are performed. GPIO18, 30 FPS, settings and the agent payload are unchanged.
+
+## Previous Network Recovery Release
+
 Version `1793865051917` hardens network recovery while retaining GPIO18 and 30 FPS.
 Wi-Fi reconciles association/netif/IP once per second when queued events are lost,
 debounces negative samples and preserves reconnect backoff/DHCP bring-up. UDP

@@ -3,6 +3,8 @@
 #include "web_auth.hpp"
 #include "preview.hpp"
 #include "network_progress.hpp"
+#include "diagnostics.hpp"
+#include "diagnostic_http.hpp"
 #include "weekly.hpp"
 #include "agent_update.hpp"
 #include "agent_release.hpp"
@@ -470,6 +472,13 @@ void serviceAirAlert() {
     model.airPollMs = result.elapsedMs;
     model.airTlsError = result.tlsError; model.airTlsCode = result.tlsCode; model.airTlsFlags = result.tlsFlags;
     model.airFetchFailed = !accepted;
+    if (!accepted) {
+      diagnostic_log::Snapshot failure;
+      failure.reason = result.httpStatus; failure.detail = int32_t(model.airFailure);
+      failure.elapsed_ms = result.elapsedMs;
+      diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Alert,
+                         diagnostics::Code::AlertSourceFailed, failure);
+    }
     model.airNextAt = now + std::min(uint32_t(86400000), std::max(kAirPollIntervalMs, result.retryAfterMs));
   }
   if (!model.airWorkerReady || !model.airSettings.enabled ||
@@ -1050,6 +1059,8 @@ void serviceWifi() {
   if (dropped != model.wifiEventsDropped) {
     model.wifiEventsDropped = dropped;
     ESP_LOGW(kTag, "Wi-Fi event queue drops=%lu", (unsigned long)dropped);
+    diagnostic_log::Snapshot failure; failure.reason = int32_t(dropped);
+    diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Wifi, uint16_t(0x0200), failure);
   }
   WifiEvent event;
   bool gotIp = false;
@@ -1057,6 +1068,9 @@ void serviceWifi() {
     if (event.kind == WifiEvent::GotIp) gotIp = true;
     // GOT_IP is only a hint: queued events can describe an obsolete connection.
     if (event.kind == WifiEvent::Disconnected) {
+      diagnostic_log::Snapshot failure; failure.reason = event.reason; failure.attempts = model.stationAttempts;
+      diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Wifi,
+                         diagnostics::Code::WifiDisconnected, failure);
       model.connected = false; model.stationConnecting = false; model.disconnectReason = event.reason; ++model.disconnects;
       model.rssi = -127; model.wifiNegativeSamples = 0;
       copy(model.control.ip, "192.168.4.1");
@@ -1088,6 +1102,9 @@ void serviceWifi() {
         model.connected = false; model.rssi = -127;
         copy(model.control.ip, "192.168.4.1");
         ++model.wifiReconciledLosses; ++model.disconnects;
+        diagnostic_log::Snapshot failure; failure.reason = associated ? 1 : 0;
+        failure.attempts = model.stationAttempts;
+        diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Wifi, uint16_t(0x0201), failure);
         model.stationRetryAt = now + (model.stationAttempts < 3 ? 2000 : 30000);
         ESP_LOGW(kTag, "Wi-Fi state reconciled: associated=%u netif/IP unavailable; losses=%lu",
                  unsigned(associated), (unsigned long)model.wifiReconciledLosses);
@@ -1099,20 +1116,35 @@ void serviceWifi() {
     }
   }
   if (model.stationConnecting && now - model.stationAt >= 20000) {
+    diagnostic_log::Snapshot failure; failure.elapsed_ms = now - model.stationAt;
+    failure.attempts = model.stationAttempts;
+    diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Wifi, uint16_t(0x0204), failure);
     esp_wifi_disconnect(); model.stationConnecting = false;
     model.stationRetryAt = now + 30000;
   }
   if (!model.connected && !model.stationConnecting && model.settings.ssid[0] && due(now, model.stationRetryAt)) {
-    model.stationConnecting = esp_wifi_connect() == ESP_OK; model.stationAt = now;
+    const esp_err_t connected = esp_wifi_connect();
+    model.stationConnecting = connected == ESP_OK; model.stationAt = now;
+    if (connected != ESP_OK) {
+      diagnostic_log::Snapshot failure; failure.reason = connected; failure.attempts = model.stationAttempts;
+      diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Wifi, uint16_t(0x0203), failure);
+    }
     if (model.stationAttempts < 3) ++model.stationAttempts;
     model.stationRetryAt = now + 30000;
   }
 }
 void initializeUdp() {
   model.udp = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-  if (model.udp < 0) { message("UDP socket unavailable."); return; }
+  if (model.udp < 0) {
+    diagnostic_log::Snapshot failure; failure.reason = errno;
+    diagnostics::event(diagnostics::Level::Error, diagnostics::Module::System, uint16_t(0x0103), failure);
+    message("UDP socket unavailable."); return;
+  }
   int enabled = 1; setsockopt(model.udp, SOL_SOCKET, SO_BROADCAST, &enabled, sizeof(enabled));
   if (fcntl(model.udp, F_SETFL, O_NONBLOCK) < 0) {
+    diagnostic_log::Snapshot failure; failure.reason = errno;
+    failure.detail = 1;
+    diagnostics::event(diagnostics::Level::Error, diagnostics::Module::System, uint16_t(0x0103), failure);
     close(model.udp); model.udp = -1;
     message("UDP nonblocking setup failed.");
     ESP_LOGE(kTag, "UDP nonblocking setup failed");
@@ -1120,6 +1152,8 @@ void initializeUdp() {
   }
   sockaddr_in address{}; address.sin_family = AF_INET; address.sin_port = htons(kUdpPort); address.sin_addr.s_addr = htonl(INADDR_ANY);
   if (bind(model.udp, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0) {
+    diagnostic_log::Snapshot failure; failure.reason = errno; failure.detail = 2;
+    diagnostics::event(diagnostics::Level::Error, diagnostics::Module::System, uint16_t(0x0103), failure);
     close(model.udp); model.udp = -1; message("UDP port 4210 is unavailable.");
   }
 }
@@ -1135,6 +1169,12 @@ void discover() {
 
 struct HandlerScope { HandlerScope() { ++activeHandlers; } ~HandlerScope() { --activeHandlers; } };
 esp_err_t error(httpd_req_t *request, const char *status, const char *text) {
+  const int code = std::atoi(status);
+  if (code >= 500) {
+    diagnostic_log::Snapshot failure; failure.reason = code;
+    diagnostics::event(diagnostics::Level::Error, diagnostics::Module::Http,
+                       diagnostics::Code::RequestFailed, failure);
+  }
   httpd_resp_set_status(request, status); httpd_resp_set_type(request, "text/plain; charset=utf-8");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store"); httpd_resp_set_hdr(request, "Connection", "close");
   const esp_err_t result = httpd_resp_send(request, text, HTTPD_RESP_USE_STRLEN);
@@ -2019,6 +2059,57 @@ esp_err_t health(httpd_req_t *request) {
   httpd_resp_set_type(request, "text/plain; charset=utf-8"); httpd_resp_set_hdr(request, "Cache-Control", "no-store");
   return httpd_resp_send(request, body, int(used) + progressCount);
 }
+void diagnosticMonitorTask(void *) {
+  TickType_t wake = xTaskGetTickCount();
+  int32_t previousLedError = 0;
+  uint32_t checkpointAt = 0;
+  for (;;) {
+    diagnostics::HealthContext context;
+    context.summary.version = PROJECT_FIRMWARE_VERSION;
+    context.summary.reset_cause = unsigned(esp_reset_reason());
+    context.summary.heap_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    context.heap_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    context.largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const time_t epoch = std::time(nullptr);
+    if (epoch >= 1700000000 && uint64_t(epoch) <= UINT32_MAX) context.unix_epoch_s = uint32_t(epoch);
+    const auto progress = snapshotNetworkProgress();
+    // Read the clock AFTER the synchronized progress snapshot. A newer
+    // enteredAtMs paired with an older clock would wrap and fake a long stall.
+    context.summary.uptime_ms = uptimeMs();
+    context.summary.network_stage = unsigned(progress.stage);
+    context.network_age_ms = context.summary.uptime_ms - progress.enteredAtMs;
+    context.network_started = progress.started && progress.stage != network_progress::Stage::Starting;
+    int32_t ledError = 0;
+    if (viewMutex && xSemaphoreTake(viewMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+      context.view_valid = true;
+      context.render_frames = sharedView.render.frames;
+      context.network_stack = sharedView.netStack;
+      context.wifi_connected = sharedView.control.connected;
+      context.wifi_rssi = sharedView.rssi;
+      for (const auto &agent : sharedView.control.agents) context.agents += agent.present;
+      ledError = sharedView.render.ledError;
+      // Flash/OTA deliberately park the network owner. Record only an overrun,
+      // not a normal update/persist interval. Do not restart or write flash here.
+      const auto maintenance = sharedView.control.maintenance;
+      if (maintenance != Maintenance::None && context.network_age_ms <
+          (maintenance == Maintenance::Ota ? 210000U : 15000U)) context.network_started = false;
+      xSemaphoreGive(viewMutex);
+    }
+    diagnostics::healthCheck(context);
+    if (context.summary.uptime_ms - checkpointAt >= 10000) {
+      diagnostics::checkpoint(context.summary);
+      checkpointAt = context.summary.uptime_ms;
+    }
+    if (ledError && ledError != previousLedError) {
+      diagnostic_log::Snapshot error; error.reason = ledError;
+      diagnostics::event(diagnostics::Level::Error, diagnostics::Module::Output,
+                         diagnostics::Code::OutputFailed, error);
+    }
+    previousLedError = ledError;
+    vTaskDelayUntil(&wake, pdMS_TO_TICKS(2000));
+  }
+}
+
 bool readBody(httpd_req_t *request, char *body, size_t capacity) {
   if (request->content_len >= capacity) return false;
   size_t read = 0; const uint32_t started = uptimeMs();
@@ -2420,7 +2511,10 @@ bool initializeHttp() {
       !registerRoute("/frames", HTTP_GET, framesGet) ||
       !registerRoute("/device.png", HTTP_GET, deviceImage) ||
       !registerRoute("/favicon.svg", HTTP_GET, favicon) ||
-      !registerRoute("/health", HTTP_GET, health) || !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
+      !registerRoute("/health", HTTP_GET, health) ||
+      !registerRoute("/logs", HTTP_GET, diagnosticJournal) ||
+      !registerRoute("/logs.txt", HTTP_GET, diagnosticJournal) ||
+      !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
   for (const char *uri : {"/save", "/power", "/brightness", "/external-light", "/buzzer-test", "/buzzer-volume", "/schedule", "/agent-color", "/restart", "/update", "/memorial", "/air-alert"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();
   for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js", "/assets/js/boot.js"})
@@ -2666,6 +2760,11 @@ void serviceManifestResults() {
   ManifestResult result;
   if (xQueueReceive(manifestResults, &result, 0) != pdTRUE) return;
   model.manifestBusy = false; otaMessage(result.status);
+  if (!result.newer && !result.upToDate) {
+    diagnostic_log::Snapshot failure; failure.detail = 1; // Manifest phase.
+    diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Ota,
+                       diagnostics::Code::UpdateFailed, failure);
+  }
   if (result.newer) { model.manifest = result.manifest; model.manifestReady = true; }
   else model.otaAt = uptimeMs() + (result.upToDate ? kOtaInterval : 60000);
 }
@@ -2882,6 +2981,8 @@ void serviceMaintenance() {
     if (!acknowledged() || previewStreamBusy.load()) {
       if (now - model.maintenanceAt >= kMaintenanceTimeout) {
         ++model.maintenanceTimeouts; message("Renderer/preview maintenance was not acknowledged; no flash write occurred.");
+        diagnostic_log::Snapshot failure; failure.elapsed_ms = now - model.maintenanceAt;
+        diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::System, uint16_t(0x0102), failure);
         model.persistRetryAt = now + 5000; model.otaAt = now + 60000;
         model.manifestReady = false;
         if (model.control.maintenance == Maintenance::Restart) model.restarting = false;
@@ -2903,6 +3004,7 @@ void serviceMaintenance() {
           if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) model.confirmationPending = false;
           else { message("Boot confirmation could not be persisted."); saved = false; }
         }
+        if (!saved) diagnostics::event(diagnostics::Level::Error, diagnostics::Module::System, uint16_t(0x0101));
         model.persistRetryAt = now + (saved ? 0 : 5000); releaseMaintenance(); break;
       }
       case Maintenance::Ota:
@@ -2913,6 +3015,8 @@ void serviceMaintenance() {
         // Finish the command gate atomically; HTTP views and telemetry never block OTA.
         if (!commandsSealedForOta()) return;
         if (installFirmware()) return;
+        { diagnostic_log::Snapshot failure; failure.detail = 2; // Image transfer/validation phase.
+          diagnostics::event(diagnostics::Level::Error, diagnostics::Module::Ota, diagnostics::Code::UpdateFailed, failure); }
         discardBlockedTelemetry();
         if (model.otaVisualTimedOut) return;
         model.manifestReady = false; model.otaAt = uptimeMs() + 60000; releaseMaintenance(); break;
@@ -2981,7 +3085,10 @@ void networkTask(void *) {
   const bool webReady = initializeWebFiles();
   if (!webReady) { message("Web filesystem initialization failed."); ESP_LOGE(kTag, "Web filesystem unavailable"); }
   model.wifiReady = initializeWifi();
-  if (!model.wifiReady) { message("Wi-Fi initialization failed."); ESP_LOGE(kTag, "Wi-Fi initialization failed"); }
+  if (!model.wifiReady) {
+    diagnostics::event(diagnostics::Level::Error, diagnostics::Module::Wifi, uint16_t(0x0202));
+    message("Wi-Fi initialization failed."); ESP_LOGE(kTag, "Wi-Fi initialization failed");
+  }
   initializeUdp();
   model.airWorkerReady = air_alert::startPolling();
   esp_ota_img_states_t state;
@@ -2993,7 +3100,15 @@ void networkTask(void *) {
   model.otaAt = uptimeMs() + 30000;
   updateControl(); serviceExternalLight(); publishView();
   model.httpReady = initializeHttp();
-  if (!model.httpReady) { message("HTTP server initialization failed."); ESP_LOGE(kTag, "HTTP server initialization failed"); }
+  if (!model.httpReady) {
+    diagnostic_log::Snapshot failure; failure.reason = 503; failure.detail = 1;
+    diagnostics::event(diagnostics::Level::Error, diagnostics::Module::Http, diagnostics::Code::RequestFailed, failure);
+    message("HTTP server initialization failed."); ESP_LOGE(kTag, "HTTP server initialization failed");
+  }
+  if (xTaskCreatePinnedToCore(diagnosticMonitorTask, "diagnostics", 4096, nullptr, 1, nullptr, 0) != pdPASS) {
+    diagnostics::event(diagnostics::Level::Error, diagnostics::Module::System, uint16_t(0x0100));
+    ESP_LOGW(kTag, "Diagnostic monitor unavailable");
+  }
   model.manifestWorkerReady = xTaskCreatePinnedToCore(manifestTask, "manifest", 16384, nullptr, 2, nullptr, 0) == pdPASS;
   TickType_t wake = xTaskGetTickCount();
   bool renderReported = false;

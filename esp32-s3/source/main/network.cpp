@@ -6,6 +6,7 @@
 #include "diagnostics.hpp"
 #include "diagnostic_http.hpp"
 #include "weekly.hpp"
+#include "daily_runtime.hpp"
 #include "agent_update.hpp"
 #include "agent_release.hpp"
 #include "memorial.hpp"
@@ -830,6 +831,10 @@ bool acceptWeeklyTelemetry(const char *packet, char (&ack)[64]) {
   return true;
 }
 bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
+  if (!std::strncmp(packet, "LFD1,", 5)) {
+    const auto clock = memorialClock();
+    return daily_runtime::accept(packet, clock.valid ? clock.date : 0, model.deviceId, ack);
+  }
   if (!std::strncmp(packet, "LFT1,", 5) || !std::strncmp(packet, "LFT2,", 5)) return acceptWeeklyTelemetry(packet, ack);
   AgentInput incoming; bool legacy = false; uint8_t remaining = 100, activity = 0;
   if (!parseTelemetry(packet, incoming, legacy, remaining, activity)) return false;
@@ -1660,7 +1665,7 @@ void writeRanking(Html &html, const View &view, bool lifetime) {
       count ? " hidden" : "", lifetime ? "Ще немає даних із журналів агентів." : "Ще немає даних за цей тиждень.");
 }
 void writeWeekly(Html &html, const View &view) { writeRanking(html, view, false); }
-void writeLifetime(Html &html, const View &view) { writeRanking(html, view, true); }
+void writeLifetime(Html &html, const View &) { html.file("templates/history/calendar.html"); }
 esp_err_t page(httpd_req_t *request) {
   HandlerScope scope; View view;
   if (!snapshot(view)) return error(request, "503 Service Unavailable", "Controller busy; retry.");
@@ -1858,7 +1863,7 @@ esp_err_t staticAsset(httpd_req_t *request) {
   HandlerScope scope;
   // Routes are explicitly registered; no user-supplied filesystem paths.
   const bool css = !std::strcmp(request->uri, "/assets/css/portal.css") || !std::strcmp(request->uri, "/assets/css/preview.css");
-  const bool js = !std::strcmp(request->uri, "/assets/js/portal.js") || !std::strcmp(request->uri, "/assets/js/preview.js") || !std::strcmp(request->uri, "/assets/js/boot.js");
+  const bool js = !std::strcmp(request->uri, "/assets/js/portal.js") || !std::strcmp(request->uri, "/assets/js/preview.js") || !std::strcmp(request->uri, "/assets/js/boot.js") || !std::strcmp(request->uri, "/assets/js/token-history.js");
   if (!css && !js) return error(request, "404 Not Found", "Not found");
   return serveWebFile(request, request->uri + 1, css ? "text/css; charset=utf-8" : "text/javascript; charset=utf-8");
 }
@@ -2467,6 +2472,10 @@ esp_err_t commandPost(httpd_req_t *request) {
   return httpd_resp_send(request, nullptr, 0);
 }
 using HttpHandler = esp_err_t (*)(httpd_req_t *);
+esp_err_t tokenHistoryGet(httpd_req_t *request) {
+  const auto clock = memorialClock();
+  return daily_runtime::get(request, clock.valid ? clock.date : 0);
+}
 struct ProtectedRoute { HttpHandler handler = nullptr; };
 ProtectedRoute protectedRoutes[40];
 size_t protectedRouteCount = 0;
@@ -2512,12 +2521,13 @@ bool initializeHttp() {
       !registerRoute("/device.png", HTTP_GET, deviceImage) ||
       !registerRoute("/favicon.svg", HTTP_GET, favicon) ||
       !registerRoute("/health", HTTP_GET, health) ||
+      !registerRoute("/token-history", HTTP_GET, tokenHistoryGet) ||
       !registerRoute("/logs", HTTP_GET, diagnosticJournal) ||
       !registerRoute("/logs.txt", HTTP_GET, diagnosticJournal) ||
       !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
   for (const char *uri : {"/save", "/power", "/brightness", "/external-light", "/buzzer-test", "/buzzer-volume", "/schedule", "/agent-color", "/restart", "/update", "/memorial", "/air-alert"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();
-  for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js", "/assets/js/boot.js"})
+  for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js", "/assets/js/boot.js", "/assets/js/token-history.js"})
     if (!registerRoute(uri, HTTP_GET, staticAsset)) return failed();
   for (const char *uri : {"/agent-update-enroll", "/agent-update-challenge", "/agent-update-poll", "/agent-upgrade", "/agent-rename", "/agent-uninstall"})
     if (!registerRoute(uri, HTTP_POST, agentUpdatePost)) return failed();
@@ -2995,6 +3005,7 @@ void serviceMaintenance() {
         bool saved = !model.dirty || saveSettings();
         if (saved) refreshStationAfterSave();
         saved = saveWeekly() && saved;
+        saved = daily_runtime::persist() && saved;
         saved = saveMemorialSettings() && saved;
         saved = saveAirAlertSettings() && saved;
         saved = saveExternalLight() && saved;
@@ -3008,7 +3019,7 @@ void serviceMaintenance() {
         model.persistRetryAt = now + (saved ? 0 : 5000); releaseMaintenance(); break;
       }
       case Maintenance::Ota:
-        if (model.dirty || model.weeklyDirty || model.lifetimeDirty || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || web_auth::pendingSave() || web_auth::busy() || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.lifetimeDirty || daily_runtime::dirty() || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || web_auth::pendingSave() || web_auth::busy() || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
         if (!model.render.assetsReady || model.render.ledError) {
           otaMessage("OTA refused: renderer unhealthy"); model.manifestReady = false; releaseMaintenance(); break;
         }
@@ -3021,7 +3032,7 @@ void serviceMaintenance() {
         if (model.otaVisualTimedOut) return;
         model.manifestReady = false; model.otaAt = uptimeMs() + 60000; releaseMaintenance(); break;
       case Maintenance::Restart:
-        if (model.dirty || model.weeklyDirty || model.lifetimeDirty || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || web_auth::pendingSave()) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.lifetimeDirty || daily_runtime::dirty() || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || web_auth::pendingSave()) { releaseMaintenance(); break; }
         if (!activeHandlers.load() && !web_auth::busy() && !uxQueueMessagesWaiting(commandQueue)) esp_restart();
         else if (now - model.maintenanceAt >= kMaintenanceTimeout) {
           model.restarting = false; ++model.maintenanceTimeouts;
@@ -3042,6 +3053,7 @@ void serviceMaintenance() {
   if (air_alert::busy()) return;
   if ((model.dirty && now - model.dirtyAt >= 300 && due(now, model.persistRetryAt)) ||
       (web_auth::pendingSave() && due(now, model.persistRetryAt)) ||
+      (daily_runtime::due(now, model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
       (model.memorialDirty && due(now, model.persistRetryAt)) ||
       (model.airDirty && due(now, model.persistRetryAt)) ||
       (model.lightDirty && due(now, model.persistRetryAt)) ||
@@ -3052,10 +3064,10 @@ void serviceMaintenance() {
     requestMaintenance(Maintenance::Persist); return;
   }
   if (model.restarting) {
-    if (!model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !web_auth::pendingSave() && !web_auth::busy() && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
+    if (!model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !daily_runtime::dirty() && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !web_auth::pendingSave() && !web_auth::busy() && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
     return;
   }
-  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
+  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !daily_runtime::dirty() && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
   if (!model.connected || model.dirty || model.confirmationPending || !model.render.assetsReady || model.render.ledError) return;
   if (model.updateRequested || due(now, model.otaAt)) queueManifestCheck();
 }
@@ -3072,6 +3084,7 @@ void networkTask(void *) {
   if (!viewMutex || !wifiEvents || !telemetryQueue || !telemetryReplies || !manifestJobs || !manifestResults) { ESP_LOGE(kTag, "Cannot initialize network IPC"); vTaskDelete(nullptr); return; }
   // Complete all boot-time storage and PHY initialization before permitting RMT output.
   loadSettings();
+  daily_runtime::initialize(model.nvsReady);
   loadExternalLight();
   loadBuzzerVolume();
   bootloader_random_enable();

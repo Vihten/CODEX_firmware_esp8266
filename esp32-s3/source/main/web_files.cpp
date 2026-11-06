@@ -28,7 +28,7 @@ CachedAsset cachedAssets[] = {
   {"assets/css/portal.css", {}}, {"assets/css/preview.css", {}},
   {"assets/js/portal.js", {}}, {"assets/js/preview.js", {}},
   {"images/device.webp", {}}, {"images/favicon.svg", {}},
-  {"assets/js/boot.js", {}}
+  {"assets/js/boot.js", {}}, {"assets/js/token-history.js", {}}
 };
 void initializeAssetEtags() {
   // Two independent 64-bit SHA prefixes keep validators within the header budget.

@@ -3,6 +3,8 @@
 #include "web_auth.hpp"
 #include "preview.hpp"
 #include "network_progress.hpp"
+#include "recovery.hpp"
+#include "esp_attr.h"
 #include "diagnostics.hpp"
 #include "diagnostic_http.hpp"
 #include "weekly.hpp"
@@ -145,6 +147,9 @@ struct View {
   char ssid[33] = {}, ap[32] = {}, message[96] = {}, ota[96] = {};
   uint32_t deviceId = 0, maintenanceTimeouts = 0, udpPackets = 0, otaDone = 0, otaTotal = 0;
   uint32_t netStack = 0, networkLoops = 0, disconnects = 0;
+  uint32_t recoveryOfflineMs = 0;
+  uint16_t recoveryCode = 0;
+  uint8_t recoveryStage = 0, recoveryStacks = 0, recoveryFaults = 0;
   int rssi = -127;
   uint16_t start = 0, end = 0, disconnectReason = 0;
   uint8_t power = 0, days = 0;
@@ -207,6 +212,9 @@ struct Model {
   uint32_t wifiSampleAt = 0, wifiEventsDropped = 0, wifiReconciledLosses = 0;
   uint8_t wifiNegativeSamples = 0;
   bool wifiSampled = false;
+  bool wifiInitialized = false, wifiDriverStarted = false, recoveryRestart = false;
+  recovery::Wifi wifiRecovery;
+  uint16_t recoveryCode = 0;
   uint16_t disconnectReason = 0;
   uint8_t legacyActivity = 0, legacyRemaining = 100, stationAttempts = 0;
   bool legacySeen = false, directSeen = false, linked = false, connected = false;
@@ -218,6 +226,40 @@ struct Model {
   bool manifestBusy = false, manifestWorkerReady = false, wifiReady = false, httpReady = false;
   char apName[32] = {}, message[96] = {}, ota[96] = "Not checked";
 } model;
+
+recovery::Gate recoveryGate;
+RTC_NOINIT_ATTR recovery::Retained retainedRecovery;
+recovery::Budget recoveryBudget;
+portMUX_TYPE recoveryBudgetMux = portMUX_INITIALIZER_UNLOCKED;
+std::atomic<bool> recoveryBudgetAvailable{false};
+std::atomic<uint32_t> recoveryBudgetStatus{0};
+std::atomic<uint32_t> recoveryManualAt{0};
+std::atomic<bool> recoveryManualGrace{false};
+
+bool reserveRecoveryRestart(uint16_t reason = recovery::queuedCode) {
+  portENTER_CRITICAL(&recoveryBudgetMux);
+  const bool reserved = recoveryBudget.consume(retainedRecovery, reason);
+  recoveryBudgetStatus.store((recovery::valid(retainedRecovery) ? 1U : 0U) |
+      (retainedRecovery.used << 1) | (retainedRecovery.reason << 16));
+  portEXIT_CRITICAL(&recoveryBudgetMux);
+  if (reserved) recoveryBudgetAvailable.store(false);
+  return reserved;
+}
+class RecoveryOwner {
+ public:
+  explicit RecoveryOwner(bool allowProtected = false)
+      : borrowed_(allowProtected && recoveryGate.protectedOwner()),
+        held_(!borrowed_ && recoveryGate.owner() && recoveryGate.protect()) {}
+  explicit operator bool() const { return borrowed_ || held_; }
+  ~RecoveryOwner() {
+    if (held_) recoveryGate.release(model.control.maintenance != Maintenance::None ||
+        model.memorial.active || model.control.memorialActive || model.render.memorialTransition ||
+        model.restarting || model.manifestReady || model.confirmationPending || model.releasePending);
+  }
+ private:
+  bool borrowed_;
+  bool held_;
+};
 
 StaticSemaphore_t viewMutexStorage;
 SemaphoreHandle_t viewMutex = nullptr;
@@ -457,6 +499,10 @@ bool saveAirAlertSettings() {
   model.airCheckpointHead = model.air.telegramHeadId;
   return true;
 }
+bool backgroundTlsReady() {
+  constexpr unsigned caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+  return heap_caps_get_free_size(caps) >= 32768 && heap_caps_get_largest_free_block(caps) >= 16384;
+}
 void serviceAirAlert() {
   const uint32_t now = uptimeMs();
   model.air.expire(now);
@@ -485,8 +531,9 @@ void serviceAirAlert() {
     model.airNextAt = now + std::min(uint32_t(86400000), std::max(kAirPollIntervalMs, result.retryAfterMs));
   }
   if (!model.airWorkerReady || !model.airSettings.enabled ||
-      !model.connected || model.restarting || model.manifestBusy || model.manifestReady ||
+      !model.connected || model.restarting || model.manifestBusy || model.manifestReady || model.updateRequested ||
       model.control.maintenance != Maintenance::None || air_alert::busy() || !due(now, model.airNextAt)) return;
+  if (!backgroundTlsReady()) { model.airNextAt = now + 5000; return; }
   air_alert::PollJob job{};
   job.generation = model.airGeneration;
   job.knownHeadId = model.air.telegramHeadId; job.knownEventId = model.air.telegramMessageId;
@@ -922,6 +969,9 @@ bool scheduledOn() {
   return minute < s.end && (s.days & (1U << ((day + 6) % 7)));
 }
 void updateControl() {
+  // Scheduled memorial activation and publication must exclude stale watchdog
+  // snapshots just like manual commands. Nested maintenance keeps its guard.
+  RecoveryOwner recoveryOwner(true); if (!recoveryOwner) return;
   const uint32_t now = uptimeMs();
   model.agentUpdates.expire(now);
   unsigned combined = 0; int remaining = 101; bool direct = false;
@@ -1013,6 +1063,9 @@ void publishView() {
   view.memorialSaveFailed = model.memorialSaveFailed; view.dirty = view.dirty || model.memorialDirty;
   fillAirAlertView(view); view.dirty = view.dirty || model.airDirty;
   view.otaDone = model.otaDone; view.otaTotal = model.otaTotal; view.netStack = uxTaskGetStackHighWaterMark(nullptr);
+  view.recoveryOfflineMs = model.wifiRecovery.offlineAge(uptimeMs());
+  view.recoveryStage = model.wifiRecovery.stage(); view.recoveryStacks = model.wifiRecovery.stacks();
+  view.recoveryFaults = model.wifiRecovery.faults(); view.recoveryCode = model.recoveryCode;
   view.networkLoops = model.loops; view.disconnects = model.disconnects; view.disconnectReason = model.disconnectReason;
   for (size_t i = 0; i < kAgentCapacity; ++i) {
     view.overrideColor[i] = findOverride(model.control.agents[i].clientId) != nullptr;
@@ -1063,8 +1116,11 @@ bool initializeWifi() {
   std::memcpy(ap.ap.ssid, model.apName, std::strlen(model.apName)); ap.ap.ssid_len = std::strlen(model.apName);
   std::memcpy(ap.ap.password, "ledforge", 8); ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
   ap.ap.max_connection = 4; ap.ap.channel = 1;
-  if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK || esp_wifi_set_config(WIFI_IF_AP, &ap) != ESP_OK ||
-      !stationConfig() || esp_wifi_start() != ESP_OK || esp_wifi_set_ps(WIFI_PS_NONE) != ESP_OK) return false;
+  if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK || esp_wifi_set_config(WIFI_IF_AP, &ap) != ESP_OK) return false;
+  model.wifiInitialized = true;
+  if (!stationConfig()) return false;
+  model.wifiDriverStarted = esp_wifi_start() == ESP_OK;
+  if (!model.wifiDriverStarted || esp_wifi_set_ps(WIFI_PS_NONE) != ESP_OK) return false;
   setenv("TZ", "EET-2EEST,M3.5.0/3,M10.5.0/4", 1); tzset();
   model.stationRetryAt = uptimeMs();
   return true;
@@ -1104,7 +1160,12 @@ void serviceWifi() {
     const bool usable = associated && model.sta && esp_netif_is_netif_up(model.sta) &&
         esp_netif_get_ip_info(model.sta, &ip) == ESP_OK && ip.ip.addr != 0;
     if (usable) {
-      model.connected = true; model.stationConnecting = false; model.stationAttempts = 0;
+      if (!model.connected && model.wifiSampled && model.disconnects) {
+        model.recoveryCode = recovery::restoredCode;
+        diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Wifi, recovery::restoredCode);
+      }
+      model.connected = true; model.wifiReady = true; model.wifiDriverStarted = true;
+      model.stationConnecting = false; model.stationAttempts = 0;
       model.wifiNegativeSamples = 0;
       if (sampleDue) model.rssi = accessPoint.rssi;
       std::snprintf(model.control.ip, sizeof(model.control.ip), IPSTR, IP2STR(&ip.ip));
@@ -1142,11 +1203,57 @@ void serviceWifi() {
     const esp_err_t connected = esp_wifi_connect();
     model.stationConnecting = connected == ESP_OK; model.stationAt = now;
     if (connected != ESP_OK) {
+      if (connected == ESP_ERR_WIFI_NOT_STARTED) model.wifiDriverStarted = false;
+      if (connected == ESP_ERR_WIFI_NOT_INIT || connected == ESP_ERR_WIFI_NOT_STARTED || connected == ESP_ERR_WIFI_CONN)
+        model.wifiRecovery.fault();
       diagnostic_log::Snapshot failure; failure.reason = connected; failure.attempts = model.stationAttempts;
       diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Wifi, uint16_t(0x0203), failure);
     }
     if (model.stationAttempts < 3) ++model.stationAttempts;
     model.stationRetryAt = now + 30000;
+  }
+}
+void serviceWifiRecovery() {
+  const uint32_t now = uptimeMs();
+  const bool protectedWork = model.control.maintenance != Maintenance::None || model.releasePending ||
+      model.restarting || model.manifestReady || model.wifiChanged ||
+      model.memorial.active || model.control.memorialActive || model.render.memorialTransition ||
+      activeHandlers.load() != 0 || web_auth::busy() || air_alert::busy();
+  const auto action = model.wifiRecovery.step(now, {model.settings.ssid[0] != 0 && model.wifiInitialized,
+      model.connected, protectedWork, recoveryBudgetAvailable.load() && !model.confirmationPending});
+  if (action == recovery::Action::None) return;
+  RecoveryOwner recoveryOwner; if (!recoveryOwner) return;
+  diagnostic_log::Snapshot event; event.reason = model.disconnectReason;
+  event.attempts = model.stationAttempts;
+  if (action == recovery::Action::RestartStation) {
+    model.recoveryCode = recovery::stackCode;
+    diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Wifi, recovery::stackCode, event);
+    // AP remains available: remove only STA, then recreate its control block.
+    // Do not deinit the driver/netifs or erase RAM/NVS configuration.
+    esp_err_t result = esp_wifi_set_mode(WIFI_MODE_AP);
+    if (result == ESP_OK) result = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (result == ESP_OK && !stationConfig()) result = ESP_FAIL;
+    if (result == ESP_OK && !model.wifiDriverStarted) {
+      result = esp_wifi_start(); model.wifiDriverStarted = result == ESP_OK;
+    }
+    if (result == ESP_OK) result = esp_wifi_set_ps(WIFI_PS_NONE);
+    model.wifiReady = result == ESP_OK;
+    model.stationConnecting = false; model.stationAttempts = 0;
+    model.stationRetryAt = now + 2000;
+    if (result != ESP_OK) {
+      if (result != ESP_ERR_NO_MEM) model.wifiRecovery.fault();
+      model.recoveryCode = recovery::failedCode; event.reason = result;
+      diagnostics::event(diagnostics::Level::Error, diagnostics::Module::Wifi, recovery::failedCode, event);
+    }
+  } else if (action == recovery::Action::QueueRestart && reserveRecoveryRestart()) {
+    model.recoveryRestart = model.restarting = true; model.restartAt = now;
+    model.recoveryCode = recovery::queuedCode;
+    diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Wifi, recovery::queuedCode, event);
+    message("Wi-Fi recovery restart queued; settings preserved.");
+  } else {
+    model.recoveryCode = recovery::exhaustedCode;
+    diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Wifi, recovery::exhaustedCode, event);
+    message("Wi-Fi recovery budget exhausted; AP and connection retries remain available.");
   }
 }
 void initializeUdp() {
@@ -2079,7 +2186,16 @@ esp_err_t health(httpd_req_t *request) {
   if (progressCount < 0 || size_t(progressCount) >= sizeof(body) - used)
     return error(request, "503 Service Unavailable", "Diagnostics too large.");
   httpd_resp_set_type(request, "text/plain; charset=utf-8"); httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-  return httpd_resp_send(request, body, int(used) + progressCount);
+  const size_t recoveryOffset = used + size_t(progressCount);
+  const uint32_t budgetStatus = recoveryBudgetStatus.load();
+  const int recoveryCount = std::snprintf(body + recoveryOffset, sizeof(body) - recoveryOffset,
+      "recovery_stage=%u recovery_stack_attempts=%u recovery_faults=%u recovery_offline_ms=%lu recovery_last_action=%04X recovery_budget_valid=%u recovery_budget_used=%u recovery_budget_available=%u recovery_last_reset_code=%04X\n",
+      unsigned(view.recoveryStage), unsigned(view.recoveryStacks), unsigned(view.recoveryFaults),
+      (unsigned long)view.recoveryOfflineMs, unsigned(view.recoveryCode), unsigned(budgetStatus & 1),
+      unsigned((budgetStatus >> 1) & 3), unsigned(recoveryBudgetAvailable.load()), unsigned(budgetStatus >> 16));
+  if (recoveryCount < 0 || size_t(recoveryCount) >= sizeof(body) - recoveryOffset)
+    return error(request, "503 Service Unavailable", "Diagnostics too large.");
+  return httpd_resp_send(request, body, int(recoveryOffset) + recoveryCount);
 }
 void diagnosticMonitorTask(void *) {
   TickType_t wake = xTaskGetTickCount();
@@ -2102,6 +2218,7 @@ void diagnosticMonitorTask(void *) {
     context.network_age_ms = context.summary.uptime_ms - progress.enteredAtMs;
     context.network_started = progress.started && progress.stage != network_progress::Stage::Starting;
     int32_t ledError = 0;
+    bool recoverySafeView = false;
     if (viewMutex && xSemaphoreTake(viewMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
       context.view_valid = true;
       context.render_frames = sharedView.render.frames;
@@ -2110,12 +2227,39 @@ void diagnosticMonitorTask(void *) {
       context.wifi_rssi = sharedView.rssi;
       for (const auto &agent : sharedView.control.agents) context.agents += agent.present;
       ledError = sharedView.render.ledError;
-      // Flash/OTA deliberately park the network owner. Record only an overrun,
-      // not a normal update/persist interval. Do not restart or write flash here.
+      recoverySafeView = sharedView.control.maintenance == Maintenance::None &&
+          !sharedView.restarting && !sharedView.control.memorialActive && !sharedView.render.memorialTransition;
+      // Flash/OTA deliberately park the network owner. Record only an overrun.
       const auto maintenance = sharedView.control.maintenance;
       if (maintenance != Maintenance::None && context.network_age_ms <
           (maintenance == Maintenance::Ota ? 210000U : 15000U)) context.network_started = false;
       xSemaphoreGive(viewMutex);
+    }
+    portENTER_CRITICAL(&recoveryBudgetMux);
+    recoveryBudget.observe(retainedRecovery, context.view_valid && context.wifi_connected &&
+        context.network_age_ms < 5000, context.summary.uptime_ms);
+    recoveryBudgetAvailable.store(recoveryBudget.available(retainedRecovery));
+    recoveryBudgetStatus.store((recovery::valid(retainedRecovery) ? 1U : 0U) |
+        (retainedRecovery.used << 1) | (retainedRecovery.reason << 16));
+    portEXIT_CRITICAL(&recoveryBudgetMux);
+    const bool manualGrace = recoveryManualGrace.load() &&
+        uint32_t(context.summary.uptime_ms - recoveryManualAt.load()) < recovery::manualGraceMs;
+    if (recovery::stalled(context.network_started, context.network_age_ms, context.summary.uptime_ms,
+          recoveryBudgetAvailable.load(), recoverySafeView && !manualGrace) && recoveryGate.claim()) {
+      // The gate prevents a concurrently resumed owner from starting flash or commands.
+      // A stale decision must not reset an owner that resumed before the claim.
+      // Read the synchronized heartbeat first, then time, to avoid age underflow.
+      const auto claimedProgress = snapshotNetworkProgress();
+      const uint32_t claimedAt = uptimeMs();
+      if (recovery::stillStalled(progress, claimedProgress, claimedAt) &&
+          reserveRecoveryRestart(recovery::stalledCode)) {
+        diagnostic_log::Snapshot fault; fault.elapsed_ms = claimedAt - claimedProgress.enteredAtMs;
+        fault.detail = unsigned(claimedProgress.stage);
+        diagnostics::event(diagnostics::Level::Error, diagnostics::Module::System, recovery::stalledCode, fault);
+        diagnostics::checkpoint(context.summary);
+        esp_restart();
+      }
+      recoveryGate.cancel();
     }
     diagnostics::healthCheck(context);
     if (context.summary.uptime_ms - checkpointAt >= 10000) {
@@ -2560,6 +2704,7 @@ bool initializeHttp() {
 
 // All configuration mutations, flash operations, and telemetry-table writes belong to this task.
 void serviceCommands() {
+  RecoveryOwner recoveryOwner; if (!recoveryOwner) return;
   NetworkCommand command;
   for (unsigned count = 0; count < 8 && xQueueReceive(commandQueue, &command, 0) == pdTRUE; ++count) {
     switch (command.kind) {
@@ -2664,7 +2809,7 @@ void serviceCommands() {
         if (!model.restarting) { model.restarting = true; model.restartAt = uptimeMs(); message("Restart queued."); }
         break;
       case CommandKind::Update:
-        if (!model.manifestBusy) { model.updateRequested = true; otaMessage("Update check queued"); }
+        if (!model.manifestBusy) { model.updateRequested = true; model.otaAt = uptimeMs(); otaMessage("Update check queued"); }
         else message("Update check already running.");
         break;
     }
@@ -2796,7 +2941,9 @@ void serviceManifestResults() {
   else model.otaAt = uptimeMs() + (result.upToDate ? kOtaInterval : 60000);
 }
 void queueManifestCheck() {
-  if (model.manifestBusy) return;
+  if (model.manifestBusy || model.manifestReady || model.restarting ||
+      model.control.maintenance != Maintenance::None) return;
+  if (air_alert::busy() || !backgroundTlsReady()) { model.otaAt = uptimeMs() + 5000; return; }
   if (!model.manifestWorkerReady) { otaMessage("Manifest worker unavailable"); model.otaAt = uptimeMs() + 60000; return; }
   const esp_partition_t *partition = esp_ota_get_next_update_partition(nullptr);
   if (!partition) { otaMessage("No OTA partition available"); model.otaAt = uptimeMs() + 60000; return; }
@@ -2928,6 +3075,8 @@ bool installFirmware() {
 }
 
 void requestMaintenance(Maintenance kind) {
+  // Reuse the network task's protection, or acquire it for a direct request.
+  RecoveryOwner recoveryOwner(true); if (!recoveryOwner) return;
   if (model.releasePending || model.control.maintenance != Maintenance::None) return;
   if (kind == Maintenance::Persist) {
     if (!web_auth::tryMaintenance()) return;
@@ -2957,6 +3106,8 @@ bool acknowledged() {
 void refreshStationAfterSave() {
   if (!model.wifiChanged) return;
   model.wifiChanged = false;
+  model.wifiRecovery.manual(uptimeMs());
+  recoveryManualAt.store(uptimeMs()); recoveryManualGrace.store(true);
   esp_wifi_disconnect(); model.connected = false; model.stationConnecting = false; model.stationAttempts = 0;
   copy(model.control.ip, "192.168.4.1");
   if (!stationConfig()) message("Wi-Fi settings saved; radio configuration failed.");
@@ -2983,7 +3134,14 @@ void discardBlockedTelemetry() {
   close(model.udp); model.udp = -1; initializeUdp();
 }
 void serviceMaintenance() {
+  RecoveryOwner recoveryOwner; if (!recoveryOwner) return;
   const uint32_t now = uptimeMs();
+  if (model.recoveryRestart && (model.connected || model.memorial.active ||
+      model.control.memorialActive || model.render.memorialTransition || model.wifiChanged)) {
+    model.restarting = model.recoveryRestart = false;
+    if (model.control.maintenance == Maintenance::Restart) releaseMaintenance();
+    return;
+  }
   if (model.otaVisualTimedOut) {
     if (!otaVisualAcknowledged()) return;
     if (model.otaBootSelected) {
@@ -3086,7 +3244,7 @@ void serviceMaintenance() {
   }
   if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !daily_runtime::dirty() && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
   if (!model.connected || model.dirty || model.confirmationPending || !model.render.assetsReady || model.render.ledError) return;
-  if (model.updateRequested || due(now, model.otaAt)) queueManifestCheck();
+  if (due(now, model.otaAt)) queueManifestCheck();
 }
 } // namespace
 
@@ -3114,6 +3272,8 @@ void networkTask(void *) {
   loadTelegramAlertState();
   const bool webReady = initializeWebFiles();
   if (!webReady) { message("Web filesystem initialization failed."); ESP_LOGE(kTag, "Web filesystem unavailable"); }
+  recoveryBudget.boot(retainedRecovery, esp_reset_reason() == ESP_RST_SW);
+  recoveryBudgetStatus.store(1U | (retainedRecovery.used << 1) | (retainedRecovery.reason << 16));
   model.wifiReady = initializeWifi();
   if (!model.wifiReady) {
     diagnostics::event(diagnostics::Level::Error, diagnostics::Module::Wifi, uint16_t(0x0202));
@@ -3157,6 +3317,7 @@ void networkTask(void *) {
     }
     markNetworkProgress(network_progress::Stage::Wifi);
     serviceWifi();
+    serviceWifiRecovery();
     markNetworkProgress(network_progress::Stage::Commands);
     serviceCommands();
     markNetworkProgress(network_progress::Stage::Weekly);

@@ -2,6 +2,7 @@
 #include "external_light.hpp"
 #include "buzzer.hpp"
 #include "diagnostics.hpp"
+#include "json_memory.hpp"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_flash.h"
@@ -29,6 +30,10 @@ extern "C" void app_main() {
   uint32_t flashSize = 0;
   if (esp_flash_get_size(nullptr, &flashSize) != ESP_OK || flashSize < 16 * 1024 * 1024) {
     ESP_LOGE("boot", "This firmware requires 16 MB flash; refusing to start");
+    return;
+  }
+  if (!initializeJsonMemory()) {
+    ESP_LOGE("boot", "PSRAM unavailable for bounded web JSON storage");
     return;
   }
   if (!initializeRuntime()) {

@@ -12,6 +12,7 @@
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_tls.h"
 #include "freertos/FreeRTOS.h"
@@ -187,6 +188,18 @@ int messageComplete(http_parser *parser) {
   return 0;
 }
 
+// One owner for every initialized TLS context, including all early returns.
+struct TlsSession {
+  esp_tls_t *value = esp_tls_init();
+  ~TlsSession() { close(); }
+  TlsSession() = default;
+  TlsSession(const TlsSession &) = delete;
+  TlsSession &operator=(const TlsSession &) = delete;
+  void close() {
+    if (value) { esp_tls_conn_destroy(value); value = nullptr; }
+  }
+};
+
 bool wantsIo(int result) {
   return result == ESP_TLS_ERR_SSL_WANT_READ || result == ESP_TLS_ERR_SSL_WANT_WRITE;
 }
@@ -209,7 +222,8 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
   result.heapBeforeTls = uint32_t(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   result.largestBeforeTls = uint32_t(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   result.clockBeforeTls = int64_t(std::time(nullptr));
-  esp_tls_t *tls = esp_tls_init();
+  TlsSession connection;
+  esp_tls_t *tls = connection.value;
   if (!tls) { result.failure = Failure::Memory; return finish(); }
   const auto captureTlsError = [&]() {
     esp_tls_error_handle_t handle = nullptr;
@@ -233,7 +247,6 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
   if (connected != 1 || esp_timer_get_time() >= deadline) {
     result.failure = esp_timer_get_time() >= deadline ? Failure::Timeout : Failure::Tls;
     captureTlsError();
-    esp_tls_conn_destroy(tls);
     return finish();
   }
   char path[64] = "/s/vmroficial";
@@ -281,9 +294,21 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
   if (r.status == 429) result.retryAfterMs = r.retry;
   // Release internal TLS buffers before the bounded HTML scan.
   captureTlsError();
-  esp_tls_conn_destroy(tls);
-  if (parsed && r.complete && !r.bad && r.status == 200 && esp_timer_get_time() < deadline)
-    result.valid = telegram::parsePage(r.body, r.used, page);
+  connection.close();
+  if (parsed && r.complete && !r.bad && r.status == 200 && esp_timer_get_time() < deadline) {
+    telegram::Diagnostics diagnostic;
+    result.valid = telegram::parsePage(r.body, r.used, page, &diagnostic);
+    if (!result.valid) {
+      // No HTML, message contents or cookies in diagnostics. An HTTP-200 login
+      // or challenge page is not a verified channel and cannot imply all-clear.
+      ESP_LOGW("air-alert", "HTTP 200 payload rejected: scope=%s reason=%s bytes=%u offset=%u posts=%u",
+          diagnostic.channel ? "channel" : "unverified", diagnostic.reason,
+          unsigned(r.used), unsigned(diagnostic.offset), diagnostic.posts);
+    }
+  } else if (r.status == 200) {
+    ESP_LOGW("air-alert", "HTTP 200 response rejected: complete=%u headers=%u parser=%u bytes=%u",
+        unsigned(r.complete), unsigned(!r.bad), unsigned(parsed), unsigned(r.used));
+  }
   if (result.valid && esp_timer_get_time() >= deadline) {
     result.valid = false;
     result.level = Level::Unknown;

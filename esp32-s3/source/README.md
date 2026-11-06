@@ -4,7 +4,35 @@ This is a separate ESP-IDF firmware target for ESP32-S3-WROOM-1-N16R8:
 16 MiB quad flash and 8 MiB octal PSRAM. The firmware repository now publishes
 S3 as its primary target; ESP8266 releases remain only in Git history.
 
+## Fault recovery and memory
+
+The boot-only cJSON allocator uses PSRAM without falling back to the internal
+radio/driver reserve. Allocation failure remains an explicit error. Outbound
+alert and update TLS jobs are serialized; background handshakes wait while
+internal free memory is below 32 KiB or its largest block is below 16 KiB.
+
+Wi-Fi reconnects without erasing credentials. After 90 seconds offline, station
+recovery can restart STA up to three times, at least two minutes apart, while
+retaining the setup AP. Ordinary missing-router/authentication/DHCP failures do
+not authorize a full reset. Persistent driver faults can queue a controlled
+restart after ten minutes. An independent monitor can restart a previously
+healthy network owner stalled for five minutes, excluding protected operations.
+RTC CRC-protected recovery credit permits at most two automatic restarts until
+30 continuous healthy minutes rearm it. Recovery events and counters are exposed
+in diagnostics. This cannot repair a power-on failure before firmware executes.
+
 ## Token Rankings
+
+Daily calendar reports use `LFD1` and receive
+`LFD1_RAM_ACK,controller,client,YYYYMMDD,revision`. This confirms acceptance in
+volatile RAM, not a durable flash commit. Equal-revision, equal-total retries are
+idempotent and receive the same RAM acknowledgement; newer revisions may lower
+totals, including correcting a day to zero. Agents must continue cyclic replay
+of all retained daily snapshots after acknowledgement, without a permanent
+acknowledged checkpoint. The controller batches NVS writes at five-minute
+intervals and flushes before a requested restart or OTA. A power loss can lose
+the uncommitted interval (normally up to five minutes; longer if persistence
+fails); cyclic replay restores it from the agent's durable daily history.
 
 The agents page contains independent lifetime and Kyiv Monday-to-Sunday weekly
 rankings. Lifetime means usage reconstructed from the available local session

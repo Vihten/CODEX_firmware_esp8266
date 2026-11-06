@@ -14,6 +14,14 @@ struct Page {
   unsigned posts = 0;
 };
 
+// Fixed-size, payload-free failure details for the transport diagnostic.
+struct Diagnostics {
+  const char *reason = "input";
+  size_t offset = 0;
+  unsigned posts = 0;
+  bool channel = false;
+};
+
 namespace detail {
 
 constexpr size_t kPageLimit = 256 * 1024;
@@ -189,6 +197,7 @@ class Tokenizer {
     t.name = {start, size_t(p - start)};
     if (!t.name.size || t.name.size > 32 || lower(*start) < 'a' || lower(*start) > 'z') return false;
     unsigned attributes = 0, relevant = 0;
+    bool replyQuote = false;
     while (p != end) {
       const bool separated = space(*p);
       while (p != end && space(*p)) ++p;
@@ -201,7 +210,16 @@ class Tokenizer {
       start = p;
       while (p != end && nameChar(*p)) ++p;
       const Slice name{start, size_t(p - start)};
-      if (!name.size) return false;
+      if (!name.size) {
+        // Public Telegram reply links currently end with href="..." ">.
+        // Tolerate only this terminal stray quote on a reply anchor; do not
+        // loosen the attributes used for post identity, dates or alert text.
+        bool reply = false;
+        if (replyQuote || !nameEqual(t.name, "a") || end - p < 2 ||
+            p[0] != '"' || p[1] != '>' ||
+            !classToken(t.classes, "tgme_widget_message_reply", reply) || !reply) return false;
+        replyQuote = true; ++p; continue;
+      }
       unsigned bit = nameEqual(name, "class") ? 1U : nameEqual(name, "data-post") ? 2U :
           nameEqual(name, "datetime") ? 4U : 0U;
       if (bit && (relevant & bit)) return false;
@@ -343,42 +361,51 @@ struct Text {
 // No heap, recursion, global mutable storage, clocks, transport or persistence.
 class Parser {
  public:
-  bool parse(const char *body, size_t length, Page &out) {
+  bool parse(const char *body, size_t length, Page &out, Diagnostics *diagnostics = nullptr) {
     out = Page{};
     reset();
+    if (diagnostics) *diagnostics = Diagnostics{};
     if (!body || !length || length > detail::kPageLimit || std::memchr(body, 0, length)) return false;
     detail::Tokenizer tokens(body, length);
+    bool channelSeen = false;
+    const auto fail = [&](const char *reason) {
+      if (diagnostics) {
+        diagnostics->reason = reason; diagnostics->offset = size_t(tokens.p - body);
+        diagnostics->posts = page_.posts; diagnostics->channel = channelSeen;
+      }
+      return false;
+    };
     while (tokens.p != tokens.end) {
       if (*tokens.p != '<') {
         uint32_t cp;
         if (textDepth_ && !hidden()) {
           if (!(*tokens.p == '&' ? detail::entity(tokens.p, tokens.end, cp) :
-              detail::scalar(tokens.p, tokens.end, cp)) || !text_.codepoint(cp)) return false;
+              detail::scalar(tokens.p, tokens.end, cp)) || !text_.codepoint(cp)) return fail("markup");
         } else {
-          if ((!seenHtml_ || closedHtml_) && !detail::space(*tokens.p)) return false;
+          if ((!seenHtml_ || closedHtml_) && !detail::space(*tokens.p)) return fail("markup");
           ++tokens.p;
         }
         continue;
       }
       detail::Tag tag;
-      if (!tokens.tag(tag)) return false;
+      if (!tokens.tag(tag)) return fail("markup");
       if (tag.declaration) continue;
       if (tag.closing) {
-        if (!depth_) return false;
+        if (!depth_) return fail("markup");
         const Frame &frame = stack_[depth_ - 1];
-        if (!sameName(body, frame, tag.name)) return false;
+        if (!sameName(body, frame, tag.name)) return fail("markup");
         if (depth_ == textDepth_) {
           textValid_ = text_.finish(level_);
           textDepth_ = 0;
         } else if (textDepth_ && !hidden() && block(tag.name)) text_.newline();
-        if (depth_ == postDepth_ && !finishPost()) return false;
+        if (depth_ == postDepth_ && !finishPost()) return fail("post-metadata-or-text");
         if (depth_ == historyDepth_) { historyDepth_ = 0; closedHistory_ = true; }
         if (depth_ == bodyDepth_) {
-          if (!closedHistory_) return false;
+          if (!closedHistory_) return fail("channel-missing");
           bodyDepth_ = 0; closedBody_ = true;
         }
         if (detail::nameEqual(tag.name, "html")) {
-          if (depth_ != 1 || !closedBody_) return false;
+          if (depth_ != 1 || !closedBody_) return fail("markup");
           closedHtml_ = true;
         }
         if (depth_ == svgDepth_) svgDepth_ = 0;
@@ -386,37 +413,39 @@ class Parser {
         continue;
       }
       if (detail::nameEqual(tag.name, "html")) {
-        if (depth_ || seenHtml_ || tag.empty) return false;
+        if (depth_ || seenHtml_ || tag.empty) return fail("markup");
         seenHtml_ = true;
-      } else if (!seenHtml_ || closedHtml_ || closedBody_) return false;
+      } else if (!seenHtml_ || closedHtml_ || closedBody_) return fail("markup");
       if (detail::nameEqual(tag.name, "body")) {
-        if (depth_ != 1 || seenBody_ || tag.empty) return false;
+        if (depth_ != 1 || seenBody_ || tag.empty) return fail("markup");
         seenBody_ = true; bodyDepth_ = depth_ + 1;
       }
-      bool message, text, forwarded, history, historyScript;
+      bool message, text, forwarded, history, historyScript, reply, replyText;
       if (!detail::classToken(tag.classes, "tgme_widget_message", message) ||
           !detail::classToken(tag.classes, "tgme_widget_message_text", text) ||
           !detail::classToken(tag.classes, "tgme_widget_message_forwarded_from", forwarded) ||
           !detail::classToken(tag.classes, "tgme_channel_history", history) ||
-          !detail::classToken(tag.classes, "js-message_history", historyScript)) return false;
+          !detail::classToken(tag.classes, "js-message_history", historyScript) ||
+          !detail::classToken(tag.classes, "tgme_widget_message_reply", reply) ||
+          !detail::classToken(tag.classes, "js-message_reply_text", replyText)) return fail("markup");
       const bool parentHidden = hidden();
-      const bool excluded = parentHidden || exclude(tag.name);
+      const bool excluded = parentHidden || exclude(tag.name) || reply || replyText;
       if (history && !excluded) {
         if (!bodyDepth_ || historyDepth_ || closedHistory_ || !historyScript ||
-            !detail::nameEqual(tag.name, "section") || tag.empty) return false;
-        historyDepth_ = depth_ + 1;
+            !detail::nameEqual(tag.name, "section") || tag.empty) return fail("markup");
+        historyDepth_ = depth_ + 1; channelSeen = true;
       }
       if (message && !excluded) {
         if (!historyDepth_ || postDepth_ || !detail::nameEqual(tag.name, "div") || tag.empty ||
-            page_.posts >= detail::kPostLimit || !detail::postId(tag.post, id_)) return false;
-        for (unsigned i = 0; i < page_.posts; ++i) if (ids_[i] == id_) return false;
+            page_.posts >= detail::kPostLimit || !detail::postId(tag.post, id_)) return fail("markup");
+        for (unsigned i = 0; i < page_.posts; ++i) if (ids_[i] == id_) return fail("duplicate-id");
         postDepth_ = depth_ + 1;
         hasTime_ = hasText_ = forwarded_ = false; textValid_ = true;
         time_ = 0; level_ = Level::Unknown;
       }
       if (postDepth_ && forwarded && !excluded) forwarded_ = true;
       if (postDepth_ && text && !excluded) {
-        if (hasText_ || !detail::nameEqual(tag.name, "div") || tag.empty) return false;
+        if (hasText_ || !detail::nameEqual(tag.name, "div") || tag.empty) return fail("markup");
         hasText_ = true; textDepth_ = depth_ + 1; text_ = detail::Text{};
       }
       if (postDepth_ && !textDepth_ && !excluded && detail::nameEqual(tag.name, "time")) {
@@ -424,29 +453,34 @@ class Parser {
         // Ignore only that known metadata shape; publication dates stay mandatory.
         bool duration, durationScript;
         if (!detail::classToken(tag.classes, "message_video_duration", duration) ||
-            !detail::classToken(tag.classes, "js-message_video_duration", durationScript)) return false;
+            !detail::classToken(tag.classes, "js-message_video_duration", durationScript)) return fail("markup");
         if (!(duration && durationScript && !tag.date.data)) {
-          if (hasTime_ || !detail::timestamp(tag.date, time_) || tag.empty) return false;
+          if (hasTime_ || !detail::timestamp(tag.date, time_) || tag.empty) return fail("markup");
           hasTime_ = true;
         }
       }
-      if (textDepth_ && !parentHidden && (block(tag.name) || exclude(tag.name))) text_.newline();
+      if (textDepth_ && !parentHidden &&
+          (block(tag.name) || exclude(tag.name) || reply || replyText)) text_.newline();
       if (detail::nameEqual(tag.name, "script") || detail::nameEqual(tag.name, "style")) {
-        if (tag.empty || !tokens.raw(tag.name)) return false;
+        if (tag.empty || !tokens.raw(tag.name)) return fail("markup");
         continue;
       }
       if (detail::voidTag(tag.name)) continue;
       // HTML self-closing syntax is only valid for void elements (and SVG children).
       if (tag.empty) {
-        if (!svgDepth_) return false;
+        if (!svgDepth_) return fail("markup");
         continue;
       }
-      if (depth_ == detail::kDepthLimit) return false;
+      if (depth_ == detail::kDepthLimit) return fail("markup");
       stack_[depth_++] = {uint32_t(tag.name.data - body), uint8_t(tag.name.size), uint8_t(excluded ? 1 : 0)};
       if (detail::nameEqual(tag.name, "svg")) svgDepth_ = depth_;
     }
-    if (depth_ || postDepth_ || !closedHtml_ || !closedBody_ || !closedHistory_ || !page_.posts) return false;
+    if (depth_ || postDepth_ || !closedHtml_ || !closedBody_ || !closedHistory_ || !page_.posts) return fail("markup");
     out = page_;
+    if (diagnostics) {
+      diagnostics->reason = "none"; diagnostics->offset = length;
+      diagnostics->posts = page_.posts; diagnostics->channel = true;
+    }
     return true;
   }
 
@@ -504,9 +538,9 @@ class Parser {
 
 static_assert(sizeof(Parser) <= 1536, "Keep parser scratch below the firmware task stack budget");
 
-inline bool parsePage(const char *body, size_t length, Page &out) {
+inline bool parsePage(const char *body, size_t length, Page &out, Diagnostics *diagnostics = nullptr) {
   Parser parser;
-  return parser.parse(body, length, out);
+  return parser.parse(body, length, out, diagnostics);
 }
 
 }  // namespace telegram

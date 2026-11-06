@@ -87,6 +87,12 @@ const char* message(uint16_t code) noexcept {
     case 0x0301: return "Authentication throttled";
     case 0x0302: return "Authentication form invalid";
     case 0x0303: return "Authentication crypto failed";
+    case 0x0500: return "Wi-Fi station recovery started";
+    case 0x0501: return "Wi-Fi station recovery failed";
+    case 0x0502: return "Automatic recovery restart queued";
+    case 0x0503: return "Recovery restart budget exhausted; setup AP retained";
+    case 0x0504: return "Network stalled; independent recovery restart";
+    case 0x0505: return "Network recovery completed";
     case static_cast<uint16_t>(Code::WifiDisconnected): return "Wi-Fi disconnected";
     case static_cast<uint16_t>(Code::RequestFailed): return "Request failed";
     case static_cast<uint16_t>(Code::UpdateFailed): return "Firmware update failed";

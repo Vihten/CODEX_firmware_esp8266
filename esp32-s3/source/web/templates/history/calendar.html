@@ -1,22 +1,13 @@
 <section class="section token-history" id="token-history" aria-labelledby="token-history-heading">
-  <div class="section-head"><h2 id="token-history-heading">Історія токенів</h2><span class="muted" data-history-range>Останні 366 днів · усі агенти</span></div>
-  <div class="token-history-modes" role="group" aria-label="Відображення історії">
-    <button type="button" class="secondary" data-history-mode="daily" aria-pressed="true">Щодня</button>
-    <button type="button" class="secondary" data-history-mode="weekly" aria-pressed="false">За тиждень</button>
-    <button type="button" class="secondary" data-history-mode="cumulative" aria-pressed="false">З накопиченням</button>
-    <button type="button" class="secondary" data-history-refresh>Оновити історію</button>
-  </div>
+  <div class="section-head"><h2 id="token-history-heading">Токени за тиждень</h2><button type="button" class="secondary" data-history-refresh>Оновити історію</button></div>
+  <div class="token-history-summary"><span class="muted" data-history-range>Поточний тиждень · усі агенти</span><strong data-history-week-total></strong></div>
   <p class="muted" data-history-status role="status" aria-live="polite">Завантаження історії…</p>
   <noscript><p>Увімкніть JavaScript, щоб переглядати історію токенів.</p></noscript>
-  <div class="token-history-scroll" tabindex="0" role="region" aria-label="Календар токенів: 366 днів. Прокрутіть горизонтально, щоб переглянути весь період.">
-    <div class="token-history-calendar"><div class="token-history-months" data-history-months aria-hidden="true"></div><div class="token-history-body"><div class="token-history-weekdays" aria-hidden="true"><span>Пн</span><span></span><span>Ср</span><span></span><span>Пт</span><span></span><span>Нд</span></div><div class="token-history-grid" data-history-grid></div></div></div>
+  <div class="token-history-calendar">
+    <div class="token-history-grid" data-history-grid role="group" aria-label="Токени за днями поточного тижня"></div>
+    <div class="token-history-details" id="token-history-tooltip" data-history-details role="tooltip" hidden>
+      <strong data-history-day></strong><p data-history-day-value></p><p class="muted" data-history-day-quota></p>
+    </div>
   </div>
-  <div class="token-history-legend" data-history-legend aria-label="Шкала активності"></div>
-  <p class="muted" data-history-mode-note>Колір показує кількість токенів за день. Оберіть день, щоб переглянути його тиждень.</p>
-  <div class="token-history-details" data-history-details hidden>
-    <h3 data-history-day></h3><p data-history-day-value></p><p data-history-day-quota></p>
-    <div class="token-history-week-head"><h3 data-history-week></h3><span data-history-week-total></span></div>
-    <p class="muted" data-history-week-note></p>
-    <div class="token-history-table-scroll"><table class="token-history-table"><thead><tr><th scope="col">День</th><th scope="col">Токени</th><th scope="col">% ліміту</th></tr></thead><tbody data-history-week-rows></tbody></table></div>
-  </div>
+  <p class="muted token-history-hint">Темно-синій — менше токенів, світлий — більше. Наведіть або натисніть на день для деталей.</p>
 </section>

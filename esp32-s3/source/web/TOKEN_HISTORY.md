@@ -1,18 +1,27 @@
 # Token activity calendar
 
-The Agents page keeps the weekly agent ranking and replaces the lifetime table
-with a 366-day calendar of reported daily token totals across agents. Each cell
-can be selected to inspect its day and Monday–Sunday week in Kyiv calendar dates.
-Daily, weekly and cumulative modes change the color measure, not the source data.
+The Agents page keeps the weekly agent ranking and shows exactly seven token
+activity squares for the current Monday–Sunday calendar week, using the
+controller's Kyiv date. The heading shows the full week range and the summary
+adds only known daily totals. There is no year grid, aggregation-mode switch,
+or weekly details table. The underlying history still retains 366 dates.
 
-Unknown days are distinct from a reported zero. Partial weeks are labelled;
-older weekly/lifetime totals are never distributed across invented daily buckets.
-The blue-to-white scale is relative token activity, not account quota consumption.
+Unknown days are distinct from a reported zero; future days stay unknown.
+Older weekly/lifetime totals are never distributed across invented daily buckets.
+The blue-to-white scale is relative daily token activity within the visible week,
+not account quota consumption.
+
+Hover, keyboard focus, or click opens the day's tooltip with its date, token
+total, and account quota availability. Pointer leave hides an unpinned tooltip
+unless its day remains focused; click pins it and Escape closes it. Arrow Left
+and Right move one day, and Home/End select Monday/Sunday. Polls preserve focus;
+a new calendar week replaces all seven visible dates.
 
 Daily account quota is not derivable from tokens. The existing agent receives
 usage percentages for account limit windows, not an authoritative daily budget.
-The `% ліміту` column therefore shows no data unless an explicit daily percentage
-source is supplied. It must not display a day's fraction of weekly tokens.
+The tooltip therefore reports daily quota as unavailable. Incidental percentage
+fields are ignored, including zero and 100; a day's fraction of weekly tokens
+must never be presented as quota consumption.
 
 Updated agents send independent, date-keyed LFD1 reports through the existing
 agent transport. Daily corrections use revisions and replace a day's value;

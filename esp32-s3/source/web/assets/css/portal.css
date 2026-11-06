@@ -197,39 +197,29 @@ table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
 @media(max-width:760px){.shell{padding-inline:1.25rem}.workspace{grid-template-columns:minmax(0,1fr);gap:0}.stats{grid-template-columns:repeat(3,minmax(0,1fr))}.section{padding-block:1.5rem}}
 @media(max-width:440px){.shell{padding-inline:1rem}.topbar{padding-top:1.25rem;gap:1rem}.header-status{width:100%;justify-content:space-between}.tabs{gap:1.25rem}.stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.form-grid{grid-template-columns:minmax(0,1fr)}.agent-color{grid-template-columns:repeat(2,minmax(0,1fr))}.color-field{grid-column:1/-1;margin-bottom:.3rem}.agent-metrics{gap:1rem}.agent-summary{grid-template-columns:minmax(0,1fr) auto}.agent-summary [data-agent-state]{grid-column:1;grid-row:2}.agent-summary [data-agent-activity]{grid-column:2;grid-row:1/3}.actions>button,.actions>form{flex:1 1 auto}.actions>form>button{width:100%}.system-list>div{gap:.5rem}.days{gap:.35rem}.days label{padding:.4rem .5rem}}
 
-/* Token history: independent calendar surface; existing rankings stay intact. */
+/* Token history: seven Kyiv calendar dates, with details on demand. */
 .token-history{--history-zero:#172438;--history-1:#21466e;--history-2:#347fc1;--history-3:#92c9ec;--history-4:#edf7ff}
-.token-history-modes{display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1rem}
-.token-history-modes button[aria-pressed=true]{color:#102219;background:var(--accent);border-color:var(--accent)}
-.token-history [data-history-status]{min-height:1.5em;margin-block:.75rem}
-.token-history-scroll{max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;padding:.5rem .25rem .75rem;scrollbar-color:#58645c var(--surface);scrollbar-width:thin}
-.token-history-calendar{width:max-content;min-width:100%}
-.token-history-months{display:grid;grid-auto-columns:20px;grid-auto-flow:column;gap:4px;margin-left:34px;min-height:28px;color:var(--muted);font-size:.8125rem}
-.token-history-months span{white-space:nowrap;overflow:visible}
-.token-history-body{display:flex;gap:10px}
-.token-history-weekdays{display:grid;grid-template-rows:repeat(7,20px);gap:4px;width:24px;font-size:.75rem;color:var(--muted)}
-.token-history-grid{display:grid;grid-template-rows:repeat(7,20px);grid-auto-flow:column;grid-auto-columns:20px;gap:4px}
-.token-history .token-history-cell{display:block;width:20px;height:20px;min-height:20px;min-width:20px;margin:0;padding:0;border:1px solid #52616d;border-radius:3px;background:var(--history-zero);line-height:1;scroll-margin:48px}
-.token-history-cell[data-level="1"],.token-history-swatch[data-level="1"]{background:var(--history-1)}
-.token-history-cell[data-level="2"],.token-history-swatch[data-level="2"]{background:var(--history-2)}
-.token-history-cell[data-level="3"],.token-history-swatch[data-level="3"]{background:var(--history-3)}
-.token-history-cell[data-level="4"],.token-history-swatch[data-level="4"]{background:var(--history-4)}
-.token-history .token-history-cell[data-unknown=true],.token-history-swatch[data-unknown=true]{background:transparent;border-style:dashed;border-color:#8593a0}
-.token-history .token-history-cell[aria-pressed=true]{outline:2px solid var(--accent);outline-offset:2px}
-.token-history button:focus-visible,.token-history-scroll:focus-visible{outline:3px solid var(--text);outline-offset:3px}
-.token-history-legend{display:flex;align-items:center;flex-wrap:wrap;gap:.5rem 1rem;margin-block:1rem;color:var(--muted);font-size:.8125rem}
-.token-history-legend-item{display:inline-flex;align-items:center;gap:.4rem}
-.token-history-swatch{display:inline-block;flex:none;width:16px;height:16px;border:1px solid #52616d;border-radius:2px;background:var(--history-zero)}
-.token-history-details{margin-top:1.5rem;padding-top:1.25rem;border-top:1px solid var(--line)}
-.token-history-details>p{margin-block:.5rem 1.25rem}
-.token-history-week-head{display:flex;justify-content:space-between;gap:.75rem;flex-wrap:wrap;align-items:baseline}
-.token-history-table-scroll{max-width:100%;overflow-x:auto}
-.token-history-table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
-.token-history-table th,.token-history-table td{padding:.65rem .5rem;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
-.token-history-table th:first-child,.token-history-table td:first-child{text-align:left}
-.token-history-table tr[data-selected=true]{background:var(--surface)}
-@media(hover:hover) and (pointer:fine){.token-history .token-history-cell:hover{outline:2px solid var(--text);outline-offset:1px}}
-@media(pointer:coarse){.token-history-grid{grid-template-rows:repeat(7,24px);grid-auto-columns:24px}.token-history .token-history-cell{width:24px;height:24px;min-height:24px}.token-history-weekdays{grid-template-rows:repeat(7,24px)}.token-history-months{grid-auto-columns:24px}}
+.token-history-summary{display:flex;justify-content:space-between;align-items:baseline;gap:.75rem 2rem;flex-wrap:wrap;font-variant-numeric:tabular-nums}
+.token-history-summary strong{font-size:1rem;font-weight:600}
+.token-history [data-history-status]{min-height:1.5em;margin-block:.75rem;font-size:.8125rem}
+.token-history-calendar{position:relative;width:min(100%,30rem);padding-block:.75rem}
+.token-history-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:clamp(4px,1.4vw,14px)}
+.token-history-day{display:grid;justify-items:center;align-content:start;gap:.65rem;min-width:0}
+.token-history .token-history-cell{display:block;width:100%;aspect-ratio:1;min-width:0;min-height:0;max-width:52px;margin:0;padding:0;border:1px solid #647586;border-radius:4px;background:var(--history-zero);line-height:1;scroll-margin:48px}
+.token-history .token-history-cell[data-level="1"]{background:var(--history-1)}
+.token-history .token-history-cell[data-level="2"]{background:var(--history-2)}
+.token-history .token-history-cell[data-level="3"]{background:var(--history-3)}
+.token-history .token-history-cell[data-level="4"]{background:var(--history-4)}
+.token-history .token-history-cell[data-unknown=true]{background:transparent;border-style:dashed;border-color:#8593a0}
+.token-history .token-history-cell[data-future=true]{border-color:#53616d}
+.token-history .token-history-cell[data-today=true]{box-shadow:0 3px 0 -1px var(--accent)}
+.token-history .token-history-cell[aria-pressed=true]{outline:2px solid var(--accent);outline-offset:3px}
+.token-history button:focus-visible{outline:3px solid var(--text);outline-offset:3px}
+.token-history-date{color:var(--muted);font-size:.75rem;text-align:center;line-height:1.5}
+.token-history-details{position:absolute;top:100%;inset-inline:0;z-index:5;width:min(100%,25rem);box-sizing:border-box;padding:1rem 1.25rem;background:var(--surface);border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 20px #0005;font-size:.875rem;font-variant-numeric:tabular-nums}
+.token-history-details p{margin:.5rem 0 0}
+.token-history-details strong{display:block;font-weight:600}
+.token-history-hint{font-size:.8125rem;margin-top:1rem}
+@media(hover:hover) and (pointer:fine){.token-history .token-history-cell:hover{outline:2px solid var(--text);outline-offset:3px}}
 @media(forced-colors:active){.token-history .token-history-cell[data-unknown=true]{border-style:dashed}.token-history .token-history-cell[aria-pressed=true]{outline-color:Highlight}}
-.token-history-weekdays{position:sticky;left:0;z-index:1;background:var(--bg)}
-@media(max-width:36rem){.token-history-table{font-size:.8125rem}.token-history-table th,.token-history-table td{padding:.65rem .35rem}.token-history-table th:first-child{white-space:normal}}
+@media(max-width:36rem){.token-history-summary{gap:.5rem}.token-history-date{font-size:.6875rem}.token-history-details{padding:1rem}}

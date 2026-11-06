@@ -6,6 +6,7 @@
 #include "diagnostics.hpp"
 #include "diagnostic_http.hpp"
 #include "weekly.hpp"
+#include "quota_filter.hpp"
 #include "daily_runtime.hpp"
 #include "agent_update.hpp"
 #include "agent_release.hpp"
@@ -210,6 +211,7 @@ struct Model {
   uint8_t legacyActivity = 0, legacyRemaining = 100, stationAttempts = 0;
   bool legacySeen = false, directSeen = false, linked = false, connected = false;
   bool quotaResetReported = false;
+  quota::Filter quotaFilter;
   bool nvsReady = false, dirty = false, wifiChanged = false, stationConnecting = false;
   bool restarting = false, updateRequested = false, manifestReady = false;
   bool releasePending = false, confirmationPending = false, sntpStarted = false;
@@ -924,10 +926,9 @@ void updateControl() {
   const bool legacy = model.legacySeen && now - model.legacyAt < 8000;
   model.control.activityPercent = direct ? uint8_t(std::min(combined, 100U)) : legacy && !model.directSeen ? model.legacyActivity : 0;
   if (legacy) remaining = std::min(remaining, int(model.legacyRemaining));
-  if (remaining == 100 && model.control.remainingPercent < 100 && model.quotaResetReported)
+  if (model.quotaFilter.observe(remaining, model.quotaResetReported, now, model.control.remainingPercent))
     ++model.control.quotaRecoveryEpoch;
   model.quotaResetReported = false;
-  if (remaining <= 100) model.control.remainingPercent = uint8_t(remaining);
   model.control.connected = model.connected; model.control.accountLinked = model.linked;
   model.control.brightness = model.settings.brightness; model.control.on = scheduledOn();
   model.control.lightFirst = model.light.first;

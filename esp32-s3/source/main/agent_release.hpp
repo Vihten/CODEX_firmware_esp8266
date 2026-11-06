@@ -1,3 +1,3 @@
 #pragma once
 #include <cstdint>
-namespace agent_release { constexpr uint64_t version = 20261106120000ULL; }
+namespace agent_release { constexpr uint64_t version = 20261106140000ULL; }

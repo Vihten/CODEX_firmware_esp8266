@@ -17,6 +17,7 @@ struct AgentInput {
   int16_t remaining = -1;
   uint8_t activity = 0;
   bool present = false;
+  bool quotaForPairedAccount = false;
   char name[49] = {};
 };
 
@@ -26,6 +27,8 @@ struct ControlFrame {
   uint8_t otaVisualPercent = 0;
   bool otaVisualAnimate = false;
   uint8_t remainingPercent = 100;
+  bool quotaKnown = false;
+  bool quotaFresh = false;
   uint8_t activityPercent = 0;
   uint8_t brightness = PROJECT_BRIGHTNESS;
   uint8_t airAlertLevel = 0;

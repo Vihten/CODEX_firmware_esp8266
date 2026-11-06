@@ -367,7 +367,7 @@
         row.dataset.activity = String(activity);
         text('[data-agent-state]', online ? 'На зв’язку' : 'Не на зв’язку', row);
         text('[data-agent-activity]', percent(activity), row);
-        text('[data-agent-remaining]', online ? percent(agent.remaining) : missing, row);
+        text('[data-agent-remaining]', online && agent.quota_source === true ? percent(agent.remaining) : missing, row);
         if (agent && typeof agent.name === 'string') text('[data-agent-name]', agent.name, row);
         if (agent && typeof agent.custom_color === 'boolean')
           text('[data-agent-color-mode]', agent.custom_color ? 'Власний колір' : 'Автоматичний колір', row);
@@ -427,7 +427,8 @@
         fps = decimal.format((stamp.frames - baseline.frames) * 1000 / (stamp.uptime - baseline.uptime));
       }
       baseline = stamp;
-      live('remaining', percent(status.remaining));
+      live('remaining', status.quota_known === true ?
+        `${percent(status.remaining)}${status.quota_fresh === true ? '' : ' · останні дані'}` : missing);
       live('activity', percent(status.activity));
       live('agents', number(status.agents_count));
       live('wifi', status.wifi === true ? 'Підключено' : status.wifi === false ? 'Не підключено' : missing);

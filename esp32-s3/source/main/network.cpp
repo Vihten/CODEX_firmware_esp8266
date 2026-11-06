@@ -736,28 +736,37 @@ bool parseTelemetry(const char *packet, AgentInput &agent, bool &legacy, uint8_t
   const size_t length = std::strlen(packet);
   if (!length || length >= 160) return false;
   char buffer[160]; std::memcpy(buffer, packet, length + 1);
-  char *fields[7] = {buffer}; size_t count = 1;
+  agent = AgentInput{};
+  char *fields[8] = {buffer}; size_t count = 1;
   for (size_t i = 0; i < length; ++i) if (buffer[i] == ',') {
-    if (count == 7) return false;
+    if (count == 8) return false;
     buffer[i] = 0; fields[count++] = buffer + i + 1;
   }
   uint32_t account;
   if (count < 2 || !hexValue(fields[1], 1, 8, account) || account != PROJECT_ACCOUNT_FINGERPRINT) return false;
   int a, r;
-  legacy = !std::strcmp(fields[0], "LF2");
+  legacy = !std::strcmp(fields[0], "LF2") || !std::strcmp(fields[0], "LF1");
   if (legacy) {
     if (count != 4 || !percent(fields[2], false, r) || !percent(fields[3], false, a)) return false;
     remaining = uint8_t(r); activity = uint8_t(a); return true;
   }
-  if (std::strcmp(fields[0], "LFA2") || (count != 5 && count != 7) ||
+  const bool verifiedProtocol = !std::strcmp(fields[0], "LFA3");
+  if ((verifiedProtocol ? count != 8 : (std::strcmp(fields[0], "LFA2") || (count != 5 && count != 7))) ||
       !hexValue(fields[2], 1, 8, agent.clientId) || !agent.clientId || !percent(fields[3], false, a) || !percent(fields[4], true, r)) return false;
   agent.activity = uint8_t(a); agent.remaining = int16_t(r); agent.rgb = fallbackColor(agent.clientId);
-  if (count == 7) {
-    if (!hexValue(fields[5], 6, 6, agent.rgb)) return false;
-    const size_t hexLength = std::strlen(fields[6]);
+  uint32_t quotaAccount = 0;
+  if (verifiedProtocol) {
+    if (!hexValue(fields[5], 8, 8, quotaAccount)) return false;
+    agent.quotaForPairedAccount = quotaAccount == PROJECT_ACCOUNT_FINGERPRINT && r >= 0;
+  }
+  if (count >= 7) {
+    const size_t colorField = verifiedProtocol ? 6 : 5;
+    const char *nameHex = fields[colorField + 1];
+    if (!hexValue(fields[colorField], 6, 6, agent.rgb)) return false;
+    const size_t hexLength = std::strlen(nameHex);
     if (hexLength > 96 || (hexLength & 1)) return false;
     for (size_t i = 0; i < hexLength / 2; ++i) {
-      const int high = hexDigit(fields[6][i * 2]), low = hexDigit(fields[6][i * 2 + 1]);
+      const int high = hexDigit(nameHex[i * 2]), low = hexDigit(nameHex[i * 2 + 1]);
       if (high < 0 || low < 0) return false;
       agent.name[i] = char((high << 4) | low);
     }
@@ -842,8 +851,6 @@ bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
   if (!parseTelemetry(packet, incoming, legacy, remaining, activity)) return false;
   const uint32_t now = uptimeMs();
   if (legacy) {
-    model.quotaResetReported |= model.legacySeen && now - model.legacyAt < 8000 &&
-        model.legacyRemaining < 100 && remaining == 100;
     model.legacySeen = true; model.legacyAt = receivedAt; model.legacyRemaining = remaining; model.legacyActivity = activity;
     std::snprintf(ack, sizeof(ack), "LF1_ACK,%06lX,%d", (unsigned long)model.deviceId, model.rssi);
   } else {
@@ -864,7 +871,8 @@ bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
     }
     if (slot == kAgentCapacity) return false;
     const auto &previous = model.control.agents[slot];
-    model.quotaResetReported |= previous.present && previous.clientId == incoming.clientId &&
+    model.quotaResetReported |= incoming.quotaForPairedAccount && previous.quotaForPairedAccount &&
+        previous.present && previous.clientId == incoming.clientId &&
         now - previous.seenAt < kAgentTimeout && previous.remaining >= 0 &&
         previous.remaining < 100 && incoming.remaining == 100;
     const bool sameColor = previous.present && previous.clientId == incoming.clientId &&
@@ -921,14 +929,16 @@ void updateControl() {
     if (agent.present && now - agent.seenAt >= kAgentTimeout) agent.present = false;
     if (!agent.present) continue;
     direct = true; combined += agent.activity;
-    if (agent.remaining >= 0) remaining = std::min(remaining, int(agent.remaining));
+    if (agent.quotaForPairedAccount && agent.remaining >= 0 && agent.remaining <= 100)
+      remaining = std::min(remaining, int(agent.remaining));
   }
   const bool legacy = model.legacySeen && now - model.legacyAt < 8000;
   model.control.activityPercent = direct ? uint8_t(std::min(combined, 100U)) : legacy && !model.directSeen ? model.legacyActivity : 0;
-  if (legacy) remaining = std::min(remaining, int(model.legacyRemaining));
   if (model.quotaFilter.observe(remaining, model.quotaResetReported, now, model.control.remainingPercent))
     ++model.control.quotaRecoveryEpoch;
   model.quotaResetReported = false;
+  model.control.quotaKnown = model.quotaFilter.initialized;
+  model.control.quotaFresh = remaining >= 0 && remaining <= 100;
   model.control.connected = model.connected; model.control.accountLinked = model.linked;
   model.control.brightness = model.settings.brightness; model.control.on = scheduledOn();
   model.control.lightFirst = model.light.first;
@@ -1363,7 +1373,8 @@ void writeAgents(Html &html, const View &view) {
     if (agent.present != online || (!agent.present && !agent.name[0])) continue;
     ++known;
     writeAgentControls(html, agent.name, agent.clientId, agent.rgb,
-                       agent.present, agent.activity, agent.remaining, view.overrideColor[i], &view);
+                       agent.present, agent.activity, agent.quotaForPairedAccount ? agent.remaining : -1,
+                       view.overrideColor[i], &view);
   }
   for (const auto &entry : view.savedColors) {
     if (!entry.used) continue;
@@ -1410,7 +1421,9 @@ const char *portalOtaLabel(const char *value) {
 }
 void writePortalStats(Html &html, const View &view) {
   html.file("templates/stats/remaining-open.html");
-  if (view.control.accountLinked) html.format("%u%%", view.control.remainingPercent); else html.text("Немає даних");
+  if (!view.control.quotaKnown) html.text("Немає даних");
+  else if (!view.control.quotaFresh) html.format("%u%% · останні дані", view.control.remainingPercent);
+  else html.format("%u%%", view.control.remainingPercent);
   html.render("templates/stats/activity.html", [&](unsigned token) {
     switch (token) {
       case 0: html.format("%u", view.control.activityPercent); break;
@@ -1897,7 +1910,9 @@ esp_err_t portalStatus(httpd_req_t *request) {
   number(root, "preview_stream_send_errors", previewStreamSendErrors.load(std::memory_order_relaxed));
   number(root, "ota_done", view.otaDone); number(root, "ota_total", view.otaTotal);
   const time_t epoch = std::time(nullptr); number(root, "time_epoch", epoch >= 1700000000 ? double(epoch) : 0);
-  if (view.control.accountLinked) number(root, "remaining", view.control.remainingPercent);
+  boolean(root, "quota_known", view.control.quotaKnown);
+  boolean(root, "quota_fresh", view.control.quotaFresh);
+  if (view.control.quotaKnown) number(root, "remaining", view.control.remainingPercent);
   else if (!cJSON_AddNullToObject(root, "remaining")) okay = false;
   boolean(root, "wifi", view.control.connected); boolean(root, "on", view.control.on);
   boolean(root, "maintenance", view.restarting || view.control.maintenance == Maintenance::Ota || view.control.maintenance == Maintenance::Restart);
@@ -1979,6 +1994,7 @@ esp_err_t portalStatus(httpd_req_t *request) {
         [&](const ColorOverride &entry) { return entry.used && entry.clientId == agent.clientId; }));
     boolean(item, "online", agent.present); number(item, "activity", agent.present ? agent.activity : 0);
     number(item, "remaining", agent.present ? agent.remaining : -1);
+    boolean(item, "quota_source", agent.present && agent.quotaForPairedAccount);
     const auto *update = view.agentUpdates.find(agent.clientId);
     number(item, "agent_version", update ? double(update->version) : 0);
     boolean(item, "update_capable", update && view.agentUpdateKeyReady && agent_release::version &&

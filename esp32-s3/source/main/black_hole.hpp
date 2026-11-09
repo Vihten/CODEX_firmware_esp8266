@@ -130,7 +130,12 @@ inline Pixel pixel(unsigned x, unsigned y, unsigned w, unsigned h,
                          : 0.0f;
   float captured_light = 0;
   for (const auto& light : f.light) {
+    if (light.energy <= 0) continue;
     const float dx = px - light.x, dy = py - light.y;
+    // Reject pixels outside the entire rotated ellipse before the expensive
+    // projected-distance calculation. The longest semiaxis bounds both axes.
+    const float extent = 0.09f * light.stretch;
+    if (std::fabs(dx) > extent || std::fabs(dy) > extent) continue;
     // A broad, soft footprint overlaps adjacent rows at the physical LED pitch.
     const float along = (dx * light.nx + dy * light.ny) / light.stretch;
     const float across = -dx * light.ny + dy * light.nx;
@@ -139,6 +144,7 @@ inline Pixel pixel(unsigned x, unsigned y, unsigned w, unsigned h,
   }
   float response = 0;
   for (const auto& impact : f.impact) {
+    if (impact.energy <= 0) continue;
     const float dx = px - impact.x, dy = py - impact.y;
     const float spot = detail::clamp(1 - (dx * dx + dy * dy) / 0.007f);
     response += spot * spot * impact.energy * 0.48f;

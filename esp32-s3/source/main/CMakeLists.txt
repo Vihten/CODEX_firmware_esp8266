@@ -16,3 +16,7 @@ idf_component_register(
   REQUIRES esp_wifi esp_event esp_netif esp_http_server esp_http_client app_update bootloader_support esp_timer
           esp_https_ota nvs_flash espressif__cjson espressif__led_strip mbedtls esp-tls http_parser esp_driver_gpio esp_driver_ledc esp_psram joltwallet__littlefs
 )
+
+# The renderer must prepare the next 1000-LED frame inside a 33.3 ms budget.
+# Optimize this CPU-bound translation unit while retaining normal assertions.
+set_source_files_properties(renderer.cpp PROPERTIES COMPILE_OPTIONS "-O2")

@@ -11,7 +11,7 @@ inline bool previewActive(bool requested, uint32_t startedAt, uint32_t now) {
 struct Pixel { uint8_t red, green, blue; };
 
 // Fixed-size samples: no allocation or per-pixel trigonometry.
-constexpr unsigned kInfallStars = 10;
+constexpr unsigned kInfallStars = 12;
 constexpr unsigned kTrailSamples = 4;
 constexpr uint32_t kInfallPeriodMs = 32768;
 constexpr uint32_t kInfallPhaseStepMs = kInfallPeriodMs / kInfallStars;

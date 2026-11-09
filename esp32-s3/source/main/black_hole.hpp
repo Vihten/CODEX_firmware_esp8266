@@ -89,24 +89,28 @@ inline Pixel pixel(unsigned x, unsigned y, unsigned w, unsigned h,
   constexpr float horizon = 0.14f;
   if (radius <= horizon) return {0, 0, 0};
 
-  // A tilted accretion disk, occluded by the circular event horizon above.
-  // A small precessing tilt and travelling ripples animate the disk itself.
-  const float tilt = 0.13f + 0.065f * f.warp_y;
-  const float disk_y = (py + px * tilt) / (0.22f + 0.018f * f.warp_x);
+  // Oblique accretion plane and the lensed rear disk above the black core.
+  // Distances use physical LED pitch, not square screen pixels.
+  const float tilt = 0.34f + 0.035f * f.warp_y;
+  const float plane = py + px * tilt;
+  const float disk_y = plane / (0.29f + 0.012f * f.warp_x);
   const float disk_r = std::sqrt(px * px + disk_y * disk_y);
   const float direction_x = px / (disk_r + 0.0001f);
   const float direction_y = disk_y / (disk_r + 0.0001f);
   const float ripple = (direction_x * direction_x - direction_y * direction_y) *
                        f.warp_x + 2 * direction_x * direction_y * f.warp_y;
-  const float disk = detail::band(disk_r - (0.39f + 0.018f * ripple), 0.09f);
-  // Continuous angular modulation travels through the body of the disk.
-  const float angular = (px * f.orbit_x + disk_y * f.orbit_y) /
-                        (disk_r + 0.0001f);
-  const float heat = disk * (0.68f + 0.27f * angular) *
-                     (py > 0 ? 1.0f : 0.75f);
-  const float lens = detail::band(radius - (0.175f + f.feeding * 0.008f), 0.028f) *
-                     (0.85f + 0.12f * (px * f.orbit_x + py * f.orbit_y) /
-                                                (radius + 0.0001f));
+  const float disk = detail::band(disk_r - (0.34f + 0.012f * ripple), 0.16f);
+  const float filament = detail::band(disk_r - (0.32f + 0.014f * ripple), 0.045f);
+  const float angular = direction_x * f.orbit_x + direction_y * f.orbit_y;
+  const float front_mix = detail::clamp(0.5f + plane / 0.04f);
+  const float foreground = 0.55f + 0.45f * front_mix * front_mix * (3 - 2 * front_mix);
+  const float heat = (disk * 0.55f + filament * 0.40f) *
+                     (0.80f + 0.17f * angular) * foreground;
+  const float upper = detail::clamp(0.5f - plane / 0.07f);
+  const float rear_arc = detail::band(radius - (0.203f + 0.005f * ripple), 0.047f) * upper;
+  const float lens = detail::band(radius - (0.163f + f.feeding * 0.008f), 0.018f) * 0.65f;
+  const float arc = rear_arc * (0.75f + 0.12f * angular);
+  const float glow = detail::band(disk_r - 0.36f, 0.25f) * 0.07f;
   const uint32_t star_hash = detail::hash(uint32_t(x) +
                                          detail::hash(uint32_t(y) + 917u));
   const float stars = radius > 0.32f && star_hash % 113u == 0u
@@ -128,11 +132,15 @@ inline Pixel pixel(unsigned x, unsigned y, unsigned w, unsigned h,
     response += spot * spot * impact.energy * 0.48f;
   }
   const float edge = detail::clamp((radius - horizon) / 0.012f);
-  return {detail::channel((heat + lens + stars + captured_light + response) * edge),
-          detail::channel((heat * 0.57f + lens * 0.72f + stars +
-                           captured_light * 0.87f + response * 0.72f) * edge),
-          detail::channel((heat * 0.095f + lens * 0.18f + stars * 0.85f +
-                           captured_light * 0.58f + response * 0.25f) * edge)};
+  const float red = heat + lens + arc + glow + stars + captured_light + response;
+  const float green = heat * 0.70f + lens * 0.85f + arc * 0.83f + glow * 0.40f +
+                      stars + captured_light * 0.87f + response * 0.72f;
+  const float blue = heat * 0.32f + lens * 0.57f + arc * 0.55f + glow * 0.08f +
+                     stars * 0.85f + captured_light * 0.58f + response * 0.25f;
+  // Shared exposure preserves the warm hue where disk, arc and a star overlap.
+  const float exposure = edge / (red > 1 ? red : 1);
+  return {detail::channel(red * exposure), detail::channel(green * exposure),
+          detail::channel(blue * exposure)};
 }
 
 class State {

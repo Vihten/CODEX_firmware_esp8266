@@ -10,14 +10,39 @@ inline bool previewActive(bool requested, uint32_t startedAt, uint32_t now) {
 }
 struct Pixel { uint8_t red, green, blue; };
 
+// Fixed-size samples: no allocation or per-pixel trigonometry.
+constexpr unsigned kInfallStars = 10;
+constexpr unsigned kTrailSamples = 4;
+struct LightSample { float x, y, energy; };
 struct Frame {
   float orbit_x, orbit_y;
+  LightSample light[kInfallStars * kTrailSamples];
 };
 
 inline Frame frame(uint32_t now) {
-  // One orbit per 65.536 seconds, periodic at uint32_t rollover.
-  const float phase = float(now & 65535u) * (6.28318530718f / 65536.0f);
-  return {std::cos(phase), std::sin(phase)};
+  // Both periods divide uint32_t rollover, including the particle respawn.
+  constexpr float tau = 6.28318530718f;
+  const float phase = float(now & 65535u) * (tau / 65536.0f);
+  Frame result{};
+  result.orbit_x = std::cos(phase);
+  result.orbit_y = std::sin(phase);
+  for (unsigned i = 0; i < kInfallStars; ++i) {
+    for (unsigned j = 0; j < kTrailSamples; ++j) {
+      const uint32_t tick = now + i * 1638u - j * 85u;
+      const float progress = float(tick & 16383u) / 16384.0f;
+      // Accelerate toward the horizon; the tail follows the same curved path.
+      const float radius = 0.76f - 0.64f * progress * progress;
+      const float angle = i * 2.39996323f + progress * 3.8f +
+                          progress * progress * 2.2f;
+      const float enter = progress < 0.08f ? progress / 0.08f : 1.0f;
+      const float exit = radius < 0.18f ? (radius - 0.14f) / 0.04f : 1.0f;
+      const float visibility = exit > 0 ? enter * exit : 0;
+      result.light[i * kTrailSamples + j] = {
+          radius * std::cos(angle), radius * std::sin(angle),
+          visibility * (j == 0 ? 0.65f : 0.30f / float(j))};
+    }
+  }
+  return result;
 }
 
 namespace detail {
@@ -65,10 +90,19 @@ inline Pixel pixel(unsigned x, unsigned y, unsigned w, unsigned h,
   const float stars = radius > 0.32f && star_hash % 113u == 0u
                          ? (0.05f + float((star_hash >> 16) & 7u) * 0.003f)
                          : 0.0f;
+  float captured_light = 0;
+  for (const auto& light : f.light) {
+    const float dx = px - light.x, dy = py - light.y;
+    // Compact subpixel footprint prevents blinking between widely spaced LEDs.
+    const float weight = detail::clamp(1 - (dx * dx + dy * dy) / 0.0025f);
+    captured_light += weight * weight * light.energy;
+  }
   const float edge = detail::clamp((radius - horizon) / 0.012f);
-  return {detail::channel((heat + lens + stars) * edge),
-          detail::channel((heat * 0.57f + lens * 0.72f + stars) * edge),
-          detail::channel((heat * 0.095f + lens * 0.18f + stars * 0.85f) * edge)};
+  return {detail::channel((heat + lens + stars + captured_light) * edge),
+          detail::channel((heat * 0.57f + lens * 0.72f + stars +
+                           captured_light * 0.87f) * edge),
+          detail::channel((heat * 0.095f + lens * 0.18f + stars * 0.85f +
+                           captured_light * 0.58f) * edge)};
 }
 
 class State {

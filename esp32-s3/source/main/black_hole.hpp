@@ -42,12 +42,14 @@ inline Frame frame(uint32_t now) {
                           progress * progress * 2.2f;
       const float enter = progress < 0.08f ? progress / 0.08f : 1.0f;
       const float exit = radius < 0.18f ? (radius - 0.14f) / 0.04f : 1.0f;
-      const float visibility = exit > 0 ? enter * exit : 0;
+      const float fade_in = enter * enter * (3 - 2 * enter);
+      const float fade_out = exit > 0 ? exit * exit * (3 - 2 * exit) : 0;
+      const float visibility = fade_in * fade_out;
       const float cx = std::cos(angle), cy = std::sin(angle);
       const float stretch = radius < 0.32f ? (0.32f - radius) / 0.20f : 0;
       result.light[i * kTrailSamples + j] = {
           radius * cx, radius * cy,
-          visibility * (j == 0 ? 0.65f : 0.30f / float(j)),
+          visibility * (j == 0 ? 0.58f : 0.27f / float(j)),
           cx, cy, 1.0f + 1.8f * stretch};
       if (j == 0) {
         // A local, smooth pulse as this star reaches the luminous inner ring.
@@ -119,11 +121,11 @@ inline Pixel pixel(unsigned x, unsigned y, unsigned w, unsigned h,
   float captured_light = 0;
   for (const auto& light : f.light) {
     const float dx = px - light.x, dy = py - light.y;
-    // Compact subpixel footprint prevents blinking between widely spaced LEDs.
+    // A broad, soft footprint overlaps adjacent rows at the physical LED pitch.
     const float radial = (dx * light.nx + dy * light.ny) / light.stretch;
     const float tangent = -dx * light.ny + dy * light.nx;
-    const float weight = detail::clamp(1 - (radial * radial + tangent * tangent) / 0.0025f);
-    captured_light += weight * weight * light.energy;
+    const float weight = detail::clamp(1 - (radial * radial + tangent * tangent) / 0.0081f);
+    captured_light += weight * weight * weight * light.energy;
   }
   float response = 0;
   for (const auto& impact : f.impact) {

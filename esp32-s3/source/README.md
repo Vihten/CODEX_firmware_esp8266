@@ -23,6 +23,17 @@ in diagnostics. This cannot repair a power-on failure before firmware executes.
 
 ## Token Rankings
 
+When no marketing quota has been verified, the matrix uses an animated black
+hole rather than interpreting the default percentage as a full quota. A known
+quota becoming stale retains its scene for 15 seconds before entering this state;
+fresh data must remain available for two seconds before returning to the quota
+scene. The crossfade takes 700 ms and can reverse without a brightness jump.
+The shader is fixed-memory, accounts for the physical 7 mm by 12 mm LED pitch,
+and uses the shared 30 FPS renderer and brightness. Meteors are suppressed while
+the fallback is visible. Startup/IP diagnostics, power sequencing, maintenance,
+memorial presentation and air-alert indicators retain their priority. Neither
+the fallback nor its transition overwrites the last verified quota value.
+
 Daily calendar reports use `LFD1` and receive
 `LFD1_RAM_ACK,controller,client,YYYYMMDD,revision`. This confirms acceptance in
 volatile RAM, not a durable flash commit. Equal-revision, equal-total retries are

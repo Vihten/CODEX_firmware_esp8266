@@ -9,6 +9,7 @@
 #include "ota_visual.hpp"
 #include "external_light.hpp"
 #include "light_sequence.hpp"
+#include "black_hole.hpp"
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
 #include "esp_log.h"
@@ -50,6 +51,7 @@ bool lightPresentationActive = false;
 bool lightOpeningReady = true;
 air_alert::Visual airAlertVisual;
 quota_recovery::Motion quotaRecovery;
+black_hole::State blackHole;
 
 enum SeekMode { SeekSet };
 class FrameReader {
@@ -821,6 +823,7 @@ uint8_t calculateMemorialBrightnessGain() {
   const uint8_t *reference = sceneVisible && sceneProgress == SCENE_DURATION_MS
       ? entrancePixels : assets.animation + referenceFrame * FRAME_BYTES;
   const auto colors = memorial::palette(4000, 10000);
+  const auto holeFrame = black_hole::frame(blackHole.animationTime());
   uint32_t referenceLight = 0, memorialLight = 0;
   for (int y = 0; y < MATRIX_HEIGHT; ++y) {
     for (int x = 0; x < MATRIX_WIDTH; ++x) {
@@ -830,6 +833,13 @@ uint8_t calculateMemorialBrightnessGain() {
       const uint8_t type = reference == entrancePixels ? effectMask[index] :
           assets.effects[referenceFrame * EFFECT_BYTES + index];
       preserveNightSkyPixel(rgb, index, type, control.brightness);
+      if (blackHole.amount()) {
+        const auto hole = black_hole::pixel(x, y, MATRIX_WIDTH, MATRIX_HEIGHT, holeFrame);
+        const uint8_t amount = blackHole.amount();
+        rgb[0] = (uint16_t(rgb[0]) * (255 - amount) + uint16_t(hole.red) * amount + 127) / 255;
+        rgb[1] = (uint16_t(rgb[1]) * (255 - amount) + uint16_t(hole.green) * amount + 127) / 255;
+        rgb[2] = (uint16_t(rgb[2]) * (255 - amount) + uint16_t(hole.blue) * amount + 127) / 255;
+      }
       referenceLight += memorial::luminance({rgb[0], rgb[1], rgb[2]});
       memorialLight += memorial::luminance(memorial::pixel(x, y, MATRIX_WIDTH, MATRIX_HEIGHT, colors));
     }
@@ -947,7 +957,7 @@ void drawEventEffects() {
   // The legacy network maintenance interval is now an explicit IPC request.
   lastMeteorMaintenanceAt = millis();
   meteorMaintenancePending = false;
-  updateMeteorScheduler(!status.memorialTransition && sceneProgress == SCENE_DURATION_MS && matrixRequestsLight() && !otaCheckPending());
+  updateMeteorScheduler(!blackHole.active() && !status.memorialTransition && sceneProgress == SCENE_DURATION_MS && matrixRequestsLight() && !otaCheckPending());
   for (const auto &meteor : meteors) if (meteor.active) drawSmoothMeteorWake(meteor);
   for (const auto &meteor : meteors) if (meteor.active) drawSmoothMeteor(meteor);
 }
@@ -1102,7 +1112,31 @@ void drawIpAddress(const char *address = control.ip, uint8_t alpha = 255) {
   if (second[0]) drawIpLine(second, 11, alpha);
 }
 
-void drawAirAlertIndicator(bool alternateScreen) {
+void drawBlackHole() {
+  const unsigned amount = blackHole.amount();
+  if (!amount) return;
+  uint8_t *pixels = strip.getPixels();
+  if (!pixels) return;
+  const auto view = black_hole::frame(blackHole.animationTime());
+  // Keep power sequencing and the existing closing ACK. The procedural scene
+  // darkens with the scene envelope, never revealing an unknown full-quota sky.
+  const unsigned visible = min(uint32_t(SCENE_DURATION_MS), sceneProgress);
+  for (unsigned y = 0; y < MATRIX_HEIGHT; ++y)
+    for (unsigned x = 0; x < MATRIX_WIDTH; ++x) {
+      const auto color = black_hole::pixel(x, y, MATRIX_WIDTH, MATRIX_HEIGHT, view);
+      uint8_t *grb = pixels + physicalIndex(x, y) * 3;
+      const auto mix = [amount, visible](uint8_t background, uint8_t foreground) {
+        const uint32_t gain = strip.getBrightness() == 255 ? 256 : strip.getBrightness() + 1;
+        const uint32_t source = uint32_t(foreground) * gain * visible / (256U * SCENE_DURATION_MS);
+        return uint8_t((uint32_t(background) * (255 - amount) + source * amount + 127) / 255);
+      };
+      grb[0] = mix(grb[0], color.green);
+      grb[1] = mix(grb[1], color.red);
+      grb[2] = mix(grb[2], color.blue);
+    }
+}
+
+void drawAirAlertIndicator(bool alternateScreen, bool procedural = false) {
   const auto overlay = airAlertVisual.overlay();
   if (!air_alert::indicatorVisible(overlay.amount, control.on,
           control.maintenance != Maintenance::None, control.brightness)) return;
@@ -1122,7 +1156,7 @@ void drawAirAlertIndicator(bool alternateScreen) {
       const bool ink = alternateScreen || air_alert::iconPixel(level, localX, y);
       if (!ink && !air_alert::iconBackdrop(level, localX, y)) continue;
       // Preserve bright objects around the silhouette, but never punch holes in it.
-      if (!ink && !fixed && effectMask[index]) continue;
+      if (!ink && !fixed && !procedural && effectMask[index]) continue;
       uint8_t *grb = pixels + physicalIndex(x, y) * 3;
       grb[0] = air_alert::composite(grb[0], ink ? overlay.green : 0, overlay.amount, control.brightness);
       grb[1] = air_alert::composite(grb[1], ink ? overlay.red : 0, overlay.amount, control.brightness);
@@ -1220,6 +1254,7 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
   drawSceneVisibility();
   #endif
 
+  drawBlackHole();
   return true;
 }
 
@@ -1366,6 +1401,7 @@ void renderTask(void *) {
       effectOrigin = started - (int64_t(effectTick) * 256 + effectSubTick) * 1000000 / (EVENT_FPS * 256);
     }
     if (parked) {
+      blackHole.pause(millis());
       quotaRecovery.observe(control.quotaRecoveryEpoch, true, false);
       if (outputReady) renderOtaProgress();
       // Keep the original maintenance ACK alive. No PSRAM or artwork reads;
@@ -1376,6 +1412,10 @@ void renderTask(void *) {
       if (fresh) applyControlAgents();
       const uint32_t now = millis();
       airAlertVisual.update(control.airAlertLevel, now);
+      if (control.maintenance == Maintenance::None && !status.memorialTransition)
+        blackHole.update(control.quotaKnown, control.quotaFresh, now);
+      else blackHole.pause(now);
+      if (blackHole.active()) stopMemorialMeteors();
       const bool memorialActive = control.on && lightOpeningReady && control.memorialActive &&
           memorial::active(now, control.memorialStartedAt, control.memorialDurationMs);
       const bool previousMemorialTransition = status.memorialTransition;
@@ -1415,7 +1455,7 @@ void renderTask(void *) {
       const bool memorialTransition = status.memorialTransition || previousMemorialTransition;
       quotaRecovery.observe(control.quotaRecoveryEpoch,
           control.on && control.connected && control.accountLinked && sceneVisible &&
-          sceneTargetOn && sceneProgress >= SCENE_DURATION_MS && !memorialTransition,
+          sceneTargetOn && sceneProgress >= SCENE_DURATION_MS && !memorialTransition && !blackHole.active(),
           control.maintenance == Maintenance::None);
       if (memorialTransition) {
         // Rebase through the exit frame too: neither scene nor effects catch up.
@@ -1520,7 +1560,7 @@ void renderTask(void *) {
         if (!control.connected) { ipHold = false; ipPresented = false; }
         if (ipHold && ipPresented && millis() - holdStarted >= 5000UL) ipHold = false;
         const bool requestedOn = control.on && lightOpeningReady;
-        const bool wantsIp = !control.connected || !control.accountLinked || ipHold;
+        const bool wantsIp = !control.connected || ipHold;
         if (sceneVisible) advanceSceneTimeline(maintenance ? sceneTargetOn
             : requestedOn || (flying && sceneProgress == SCENE_DURATION_MS));
         if (!requestedOn && (!sceneVisible || sceneProgress == 0)) {
@@ -1550,7 +1590,7 @@ void renderTask(void *) {
             sceneTimelineAt = millis();
           }
           if (renderScene(animationFile, effectMaskFile, frame, flying)) {
-            drawAirAlertIndicator(false);
+            drawAirAlertIndicator(false, blackHole.amount() != 0);
             if (showFrame()) ipTransition.reset();
           }
           else {

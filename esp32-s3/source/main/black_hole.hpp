@@ -1,0 +1,129 @@
+#pragma once
+
+#include <cmath>
+#include <cstdint>
+
+namespace black_hole {
+struct Pixel { uint8_t red, green, blue; };
+
+struct Frame {
+  float orbit_x, orbit_y;
+};
+
+inline Frame frame(uint32_t now) {
+  // One orbit per 65.536 seconds, periodic at uint32_t rollover.
+  const float phase = float(now & 65535u) * (6.28318530718f / 65536.0f);
+  return {std::cos(phase), std::sin(phase)};
+}
+
+namespace detail {
+inline float clamp(float v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
+inline float band(float distance, float width) {
+  const float v = clamp(1 - std::fabs(distance) / width);
+  return v * v * (3 - 2 * v);
+}
+inline uint8_t channel(float v) {
+  return static_cast<uint8_t>(clamp(v) * 255 + 0.5f);
+}
+inline uint32_t hash(uint32_t v) {
+  v ^= v >> 16; v *= 0x7feb352du;
+  v ^= v >> 15; v *= 0x846ca68bu;
+  return v ^ (v >> 16);
+}
+}  // namespace detail
+
+inline Pixel pixel(unsigned x, unsigned y, unsigned w, unsigned h,
+                   const Frame& f) {
+  if (!w || !h || x >= w || y >= h) return {0, 0, 0};
+  // Normalize in physical space, with 7 mm horizontal and 12 mm vertical pitch.
+  const float physical_h = float(h) * (12.0f / 7.0f);
+  const float scale = float(w) < physical_h ? float(w) : physical_h;
+  const float px = (float(x) + 0.5f - float(w) * 0.5f) / scale;
+  const float py = (float(y) + 0.5f - float(h) * 0.5f) * (12.0f / 7.0f) / scale;
+  const float radius = std::sqrt(px * px + py * py);
+  constexpr float horizon = 0.14f;
+  if (radius <= horizon) return {0, 0, 0};
+
+  // A tilted accretion disk, occluded by the circular event horizon above.
+  const float disk_y = (py + px * 0.13f) / 0.22f;
+  const float disk_r = std::sqrt(px * px + disk_y * disk_y);
+  const float disk = detail::band(disk_r - 0.39f, 0.09f);
+  // Continuous angular modulation travels through the body of the disk.
+  const float angular = (px * f.orbit_x + disk_y * f.orbit_y) /
+                        (disk_r + 0.0001f);
+  const float heat = disk * (0.68f + 0.27f * angular) *
+                     (py > 0 ? 1.0f : 0.75f);
+  const float lens = detail::band(radius - 0.175f, 0.028f) *
+                     (0.85f + 0.12f * (px * f.orbit_x + py * f.orbit_y) /
+                                                (radius + 0.0001f));
+  const uint32_t star_hash = detail::hash(uint32_t(x) +
+                                         detail::hash(uint32_t(y) + 917u));
+  const float stars = radius > 0.32f && star_hash % 113u == 0u
+                         ? (0.05f + float((star_hash >> 16) & 7u) * 0.003f)
+                         : 0.0f;
+  const float edge = detail::clamp((radius - horizon) / 0.012f);
+  return {detail::channel((heat + lens + stars) * edge),
+          detail::channel((heat * 0.57f + lens * 0.72f + stars) * edge),
+          detail::channel((heat * 0.095f + lens * 0.18f + stars * 0.85f) * edge)};
+}
+
+class State {
+ public:
+  void update(bool known, bool fresh, uint32_t now) {
+    if (!initialized_) {
+      initialized_ = true;
+      last_ = now;
+      target_missing_ = !known;
+    }
+    if (!known) {
+      advance(now);
+      target_missing_ = true;
+      stale_ = recovering_ = false;
+      return;
+    }
+    if (!fresh) {
+      recovering_ = false;
+      if (!stale_) { stale_ = true; stale_since_ = now; }
+      if (!target_missing_ && uint32_t(now - stale_since_) >= 15000u) {
+        advance(stale_since_ + 15000u);
+        target_missing_ = true;
+      }
+    } else {
+      stale_ = false;
+      if (!recovering_) { recovering_ = true; fresh_since_ = now; }
+      if (target_missing_ && uint32_t(now - fresh_since_) >= 2000u) {
+        advance(fresh_since_ + 2000u);
+        target_missing_ = false;
+      }
+    }
+    advance(now);
+  }
+
+  // Call on each parked render tick so resumption starts at the latest tick.
+  void pause(uint32_t now) {
+    last_ = now;
+    stale_ = recovering_ = false;
+  }
+
+  uint32_t animationTime() const { return animation_time_; }
+  uint8_t amount() const { return static_cast<uint8_t>((level_ + 350u) / 700u); }
+  bool active() const { return amount() > 0 || target_missing_; }
+  bool missing() const { return target_missing_; }
+
+ private:
+  void advance(uint32_t now) {
+    const uint32_t elapsed = now - last_;
+    last_ = now;
+    animation_time_ += elapsed;
+    // Saturate before multiplication, even after very long update gaps.
+    const uint32_t step = (elapsed > 700u ? 700u : elapsed) * 255u;
+    if (target_missing_) level_ = step >= 178500u - level_ ? 178500u : level_ + step;
+    else level_ = step >= level_ ? 0u : level_ - step;
+  }
+
+  uint32_t level_ = 0, last_ = 0, stale_since_ = 0, fresh_since_ = 0;
+  uint32_t animation_time_ = 0;
+  bool initialized_ = false, target_missing_ = true;
+  bool stale_ = false, recovering_ = false;
+};
+}  // namespace black_hole

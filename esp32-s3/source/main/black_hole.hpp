@@ -11,11 +11,14 @@ inline bool previewActive(bool requested, uint32_t startedAt, uint32_t now) {
 struct Pixel { uint8_t red, green, blue; };
 
 // Fixed-size samples: no allocation or per-pixel trigonometry.
+constexpr unsigned kLightStreams = 4;
 constexpr unsigned kInfallStars = 12;
+static_assert(kInfallStars % kLightStreams == 0, "Streams need equal particle counts");
 constexpr unsigned kTrailSamples = 4;
 constexpr uint32_t kInfallPeriodMs = 32768;
-constexpr uint32_t kInfallPhaseStepMs = kInfallPeriodMs / kInfallStars;
-constexpr uint32_t kTrailSpacingMs = 170;
+constexpr uint32_t kInfallPhaseStepMs = kInfallPeriodMs / (kInfallStars / kLightStreams);
+constexpr uint32_t kTrailSpacingMs = 400;
+constexpr float kCaptureProgress = 0.91555f;
 struct LightSample { float x, y, energy, nx, ny, stretch; };
 struct Impact { float x, y, energy; };
 struct Frame {
@@ -37,11 +40,14 @@ inline Frame frame(uint32_t now) {
   result.warp_y = std::sin(warp);
   for (unsigned i = 0; i < kInfallStars; ++i) {
     for (unsigned j = 0; j < kTrailSamples; ++j) {
-      const uint32_t tick = now + i * kInfallPhaseStepMs - j * kTrailSpacingMs;
+      const unsigned stream = i % kLightStreams;
+      const unsigned particle = i / kLightStreams;
+      const uint32_t tick = now + particle * kInfallPhaseStepMs - j * kTrailSpacingMs;
       const float progress = float(tick & (kInfallPeriodMs - 1)) / float(kInfallPeriodMs);
       // Accelerate toward the horizon; the tail follows the same curved path.
-      const float radius = 0.76f - 0.64f * progress * progress;
-      const float angle = i * 2.39996323f + progress * 3.8f +
+      // All four entry directions fit inside the physical height of the matrix.
+      const float radius = 0.46f - 0.34f * progress * progress;
+      const float angle = stream * (tau / kLightStreams) + progress * 3.8f +
                           progress * progress * 2.2f;
       const float enter = progress < 0.08f ? progress / 0.08f : 1.0f;
       const float exit = radius < 0.18f ? (radius - 0.14f) / 0.04f : 1.0f;
@@ -51,7 +57,7 @@ inline Frame frame(uint32_t now) {
       const float cx = std::cos(angle), cy = std::sin(angle);
       // Orient the elongated light along its actual curved velocity. A radial
       // footprint sweeps sideways across LED rows during an orbit.
-      const float radial_speed = -1.28f * progress;
+      const float radial_speed = -0.68f * progress;
       const float angular_speed = 3.8f + 4.4f * progress;
       const float velocity_x = radial_speed * cx - radius * angular_speed * cy;
       const float velocity_y = radial_speed * cy + radius * angular_speed * cx;
@@ -63,7 +69,7 @@ inline Frame frame(uint32_t now) {
           velocity_x * inverse_speed, velocity_y * inverse_speed, 1.0f + 1.8f * stretch};
       if (j == 0) {
         // A local, smooth pulse as this star reaches the luminous inner ring.
-        const float event = 1.0f - std::fabs(progress - 0.955f) / 0.04f;
+        const float event = 1.0f - std::fabs(progress - kCaptureProgress) / 0.04f;
         const float pulse = event > 0 ? event * event * (3 - 2 * event) : 0;
         result.impact[i] = {0.175f * cx, 0.175f * cy, pulse};
         result.feeding += pulse * 0.08f;

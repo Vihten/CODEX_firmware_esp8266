@@ -13,9 +13,12 @@ struct Pixel { uint8_t red, green, blue; };
 // Fixed-size samples: no allocation or per-pixel trigonometry.
 constexpr unsigned kInfallStars = 10;
 constexpr unsigned kTrailSamples = 4;
-struct LightSample { float x, y, energy; };
+struct LightSample { float x, y, energy, nx, ny, stretch; };
+struct Impact { float x, y, energy; };
 struct Frame {
   float orbit_x, orbit_y;
+  float warp_x, warp_y, feeding;
+  Impact impact[kInfallStars];
   LightSample light[kInfallStars * kTrailSamples];
 };
 
@@ -26,6 +29,9 @@ inline Frame frame(uint32_t now) {
   Frame result{};
   result.orbit_x = std::cos(phase);
   result.orbit_y = std::sin(phase);
+  const float warp = float(now & 8191u) * (tau / 8192.0f);
+  result.warp_x = std::cos(warp);
+  result.warp_y = std::sin(warp);
   for (unsigned i = 0; i < kInfallStars; ++i) {
     for (unsigned j = 0; j < kTrailSamples; ++j) {
       const uint32_t tick = now + i * 1638u - j * 85u;
@@ -37,9 +43,19 @@ inline Frame frame(uint32_t now) {
       const float enter = progress < 0.08f ? progress / 0.08f : 1.0f;
       const float exit = radius < 0.18f ? (radius - 0.14f) / 0.04f : 1.0f;
       const float visibility = exit > 0 ? enter * exit : 0;
+      const float cx = std::cos(angle), cy = std::sin(angle);
+      const float stretch = radius < 0.32f ? (0.32f - radius) / 0.20f : 0;
       result.light[i * kTrailSamples + j] = {
-          radius * std::cos(angle), radius * std::sin(angle),
-          visibility * (j == 0 ? 0.65f : 0.30f / float(j))};
+          radius * cx, radius * cy,
+          visibility * (j == 0 ? 0.65f : 0.30f / float(j)),
+          cx, cy, 1.0f + 1.8f * stretch};
+      if (j == 0) {
+        // A local, smooth pulse as this star reaches the luminous inner ring.
+        const float event = 1.0f - std::fabs(progress - 0.955f) / 0.04f;
+        const float pulse = event > 0 ? event * event * (3 - 2 * event) : 0;
+        result.impact[i] = {0.175f * cx, 0.175f * cy, pulse};
+        result.feeding += pulse * 0.08f;
+      }
     }
   }
   return result;
@@ -74,15 +90,21 @@ inline Pixel pixel(unsigned x, unsigned y, unsigned w, unsigned h,
   if (radius <= horizon) return {0, 0, 0};
 
   // A tilted accretion disk, occluded by the circular event horizon above.
-  const float disk_y = (py + px * 0.13f) / 0.22f;
+  // A small precessing tilt and travelling ripples animate the disk itself.
+  const float tilt = 0.13f + 0.065f * f.warp_y;
+  const float disk_y = (py + px * tilt) / (0.22f + 0.018f * f.warp_x);
   const float disk_r = std::sqrt(px * px + disk_y * disk_y);
-  const float disk = detail::band(disk_r - 0.39f, 0.09f);
+  const float direction_x = px / (disk_r + 0.0001f);
+  const float direction_y = disk_y / (disk_r + 0.0001f);
+  const float ripple = (direction_x * direction_x - direction_y * direction_y) *
+                       f.warp_x + 2 * direction_x * direction_y * f.warp_y;
+  const float disk = detail::band(disk_r - (0.39f + 0.018f * ripple), 0.09f);
   // Continuous angular modulation travels through the body of the disk.
   const float angular = (px * f.orbit_x + disk_y * f.orbit_y) /
                         (disk_r + 0.0001f);
   const float heat = disk * (0.68f + 0.27f * angular) *
                      (py > 0 ? 1.0f : 0.75f);
-  const float lens = detail::band(radius - 0.175f, 0.028f) *
+  const float lens = detail::band(radius - (0.175f + f.feeding * 0.008f), 0.028f) *
                      (0.85f + 0.12f * (px * f.orbit_x + py * f.orbit_y) /
                                                 (radius + 0.0001f));
   const uint32_t star_hash = detail::hash(uint32_t(x) +
@@ -94,15 +116,23 @@ inline Pixel pixel(unsigned x, unsigned y, unsigned w, unsigned h,
   for (const auto& light : f.light) {
     const float dx = px - light.x, dy = py - light.y;
     // Compact subpixel footprint prevents blinking between widely spaced LEDs.
-    const float weight = detail::clamp(1 - (dx * dx + dy * dy) / 0.0025f);
+    const float radial = (dx * light.nx + dy * light.ny) / light.stretch;
+    const float tangent = -dx * light.ny + dy * light.nx;
+    const float weight = detail::clamp(1 - (radial * radial + tangent * tangent) / 0.0025f);
     captured_light += weight * weight * light.energy;
   }
+  float response = 0;
+  for (const auto& impact : f.impact) {
+    const float dx = px - impact.x, dy = py - impact.y;
+    const float spot = detail::clamp(1 - (dx * dx + dy * dy) / 0.007f);
+    response += spot * spot * impact.energy * 0.48f;
+  }
   const float edge = detail::clamp((radius - horizon) / 0.012f);
-  return {detail::channel((heat + lens + stars + captured_light) * edge),
+  return {detail::channel((heat + lens + stars + captured_light + response) * edge),
           detail::channel((heat * 0.57f + lens * 0.72f + stars +
-                           captured_light * 0.87f) * edge),
+                           captured_light * 0.87f + response * 0.72f) * edge),
           detail::channel((heat * 0.095f + lens * 0.18f + stars * 0.85f +
-                           captured_light * 0.58f) * edge)};
+                           captured_light * 0.58f + response * 0.25f) * edge)};
 }
 
 class State {

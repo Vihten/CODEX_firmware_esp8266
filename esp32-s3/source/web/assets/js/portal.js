@@ -12,7 +12,7 @@
     let authEpoch = 0;
     const awaitingState = new Map();
     const commandRoutes = new Set(['/save', '/power', '/brightness', '/external-light', '/schedule',
-      '/agent-color', '/restart', '/update', '/memorial', '/air-alert', '/buzzer-test', '/buzzer-volume',
+      '/agent-color', '/restart', '/update', '/memorial', '/black-hole', '/air-alert', '/buzzer-test', '/buzzer-volume',
       '/agent-upgrade', '/agent-rename', '/agent-uninstall']);
     let pollSequence = 0, refreshAfterActive = false;
     const memorialForm = one('#memorial-settings');
@@ -136,6 +136,7 @@
     const acceptedMessage = record => {
       switch (record.path) {
         case '/buzzer-test': return 'Запит перевірки надіслано.';
+        case '/black-hole': return record.data.get('mode') === 'stop' ? 'Запит зупинки надіслано.' : 'Запит відтворення чорної діри на 60 секунд надіслано.';
         case '/restart': return 'Запит перезапуску прийнято. Стан підключення оновлюється окремо.';
         case '/update': return 'Запит перевірки оновлення прийнято. Перебіг відображається у стані оновлення.';
         case '/memorial':
@@ -455,6 +456,17 @@
         text('#brightnessValue', `${Math.round(status.brightness * 100 / 255)}%`);
       }
       const memorial = status.memorial;
+      const blackHole = status.black_hole;
+      if (blackHole && typeof blackHole.manual === 'boolean' &&
+          Number.isInteger(blackHole.remaining_seconds) && blackHole.remaining_seconds >= 0 && blackHole.remaining_seconds <= 60) {
+        text('[data-black-hole-state]', blackHole.manual ? `Відтворення · ${blackHole.remaining_seconds} с` : 'Перевірка не відтворюється');
+        all('[data-black-hole-play]').forEach(button => {
+          button.disabled = blackHole.can_play !== true || status.on !== true || status.maintenance === true || memorial?.active === true;
+        });
+        all('[data-black-hole-stop]').forEach(button => {
+          button.disabled = !blackHole.manual || status.maintenance === true;
+        });
+      }
       all('[data-buzzer-test]').forEach(button => { button.disabled = status.buzzer_ready !== true || status.maintenance === true; });
       const volumeForm = one('#buzzer-volume-form');
       if (volumeForm && Number.isInteger(status.buzzer_volume) && status.buzzer_volume >= 0 && status.buzzer_volume <= 100) {

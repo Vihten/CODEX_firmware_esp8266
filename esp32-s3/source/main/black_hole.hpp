@@ -4,6 +4,10 @@
 #include <cstdint>
 
 namespace black_hole {
+constexpr uint32_t kPreviewDurationMs = 60000;
+inline bool previewActive(bool requested, uint32_t startedAt, uint32_t now) {
+  return requested && uint32_t(now - startedAt) < kPreviewDurationMs;
+}
 struct Pixel { uint8_t red, green, blue; };
 
 struct Frame {
@@ -69,6 +73,7 @@ inline Pixel pixel(unsigned x, unsigned y, unsigned w, unsigned h,
 
 class State {
  public:
+  State(uint32_t recoveryHoldMs = 2000) : recovery_hold_ms_(recoveryHoldMs) {}
   void update(bool known, bool fresh, uint32_t now) {
     if (!initialized_) {
       initialized_ = true;
@@ -91,8 +96,8 @@ class State {
     } else {
       stale_ = false;
       if (!recovering_) { recovering_ = true; fresh_since_ = now; }
-      if (target_missing_ && uint32_t(now - fresh_since_) >= 2000u) {
-        advance(fresh_since_ + 2000u);
+      if (target_missing_ && uint32_t(now - fresh_since_) >= recovery_hold_ms_) {
+        advance(fresh_since_ + recovery_hold_ms_);
         target_missing_ = false;
       }
     }
@@ -123,6 +128,7 @@ class State {
 
   uint32_t level_ = 0, last_ = 0, stale_since_ = 0, fresh_since_ = 0;
   uint32_t animation_time_ = 0;
+  uint32_t recovery_hold_ms_ = 2000;
   bool initialized_ = false, target_missing_ = true;
   bool stale_ = false, recovering_ = false;
 };

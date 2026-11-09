@@ -39,6 +39,8 @@ struct ControlFrame {
   bool connected = false;
   bool accountLinked = false;
   bool on = true;
+  bool blackHolePreview = false;
+  uint32_t blackHolePreviewStartedAt = 0;
   bool memorialActive = false;
   uint32_t memorialStartedAt = 0;
   uint32_t memorialDurationMs = 60000;
@@ -68,7 +70,7 @@ struct RenderStatus {
   uint8_t lightSecondOutput = 0;
 };
 
-enum class CommandKind : uint8_t { Wifi, Power, Brightness, Schedule, Color, Restart, Update, AgentPoll, AgentUpgrade, AgentRename, AgentUninstall, MemorialSave, MemorialPlay, MemorialStop, AirAlertSave, AirAlertTest, AirAlertStop, ExternalLight, BuzzerTest, BuzzerVolume };
+enum class CommandKind : uint8_t { Wifi, Power, Brightness, Schedule, Color, Restart, Update, AgentPoll, AgentUpgrade, AgentRename, AgentUninstall, MemorialSave, MemorialPlay, MemorialStop, AirAlertSave, AirAlertTest, AirAlertStop, ExternalLight, BuzzerTest, BuzzerVolume, BlackHolePlay, BlackHoleStop };
 struct NetworkCommand {
   uint64_t agentVersion = 0;
   uint64_t agentNonceCounter = 0;

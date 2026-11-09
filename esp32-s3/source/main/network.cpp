@@ -184,6 +184,8 @@ struct Model {
   bool rankingReadFailed = false;
   uint32_t weeklySavedAt = 0;
   Settings settings;
+  bool blackHolePreview = false;
+  uint32_t blackHolePreviewStartedAt = 0;
   memorial::State memorial;
   bool memorialEnabled = false, memorialDirty = false, memorialSaveFailed = false;
   AirAlertSettings airSettings;
@@ -1001,6 +1003,10 @@ void updateControl() {
   model.control.memorialActive = model.memorial.active;
   model.control.memorialStartedAt = model.memorial.startedAt;
   model.control.memorialDurationMs = model.memorial.durationMs;
+  if (model.blackHolePreview && uint32_t(now - model.blackHolePreviewStartedAt) >= 60000U)
+    model.blackHolePreview = false;
+  model.control.blackHolePreview = model.blackHolePreview;
+  model.control.blackHolePreviewStartedAt = model.blackHolePreviewStartedAt;
   // Maintenance and its epoch are deliberately retained in every overwritten snapshot.
   xQueueOverwrite(controlQueue, &model.control);
 }
@@ -1695,6 +1701,16 @@ void writeSettings(Html &html, const View &view) {
     else if (token == 5) html.text(!view.control.on ? "Матриця вимкнена. Для відтворення ввімкніть її." :
         std::time(nullptr) < 1700000000 ? "Очікування часу NTP. Ручне відтворення доступне." : "");
   });
+  html.render("templates/settings/black-hole.html", [&](unsigned token) {
+    const bool active = view.control.blackHolePreview &&
+        uint32_t(uptimeMs() - view.control.blackHolePreviewStartedAt) < 60000U;
+    if (token == 0) html.text(active ? "Відтворюється" : "Не відтворюється");
+    else if (token == 1) html.attribute(!view.control.on || view.control.memorialActive ||
+        view.render.memorialTransition || view.restarting ||
+        view.control.maintenance != Maintenance::None ? "@disabled" : "");
+    else if (token == 2) html.attribute(!active || view.restarting ||
+        view.control.maintenance != Maintenance::None ? "@disabled" : "");
+  });
   html.render("templates/settings/air-alert.html", [&](unsigned token) {
     if (token == 0) html.attribute(view.airEnabled ? "@checked" : "");
     else if (token == 1) html.text(view.airStatus);
@@ -2026,6 +2042,16 @@ esp_err_t portalStatus(httpd_req_t *request) {
   boolean(root, "buzzer_ready", view.buzzerReady && view.control.maintenance == Maintenance::None);
   number(root, "buzzer_volume", view.buzzerVolume);
   boolean(root, "buzzer_saving", view.buzzerDirty); boolean(root, "buzzer_save_failed", view.buzzerSaveFailed);
+  cJSON *blackHoleStatus = cJSON_AddObjectToObject(root, "black_hole");
+  if (!blackHoleStatus) okay = false;
+  else {
+    const uint32_t elapsed = uint32_t(uptimeMs() - view.control.blackHolePreviewStartedAt);
+    const bool manual = view.control.blackHolePreview && elapsed < 60000U;
+    boolean(blackHoleStatus, "manual", manual);
+    boolean(blackHoleStatus, "can_play", view.control.on && !view.control.memorialActive &&
+        !view.render.memorialTransition && !view.restarting && view.control.maintenance == Maintenance::None);
+    number(blackHoleStatus, "remaining_seconds", manual ? (60000U - elapsed + 999U) / 1000U : 0);
+  }
   cJSON *memorialStatus = cJSON_AddObjectToObject(root, "memorial");
   if (!memorialStatus) okay = false;
   else {
@@ -2600,6 +2626,16 @@ esp_err_t commandPost(httpd_req_t *request) {
       command.kind = CommandKind::AirAlertTest; command.value = !std::strcmp(mode, "red") ? 2 : 1;
     } else if (!std::strcmp(mode, "stop")) command.kind = CommandKind::AirAlertStop;
     else return error(request, "400 Bad Request", "Некоректна дія перевірки тривоги.");
+  } else if (!std::strcmp(uri, "/black-hole")) {
+    const char *mode = form.get("mode");
+    if (!std::strcmp(mode, "play")) {
+      if (!view.control.on || view.control.memorialActive || view.render.memorialTransition)
+        return error(request, "409 Conflict", "Black hole preview unavailable.");
+      if (view.control.maintenance != Maintenance::None)
+        return error(request, "503 Service Unavailable", "Controller maintenance; retry.");
+      command.kind = CommandKind::BlackHolePlay;
+    } else if (!std::strcmp(mode, "stop")) command.kind = CommandKind::BlackHoleStop;
+    else return error(request, "400 Bad Request", "Invalid black hole action.");
   } else if (!std::strcmp(uri, "/memorial")) {
     const char *mode = form.get("mode");
     if (!std::strcmp(mode, "save")) {
@@ -2619,7 +2655,8 @@ esp_err_t commandPost(httpd_req_t *request) {
     return error(request, "503 Service Unavailable", "Controller busy; retry.");
   const bool unavailable = sharedView.restarting || sharedView.control.maintenance == Maintenance::Ota ||
       sharedView.control.maintenance == Maintenance::Restart ||
-      (command.kind == CommandKind::BuzzerTest && sharedView.control.maintenance != Maintenance::None);
+      ((command.kind == CommandKind::BuzzerTest || command.kind == CommandKind::BlackHolePlay) && sharedView.control.maintenance != Maintenance::None) ||
+      (command.kind == CommandKind::BlackHolePlay && (!sharedView.control.on || sharedView.control.memorialActive || sharedView.render.memorialTransition));
   const bool queued = !unavailable && xQueueSend(commandQueue, &command, 0) == pdTRUE;
   xSemaphoreGive(viewMutex);
   if (!queued) return error(request, "503 Service Unavailable", unavailable ? "Controller maintenance; retry." : "Command queue full; retry.");
@@ -2628,6 +2665,7 @@ esp_err_t commandPost(httpd_req_t *request) {
   httpd_resp_set_hdr(request, "Location", command.kind == CommandKind::Color ? "/agents" :
       command.kind == CommandKind::Wifi || command.kind == CommandKind::Update || command.kind == CommandKind::Restart || command.kind == CommandKind::BuzzerTest || command.kind == CommandKind::BuzzerVolume ||
       command.kind == CommandKind::AirAlertSave || command.kind == CommandKind::AirAlertTest || command.kind == CommandKind::AirAlertStop ||
+      command.kind == CommandKind::BlackHolePlay || command.kind == CommandKind::BlackHoleStop ||
       command.kind == CommandKind::MemorialSave || command.kind == CommandKind::MemorialPlay || command.kind == CommandKind::MemorialStop ? "/settings" : "/");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store"); httpd_resp_set_hdr(request, "Connection", "close");
   return httpd_resp_send(request, nullptr, 0);
@@ -2686,7 +2724,7 @@ bool initializeHttp() {
       !registerRoute("/logs", HTTP_GET, diagnosticJournal) ||
       !registerRoute("/logs.txt", HTTP_GET, diagnosticJournal) ||
       !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
-  for (const char *uri : {"/save", "/power", "/brightness", "/external-light", "/buzzer-test", "/buzzer-volume", "/schedule", "/agent-color", "/restart", "/update", "/memorial", "/air-alert"})
+  for (const char *uri : {"/save", "/power", "/brightness", "/external-light", "/buzzer-test", "/buzzer-volume", "/schedule", "/agent-color", "/restart", "/update", "/memorial", "/black-hole", "/air-alert"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();
   for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js", "/assets/js/boot.js", "/assets/js/token-history.js"})
     if (!registerRoute(uri, HTTP_GET, staticAsset)) return failed();
@@ -2723,6 +2761,17 @@ void serviceCommands() {
         else message("Матриця вимкнена. Перевірку тривоги не запущено.");
         break;
       case CommandKind::AirAlertStop: model.air.stopDemo(); break;
+      case CommandKind::BlackHolePlay:
+        if (model.control.on && scheduledOn() && !model.restarting &&
+            model.control.maintenance == Maintenance::None && !model.memorial.active &&
+            !model.control.memorialActive && !model.render.memorialTransition) {
+          model.blackHolePreview = true;
+          model.blackHolePreviewStartedAt = uptimeMs();
+        }
+        break;
+      case CommandKind::BlackHoleStop:
+        model.blackHolePreview = false;
+        break;
       case CommandKind::MemorialSave:
         if (model.memorialEnabled != command.enabled || model.memorialSaveFailed) {
           model.memorialEnabled = command.enabled; model.memorialDirty = true;

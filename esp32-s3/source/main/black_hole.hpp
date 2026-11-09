@@ -13,6 +13,9 @@ struct Pixel { uint8_t red, green, blue; };
 // Fixed-size samples: no allocation or per-pixel trigonometry.
 constexpr unsigned kInfallStars = 10;
 constexpr unsigned kTrailSamples = 4;
+constexpr uint32_t kInfallPeriodMs = 32768;
+constexpr uint32_t kInfallPhaseStepMs = kInfallPeriodMs / kInfallStars;
+constexpr uint32_t kTrailSpacingMs = 170;
 struct LightSample { float x, y, energy, nx, ny, stretch; };
 struct Impact { float x, y, energy; };
 struct Frame {
@@ -34,8 +37,8 @@ inline Frame frame(uint32_t now) {
   result.warp_y = std::sin(warp);
   for (unsigned i = 0; i < kInfallStars; ++i) {
     for (unsigned j = 0; j < kTrailSamples; ++j) {
-      const uint32_t tick = now + i * 1638u - j * 85u;
-      const float progress = float(tick & 16383u) / 16384.0f;
+      const uint32_t tick = now + i * kInfallPhaseStepMs - j * kTrailSpacingMs;
+      const float progress = float(tick & (kInfallPeriodMs - 1)) / float(kInfallPeriodMs);
       // Accelerate toward the horizon; the tail follows the same curved path.
       const float radius = 0.76f - 0.64f * progress * progress;
       const float angle = i * 2.39996323f + progress * 3.8f +
@@ -46,11 +49,18 @@ inline Frame frame(uint32_t now) {
       const float fade_out = exit > 0 ? exit * exit * (3 - 2 * exit) : 0;
       const float visibility = fade_in * fade_out;
       const float cx = std::cos(angle), cy = std::sin(angle);
+      // Orient the elongated light along its actual curved velocity. A radial
+      // footprint sweeps sideways across LED rows during an orbit.
+      const float radial_speed = -1.28f * progress;
+      const float angular_speed = 3.8f + 4.4f * progress;
+      const float velocity_x = radial_speed * cx - radius * angular_speed * cy;
+      const float velocity_y = radial_speed * cy + radius * angular_speed * cx;
+      const float inverse_speed = 1.0f / std::sqrt(velocity_x * velocity_x + velocity_y * velocity_y);
       const float stretch = radius < 0.32f ? (0.32f - radius) / 0.20f : 0;
       result.light[i * kTrailSamples + j] = {
           radius * cx, radius * cy,
           visibility * (j == 0 ? 0.58f : 0.27f / float(j)),
-          cx, cy, 1.0f + 1.8f * stretch};
+          velocity_x * inverse_speed, velocity_y * inverse_speed, 1.0f + 1.8f * stretch};
       if (j == 0) {
         // A local, smooth pulse as this star reaches the luminous inner ring.
         const float event = 1.0f - std::fabs(progress - 0.955f) / 0.04f;
@@ -122,9 +132,9 @@ inline Pixel pixel(unsigned x, unsigned y, unsigned w, unsigned h,
   for (const auto& light : f.light) {
     const float dx = px - light.x, dy = py - light.y;
     // A broad, soft footprint overlaps adjacent rows at the physical LED pitch.
-    const float radial = (dx * light.nx + dy * light.ny) / light.stretch;
-    const float tangent = -dx * light.ny + dy * light.nx;
-    const float weight = detail::clamp(1 - (radial * radial + tangent * tangent) / 0.0081f);
+    const float along = (dx * light.nx + dy * light.ny) / light.stretch;
+    const float across = -dx * light.ny + dy * light.nx;
+    const float weight = detail::clamp(1 - (along * along + across * across) / 0.0081f);
     captured_light += weight * weight * weight * light.energy;
   }
   float response = 0;

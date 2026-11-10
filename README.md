@@ -20,6 +20,12 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794316000000` restores the original golden sun and its orbit, adds
+soft radial beams, and distributes five shaded cloud groups across the sky.
+Artwork is precomputed offline.
+
+## OTA Memory Recovery
+
 Version `1794314000000` drains the HTTP server and its client sockets before
 firmware HTTPS transfer to recover internal memory. Failed transfers restore
 the server after HTTPS cleanup and reuse the existing preview worker. Failed

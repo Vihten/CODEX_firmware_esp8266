@@ -2,6 +2,7 @@
 #include "runtime.hpp"
 #include "led_output.hpp"
 #include "subpixel.hpp"
+#include "cloud_motion.hpp"
 #include "preview.hpp"
 #include "memorial_draw.hpp"
 #include "air_alert_visual.hpp"
@@ -792,6 +793,23 @@ int16_t smoothSkyWave(uint16_t period, uint16_t phase) {
   return (int32_t(sineAt(index)) * (256 - fraction) + int32_t(sineAt(uint8_t(index + 1))) * fraction) / 256;
 }
 
+void swayCloudPixel(uint8_t *rgb, uint8_t &type, uint8_t x, uint8_t y,
+                    uint16_t frame, int offsetQ8) {
+  if (pgm_read_byte(&ENTRANCE_FIXED[y * MATRIX_WIDTH + x])) return;
+  const auto color = [frame](int px, int py) {
+    const uint8_t *p = assets.animation + uint32_t(frame) * FRAME_BYTES +
+        (py * MATRIX_WIDTH + px) * 3;
+    return cloud_motion::Pixel{p[0], p[1], p[2], 0, false};
+  };
+  const auto mask = [frame](int px, int py) {
+    return assets.effects[uint32_t(frame) * EFFECT_BYTES + py * MATRIX_WIDTH + px];
+  };
+  const auto pixel = cloud_motion::sample(x, y, MATRIX_WIDTH, MATRIX_HEIGHT,
+      offsetQ8, color, mask);
+  if (!pixel.changed) return;
+  rgb[0] = pixel.r; rgb[1] = pixel.g; rgb[2] = pixel.b; type = pixel.type;
+}
+
 void modulateSky(uint8_t *rgb, uint8_t type, uint8_t x, uint8_t y) {
   int scale = 255;
   if (type == 1) {
@@ -1205,6 +1223,7 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
     frame = sceneFrameMilli / 1000;
   }
 #endif
+  const int cloudOffsetQ8 = int(smoothSkyWave(180, 0)) * 256 / 127;
   const uint16_t sceneFraction = sceneFrameMilli % 1000;
   const uint16_t nextFrame = frame + 1 < FRAME_COUNT ? frame + 1 : frame;
   const uint32_t nextOffset = uint32_t(nextFrame) * FRAME_BYTES;
@@ -1233,14 +1252,17 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
     for (uint8_t x = 0; x < MATRIX_WIDTH; x++) {
       uint8_t rgb[3] = {frameRow[x * 3], frameRow[x * 3 + 1], frameRow[x * 3 + 2]};
 #if EVENT_MODE
-      const uint8_t effectType = effectRow[x];
+      uint8_t effectType = effectRow[x];
       const uint16_t pixelIndex = y * MATRIX_WIDTH + x;
+      effectMask[pixelIndex] = effectType;
+      swayCloudPixel(rgb, effectType, x, y, frame, cloudOffsetQ8);
       effectMask[pixelIndex] = effectType;
       modulateSky(rgb, effectType, x, y);
       if (sceneFraction) {
-        const uint8_t nextType = assets.effects[nextMaskOffset + pixelIndex];
+        uint8_t nextType = assets.effects[nextMaskOffset + pixelIndex];
         uint8_t nextRgb[3];
         memcpy(nextRgb, assets.animation + nextOffset + pixelIndex * 3, 3);
+        swayCloudPixel(nextRgb, nextType, x, y, nextFrame, cloudOffsetQ8);
         modulateSky(nextRgb, nextType, x, y);
         for (unsigned channel = 0; channel < 3; ++channel)
           rgb[channel] = subpixel::mix(rgb[channel], nextRgb[channel], sceneFraction);

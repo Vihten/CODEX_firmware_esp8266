@@ -20,6 +20,14 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794324000000` moves clouds horizontally by one LED in either direction
+on a six-second cycle, with Q8 subpixel interpolation and restored sky behind
+the displaced clouds. The sun keeps a one-pixel sky clearance. The nearby cloud
+is raised three rows for a distinct silhouette. Sampling uses bounded stack-only
+operations and applies to both quota interpolation endpoints.
+
+## TLS Memory Fix
+
 Version `1794322000000` backports Espressif's cross-signed certificate bundle
 memory-leak fix from commit `0d8ff68f8a47fc05a6b1d3a5bda24764a48e5fbd`.
 The previous callback allocated ASN.1 buffers outside certificate-owned storage,

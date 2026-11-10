@@ -20,6 +20,17 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794322000000` backports Espressif's cross-signed certificate bundle
+memory-leak fix from commit `0d8ff68f8a47fc05a6b1d3a5bda24764a48e5fbd`.
+The previous callback allocated ASN.1 buffers outside certificate-owned storage,
+which accumulated in internal RAM during repeated HTTPS verification. The fixed
+callback references persistent bundle and child certificate data with the normal
+Mbed TLS cleanup lifecycle. Certificate and hostname verification remain enabled.
+The project-local replacement is compiled into the mbedtls target with the pinned
+IDF 6.0.1, without modifying the installed SDK. See `esp32-s3/source/patches`.
+
+## Stronger Daylight Effects
+
 Version `1794320000000` increases sun-ray contrast with distinct angular gaps
 and a brighter outward pulse. Clouds use stronger travelling illumination
 and a cool sheen. The marked cloud moves another ten columns right.

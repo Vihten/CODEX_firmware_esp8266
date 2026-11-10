@@ -6,6 +6,7 @@
 #include "recovery.hpp"
 #include "esp_attr.h"
 #include "diagnostics.hpp"
+#include "diagnostic_persistence.hpp"
 #include "diagnostic_http.hpp"
 #include "weekly.hpp"
 #include "quota_filter.hpp"
@@ -3235,6 +3236,8 @@ void serviceMaintenance() {
         saved = saveExternalLight() && saved;
         saved = saveBuzzerVolume() && saved;
         saved = web_auth::persist() && saved;
+        if (diagnostic_persistence::due(now, model.restarting || model.manifestReady))
+          diagnostic_persistence::flush(now);
         if (model.confirmationPending && std::strcmp(webFilesVersion(), "unavailable") && model.render.watchdogReady && model.render.assetsReady && model.render.frames && model.render.ledError == 0 && model.wifiReady && model.httpReady && model.udp >= 0) {
           if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) model.confirmationPending = false;
           else { message("Boot confirmation could not be persisted."); saved = false; }
@@ -3277,6 +3280,7 @@ void serviceMaintenance() {
   if (air_alert::busy()) return;
   if ((model.dirty && now - model.dirtyAt >= 300 && due(now, model.persistRetryAt)) ||
       (web_auth::pendingSave() && due(now, model.persistRetryAt)) ||
+      (diagnostic_persistence::due(now, model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
       (daily_runtime::due(now, model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
       (model.memorialDirty && due(now, model.persistRetryAt)) ||
       (model.airDirty && due(now, model.persistRetryAt)) ||
@@ -3321,6 +3325,11 @@ void networkTask(void *) {
   loadTelegramAlertState();
   const bool webReady = initializeWebFiles();
   if (!webReady) { message("Web filesystem initialization failed."); ESP_LOGE(kTag, "Web filesystem unavailable"); }
+  diagnostics::Metadata diagnosticBoot;
+  if (webReady && diagnostics::getMetadata(diagnosticBoot) &&
+      !diagnostic_persistence::initialize("/www/diagnostics", PROJECT_FIRMWARE_VERSION,
+          diagnosticBoot.boot_id, diagnosticBoot.reset_cause))
+    ESP_LOGW(kTag, "Persistent diagnostic archive startup incomplete; RAM journal available");
   recoveryBudget.boot(retainedRecovery, esp_reset_reason() == ESP_RST_SW);
   recoveryBudgetStatus.store(1U | (retainedRecovery.used << 1) | (retainedRecovery.reason << 16));
   model.wifiReady = initializeWifi();

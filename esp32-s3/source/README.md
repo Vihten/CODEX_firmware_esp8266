@@ -281,7 +281,13 @@ CMake builds `main/web_bundle.bin` from `web/` using `build_web_bundle.py`.
 This SHA-256-checked seed travels inside the application OTA image. Before
 the renderer receives its first control snapshot, boot verifies the on-disk
 files and installs the matching tree if needed. After installation the filesystem
-is remounted read-only. HTTP streams these actual files through bounded buffers;
+remains writable for `/www/diagnostics`, a rotating CRC-protected diagnostic
+archive capped at four 64 KiB segments. Its latest 256 unique records are cached
+for bounded HTTP exports. Warning/error batches are written only after the
+renderer and preview acknowledge flash maintenance, normally every 30 seconds.
+Recorded history survives restarts and power loss. Pending batches can be lost.
+Boot markers preserve firmware and reset reason. The archive is outside both
+OTA web trees. HTTP streams portal files through bounded buffers;
 templates insert escaped controller data and preserve native HTML forms.
 
 Only completely erased storage may be initially formatted. Unknown/corrupt

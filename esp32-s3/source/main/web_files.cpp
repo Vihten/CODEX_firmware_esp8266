@@ -234,10 +234,12 @@ bool initializeWebFiles() {
     ok = install(count);
   }
   if (esp_vfs_littlefs_unregister("storage") != ESP_OK || !ok) return false;
-  config.format_if_mount_failed = false; config.read_only = true;
+  // Runtime diagnostics use a separate directory on the same filesystem.
+  // Mutations run only under the renderer's flash-maintenance barrier.
+  config.format_if_mount_failed = false; config.read_only = false;
   ready = esp_vfs_littlefs_register(&config) == ESP_OK;
   if (ready) initializeAssetEtags();
-  if (ready) ESP_LOGI(kTag, "Serving %lu verified files from %s (%.12s), read-only", (unsigned long)count, root, version);
+  if (ready) ESP_LOGI(kTag, "Serving %lu verified files from %s (%.12s), diagnostic archive writable", (unsigned long)count, root, version);
   return ready;
 }
 

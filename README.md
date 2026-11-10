@@ -20,18 +20,19 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
-Version `1793869356521` adds a bounded, password-protected warning/error journal.
-It retains the latest 256 entries in PSRAM (at most 64 KiB), coalesces adjacent
-repeats, and exports safe numeric context, codes and timestamps through `/logs`
-and `/logs.txt`. Settings links expose both routes. Raw requests, passwords,
-tokens and upstream response bodies are never ingested. Healthy samples are not
-journal entries: an independent 2-second monitor updates recent context and
-records only anomalies. Each export has an absolute nonblocking send deadline.
+Version `1794310000000` persists the diagnostic journal in LittleFS under
+`/www/diagnostics`. Four rotating files use at most 256 KiB. Fixed-size records
+carry CRC32, firmware, boot identity, reset reason, and curated numeric context.
+The archive recovers complete records before a torn/corrupt tail and retries
+transient write failures. It retains the latest 256 unique cached records.
 
-The RAM journal is cleared on reboot. A CRC-protected double-buffered RTC summary
-retains a small previous-boot checkpoint across supported warm resets; it is not
-the previous journal and is not persistent across loss of power. No logger flash
-writes are performed. GPIO18, 30 FPS, settings and the agent payload are unchanged.
+Password-protected `/logs` and `/logs.txt` show saved history and current RAM
+events, including saved current-boot entries already evicted from RAM. Repeated
+events update the same identity. Files remain outside both OTA web trees.
+Writes run only after the renderer/preview flash-maintenance acknowledgement,
+in bounded batches, normally every 30 seconds. Saved records survive power
+loss. Recent pending records may be lost. Persistence status is included in
+journal exports. The small RTC summary remains a separate warm-reset aid.
 
 ## Previous Network Recovery Release
 

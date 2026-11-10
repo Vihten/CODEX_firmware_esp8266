@@ -3,7 +3,8 @@
 #include "diagnostic_log.hpp"
 
 // Task context only. Call initialize after initializeRuntime, when assets and
-// PSRAM are valid. No ESP_LOG interception, flash writes, or owned RTOS task.
+// PSRAM are valid. Flash persistence is scheduled separately by the network
+// owner after its renderer-maintenance ACK. No ESP_LOG interception or new task.
 namespace diagnostics {
 using Level = diagnostic_log::Severity;
 using Module = diagnostic_log::Module;
@@ -88,7 +89,7 @@ bool readAfter(Cursor& cursor, Entry& out, Page& page) noexcept;
 // Repeated warnings are throttled to 30s per category; healthy calls append
 // nothing. Context uses a separate short critical section, never ring lock.
 // Caller invokes checkpoint separately (~10s); RTC survives some soft resets,
-// not power loss. No flash persistence is provided.
+// not power loss. The separate LittleFS archive survives power loss.
 void healthCheck(const HealthContext& context,
                  uint32_t heap_warn_bytes = 32768) noexcept;
 void checkpoint(const Summary& summary) noexcept;

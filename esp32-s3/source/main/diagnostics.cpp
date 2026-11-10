@@ -1,4 +1,5 @@
 #include "diagnostics.hpp"
+#include "diagnostic_persistence.hpp"
 
 #include <atomic>
 #include <new>
@@ -168,7 +169,8 @@ bool event(Level level, Module module, uint16_t code,
   const bool result = ring->append(now(), level, module, code, text,
                                   diagnostic_log::kTextBytes - 1, context, captured.unix_epoch_s);
   xSemaphoreGive(mutex);
-  if (!result) drop();
+  if (result) diagnostic_persistence::changed();
+  else drop();
   return result;
 }
 bool event(Level level, Module module, uint16_t code, const char*, ...) noexcept {

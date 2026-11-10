@@ -20,6 +20,13 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794314000000` drains the HTTP server and its client sockets before
+firmware HTTPS transfer to recover internal memory. Failed transfers restore
+the server after HTTPS cleanup and reuse the existing preview worker. Failed
+HTTP restart is retried at five-second intervals after maintenance releases.
+
+## Daytime Artwork
+
 Version `1794312000000` refreshes the daytime sky with natural blue tones, a
 white sun and soft halo, and rounded cumulus clouds with blue-grey shadows.
 Day artwork is precomputed; the night frame and fixed elements are preserved.

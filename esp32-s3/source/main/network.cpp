@@ -2734,6 +2734,8 @@ bool initializeHttp() {
   for (const char *uri : {"/agent-update/manifest.json", "/agent-update/package.zip"})
     if (!registerRoute(uri, HTTP_GET, agentUpdateArtifact)) return failed();
   if (!web_auth::registerRoutes(model.http)) return failed();
+  // The preview worker survives an HTTP server restart after a failed OTA.
+  if (previewStreamReady.load(std::memory_order_acquire)) return true;
   previewStreamQueue = xQueueCreateStatic(1, sizeof(httpd_req_t *), previewStreamQueueBytes, &previewStreamQueueStorage);
   previewStreamReady.store(previewStreamQueue &&
     xTaskCreatePinnedToCore(previewStreamTask, "preview-stream", 8192, nullptr, 2, nullptr, 0) == pdPASS,
@@ -3062,6 +3064,24 @@ bool requestOtaVisual(uint8_t percent) {
   return false;
 }
 bool installFirmware() {
+  // Maintenance already sealed and drained the asynchronous preview worker.
+  // Stop HTTPD from its network owner, releasing its task and all client sockets
+  // before HTTPS allocates buffers. Recreate routes only after HTTPS is destroyed.
+  struct HttpPause {
+    bool stopped = false;
+    ~HttpPause() {
+      if (stopped) model.httpReady = initializeHttp();
+    }
+  } httpPause;
+  if (model.http) {
+    if (httpd_stop(model.http) != ESP_OK) {
+      otaMessage("HTTP server could not drain before OTA");
+      return false;
+    }
+    model.http = nullptr;
+    model.httpReady = false;
+    httpPause.stopped = true;
+  }
   Download download;
   if (!download.open(kFirmwareUrl)) { otaMessage("Firmware HTTPS request failed"); return false; }
   if (download.length() >= 0 && uint64_t(download.length()) != model.manifest.size) { otaMessage("Firmware length mismatch"); return false; }
@@ -3360,6 +3380,7 @@ void networkTask(void *) {
   model.manifestWorkerReady = xTaskCreatePinnedToCore(manifestTask, "manifest", 16384, nullptr, 2, nullptr, 0) == pdPASS;
   TickType_t wake = xTaskGetTickCount();
   bool renderReported = false;
+  uint32_t httpRetryAt = uptimeMs() + 5000;
   for (;;) {
     markNetworkProgress(network_progress::Stage::RenderStatus);
     ++model.loops;
@@ -3398,6 +3419,11 @@ void networkTask(void *) {
     publishView();
     markNetworkProgress(network_progress::Stage::Maintenance);
     serviceMaintenance();
+    if (!model.httpReady && !model.http && model.control.maintenance == Maintenance::None &&
+        !model.releasePending && !web_auth::busy() && due(uptimeMs(), httpRetryAt)) {
+      model.httpReady = initializeHttp();
+      httpRetryAt = uptimeMs() + 5000;
+    }
     // A blocking flash transfer must not leave thousands of overdue polling ticks.
     if (xTaskGetTickCount() - wake > pdMS_TO_TICKS(100)) wake = xTaskGetTickCount();
     completeNetworkProgress();

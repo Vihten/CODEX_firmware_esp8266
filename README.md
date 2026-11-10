@@ -20,6 +20,12 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794312000000` refreshes the daytime sky with natural blue tones, a
+white sun and soft halo, and rounded cumulus clouds with blue-grey shadows.
+Day artwork is precomputed; the night frame and fixed elements are preserved.
+
+## Persistent Diagnostics
+
 Version `1794310000000` persists the diagnostic journal in LittleFS under
 `/www/diagnostics`. Four rotating files use at most 256 KiB. Fixed-size records
 carry CRC32, firmware, boot identity, reset reason, and curated numeric context.

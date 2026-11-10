@@ -20,6 +20,13 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794318000000` adds travelling cloud illumination, gentle golden sun
+pulsation, and outward-moving warm halo bands. Halo phases are encoded offline
+in effect masks, using the renderer sine lookup with sub-frame interpolation.
+The upper-left cloud moves three columns right and 1.5 rows upward.
+
+## Daytime Artwork
+
 Version `1794316000000` restores the original golden sun and its orbit, adds
 soft radial beams, and distributes five shaded cloud groups across the sky.
 Artwork is precomputed offline.

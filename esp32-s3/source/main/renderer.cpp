@@ -804,12 +804,18 @@ void modulateSky(uint8_t *rgb, uint8_t type, uint8_t x, uint8_t y) {
   } else if (type == 3) {
     scale = 218 + 37 * smoothSkyWave(210, x * 5 + y * 3) / 127;
   } else if (type >= 64) {
-    scale = 196 + 36 * smoothSkyWave(144, type - 64) / 127 +
-        16 * smoothSkyWave(231, x * 2 + y * 5) / 127;
+    scale = 166 + 62 * smoothSkyWave(114, type - 64) / 127 +
+        26 * smoothSkyWave(207, x * 3 + y * 7) / 127;
+    // A travelling cool highlight makes the shaded lobes roll visibly.
+    const unsigned sheen = (127 + smoothSkyWave(114, type - 64)) * 18 / 254;
+    rgb[2] = min(255U, unsigned(rgb[2]) + sheen);
   } else if (type >= 4) {
     const unsigned band = (type - 4) / 12, angle = (type - 4) % 12;
     const unsigned wave = 127 + smoothSkyWave(96, (angle * 3 + 96 - band * 18) % 96);
-    const unsigned glow = wave * (5 - band) * 28 / (254 * 5);
+    // Alternate bright spokes with dim gaps, with a smooth outward pulse.
+    const unsigned spoke = angle % 2 == 0 ? 100 : 24;
+    const unsigned glow = wave * wave * (5 - band) * 76 * spoke /
+        (254U * 254U * 5U * 100U);
     rgb[0] = min(255U, unsigned(rgb[0]) + glow);
     rgb[1] = min(255U, unsigned(rgb[1]) + glow * 3 / 4);
     rgb[2] = min(255U, unsigned(rgb[2]) + glow / 6);

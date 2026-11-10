@@ -20,6 +20,12 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794320000000` increases sun-ray contrast with distinct angular gaps
+and a brighter outward pulse. Clouds use stronger travelling illumination
+and a cool sheen. The marked cloud moves another ten columns right.
+
+## Dynamic Daylight
+
 Version `1794318000000` adds travelling cloud illumination, gentle golden sun
 pulsation, and outward-moving warm halo bands. Halo phases are encoded offline
 in effect masks, using the renderer sine lookup with sub-frame interpolation.

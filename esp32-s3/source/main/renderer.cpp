@@ -126,7 +126,7 @@ void preserveNightSkyPixel(uint8_t *rgb, uint16_t index, uint8_t effectType, uin
   if (!brightness || effectType || pgm_read_byte(&ENTRANCE_FIXED[index]) ||
       rgb[2] < 2 || rgb[2] > 4 || rgb[1] >= rgb[2] || rgb[0] > rgb[1]) return;
   const uint8_t minimumBlue = 5;
-  if (rgb[2] < minimumBlue) rgb[2] = uint8_t(minimumBlue);
+  rgb[2] = quota_provider::nightBlue(rgb[2], minimumBlue, claudeTint);
 }
 float entranceClosingFrom = 0, entranceClosingTo = 0;
 uint32_t entranceClosingAt = 0;
@@ -822,8 +822,6 @@ void swayCloudPixel(uint8_t *rgb, uint8_t &type, uint8_t x, uint8_t y,
 
 void modulateSky(uint8_t *rgb, uint8_t type, uint8_t x, uint8_t y) {
   const unsigned index = y * MATRIX_WIDTH + x;
-  quota_provider::tint(rgb, type, pgm_read_byte(&ENTRANCE_FIXED[index]) ||
-      pgm_read_byte(&PYRAMID_MASK[index]), claudeTint);
   int scale = 255;
   if (type == 1) {
     const uint16_t seed = x * 37 + y * 101 + 17;
@@ -852,6 +850,8 @@ void modulateSky(uint8_t *rgb, uint8_t type, uint8_t x, uint8_t y) {
     rgb[2] = min(255U, unsigned(rgb[2]) + glow / 6);
   }
   for (unsigned channel = 0; channel < 3; ++channel) rgb[channel] = (uint16_t(rgb[channel]) * scale + 127) / 255;
+  if (!pgm_read_byte(&PYRAMID_MASK[index]))
+    quota_provider::tint(rgb, type, pgm_read_byte(&ENTRANCE_FIXED[index]), claudeTint);
 }
 
 subpixel::Pixel meteorLayer[NUM_LEDS];

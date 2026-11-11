@@ -20,6 +20,14 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794410000000` adapts cool sky spill to the Claude palette after
+cloud and sun modulation. Antialiased cloud, ray and moon edges now use warm
+shading, including invariant blue border pixels. Neutral cores and existing
+warm highlights retain their detail. The night visibility floor fades its
+added blue with the provider blend. All operations use bounded integer math.
+
+## Codex and Claude Quotas
+
 Version `1794408000000` adds the Claude Code five-hour remaining quota for
 `marketing@tiras.ua`. Codex and Claude alternate every five minutes while both
 have fresh observations. The existing sky smoothly retargets the new remaining

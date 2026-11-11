@@ -98,12 +98,31 @@ inline bool parse(const char *packet, uint32_t expectedAccount, Packet &result) 
   result = {client, int16_t(value), validForMs};
   return true;
 }
-// Tint only the unclassified sky. Fixed artwork and all effect masks retain their palette.
+// Correct the sky and cool spill in its antialiased artwork after modulation.
+// Neutral cloud cores and warm rays keep their existing color and detail.
 inline void tint(uint8_t *rgb, uint8_t type, bool fixed, uint8_t amount) {
-  if (type || fixed || !amount) return;
-  const unsigned light = (unsigned(rgb[0]) * 54 + unsigned(rgb[1]) * 183 + unsigned(rgb[2]) * 19 + 128) / 256;
-  const unsigned target[3] = {light * 3 / 2 > 255 ? 255 : light * 3 / 2, light * 3 / 4, light / 3};
-  for (unsigned i = 0; i < 3; ++i)
-    rgb[i] = uint8_t((unsigned(rgb[i]) * (255 - amount) + target[i] * amount + 127) / 255);
+  if (!amount) return;
+  const unsigned cool = rgb[1] > rgb[2] ? rgb[1] : rgb[2];
+  unsigned target[3];
+  if (!type && (!fixed || cool > rgb[0])) {
+    const unsigned light = (unsigned(rgb[0]) * 54 + unsigned(rgb[1]) * 183 + unsigned(rgb[2]) * 19 + 128) / 256;
+    target[0] = light * 3 / 2; target[1] = light * 3 / 4; target[2] = light / 3;
+  } else if (type && cool > rgb[0]) {
+    const unsigned neutral = rgb[0] < rgb[1] ? rgb[0] : rgb[1];
+    const unsigned base = neutral < rgb[2] ? neutral : rgb[2];
+    const unsigned spill = cool - rgb[0];
+    target[0] = base + spill * 3 / 2;
+    target[1] = base + spill * 3 / 4;
+    target[2] = base + spill / 3;
+  } else return;
+  for (unsigned i = 0; i < 3; ++i) {
+    const unsigned warm = target[i] > 255 ? 255 : target[i];
+    rgb[i] = uint8_t((unsigned(rgb[i]) * (255 - amount) + warm * amount + 127) / 255);
+  }
+}
+// The blue visibility floor fades with the same provider mix as the artwork.
+inline uint8_t nightBlue(uint8_t current, uint8_t minimum, uint8_t amount) {
+  if (current >= minimum) return current;
+  return uint8_t(current + (unsigned(minimum - current) * (255 - amount) + 127) / 255);
 }
 }  // namespace quota_provider

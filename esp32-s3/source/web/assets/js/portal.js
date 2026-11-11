@@ -430,6 +430,7 @@
       baseline = stamp;
       live('remaining', status.quota_known === true ?
         `${percent(status.remaining)}${status.quota_fresh === true ? '' : ' · останні дані'}` : missing);
+      live('quota-provider', status.quota_provider === 'claude' ? 'Claude Code · 5 год' : 'Codex');
       live('activity', percent(status.activity));
       live('agents', number(status.agents_count));
       live('wifi', status.wifi === true ? 'Підключено' : status.wifi === false ? 'Не підключено' : missing);

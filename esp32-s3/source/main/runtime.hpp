@@ -6,6 +6,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "project_config.hpp"
+#include "quota_provider.hpp"
 
 constexpr size_t kAgentCapacity = 12;
 enum class Maintenance : uint8_t { None, Persist, Ota, Restart };
@@ -22,6 +23,8 @@ struct AgentInput {
 };
 
 struct ControlFrame {
+  quota_provider::Provider quotaProvider = quota_provider::Provider::Codex;
+  quota_provider::Snapshot codexQuota, claudeQuota;
   uint32_t quotaRecoveryEpoch = 0;
   uint32_t otaVisualSequence = 0;
   uint8_t otaVisualPercent = 0;

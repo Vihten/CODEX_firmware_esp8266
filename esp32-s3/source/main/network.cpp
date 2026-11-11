@@ -226,7 +226,9 @@ struct Model {
   uint8_t legacyActivity = 0, legacyRemaining = 100, stationAttempts = 0;
   bool legacySeen = false, directSeen = false, linked = false, connected = false;
   bool quotaResetReported = false;
-  quota::Filter quotaFilter;
+  quota_provider::State codexQuota, claudeQuota;
+  quota_provider::Rotation quotaRotation;
+  quota_provider::Sample codexSamples[kAgentCapacity], claudeSamples[kAgentCapacity];
   bool nvsReady = false, dirty = false, wifiChanged = false, stationConnecting = false;
   bool restarting = false, updateRequested = false, manifestReady = false;
   bool releasePending = false, confirmationPending = false, sntpStarted = false;
@@ -925,6 +927,20 @@ bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
     return daily_runtime::accept(packet, clock.valid ? clock.date : 0, model.deviceId, ack);
   }
   if (!std::strncmp(packet, "LFT1,", 5) || !std::strncmp(packet, "LFT2,", 5)) return acceptWeeklyTelemetry(packet, ack);
+  if (!std::strncmp(packet, "LFC1,", 5)) {
+    quota_provider::Packet incoming;
+    if (!quota_provider::parse(packet, PROJECT_ACCOUNT_FINGERPRINT, incoming)) return false;
+    for (size_t i = 0; i < kAgentCapacity; ++i) {
+      const auto &agent = model.control.agents[i];
+      if (!agent.clientId || agent.clientId != incoming.clientId) continue;
+      model.claudeSamples[i] = {incoming.clientId, receivedAt, incoming.remaining, incoming.validForMs};
+      ++model.udpPackets;
+      std::snprintf(ack, sizeof(ack), "LFC1_ACK,%06lX,%08lX", (unsigned long)model.deviceId,
+          (unsigned long)incoming.clientId);
+      return true;
+    }
+    return false;
+  }
   AgentInput incoming; bool legacy = false; uint8_t remaining = 100, activity = 0;
   if (!parseTelemetry(packet, incoming, legacy, remaining, activity)) return false;
   const uint32_t now = uptimeMs();
@@ -959,6 +975,9 @@ bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
     model.requestedRgb[slot] = incoming.rgb;
     if (const auto *entry = findOverride(incoming.clientId)) incoming.rgb = entry->rgb;
     else incoming.rgb = sameColor ? previous.rgb : distinctColor(incoming.rgb, incoming.clientId);
+    if (previous.clientId != incoming.clientId) model.claudeSamples[slot] = {};
+    model.codexSamples[slot] = {incoming.clientId, receivedAt,
+        incoming.quotaForPairedAccount ? incoming.remaining : int16_t(-1)};
     model.control.agents[slot] = incoming;
     model.directSeen = true;
     std::snprintf(ack, sizeof(ack), "LFA2_ACK,%06lX,%08lX,%06lX", (unsigned long)model.deviceId,
@@ -1010,16 +1029,34 @@ void updateControl() {
     if (agent.present && now - agent.seenAt >= kAgentTimeout) agent.present = false;
     if (!agent.present) continue;
     direct = true; combined += agent.activity;
-    if (agent.quotaForPairedAccount && agent.remaining >= 0 && agent.remaining <= 100)
-      remaining = std::min(remaining, int(agent.remaining));
   }
   const bool legacy = model.legacySeen && now - model.legacyAt < 8000;
   model.control.activityPercent = direct ? uint8_t(std::min(combined, 100U)) : legacy && !model.directSeen ? model.legacyActivity : 0;
-  if (model.quotaFilter.observe(remaining, model.quotaResetReported, now, model.control.remainingPercent))
-    ++model.control.quotaRecoveryEpoch;
+  int claudeRemaining = 101;
+  for (size_t i = 0; i < kAgentCapacity; ++i) {
+    if (model.codexSamples[i].clientId != model.control.agents[i].clientId) model.codexSamples[i] = {};
+    if (model.claudeSamples[i].clientId != model.control.agents[i].clientId) model.claudeSamples[i] = {};
+    if (model.codexSamples[i].fresh(now, quota_provider::codexFreshMs))
+      remaining = std::min(remaining, int(model.codexSamples[i].remaining));
+    if (model.claudeSamples[i].fresh(now, quota_provider::claudeFreshMs))
+      claudeRemaining = std::min(claudeRemaining, int(model.claudeSamples[i].remaining));
+  }
+  const bool codexRecovered = model.codexQuota.observe(remaining, model.quotaResetReported, now);
+  // Claude has independent samples and filtering. Provider changes never report a refill.
+  model.claudeQuota.observe(claudeRemaining, false, now);
   model.quotaResetReported = false;
-  model.control.quotaKnown = model.quotaFilter.initialized;
-  model.control.quotaFresh = remaining >= 0 && remaining <= 100;
+  const auto previousProvider = model.control.quotaProvider;
+  model.control.quotaProvider = model.quotaRotation.update(
+      model.codexQuota.snapshot.fresh, model.claudeQuota.snapshot.fresh, now);
+  if (codexRecovered && previousProvider == model.control.quotaProvider &&
+      previousProvider == quota_provider::Provider::Codex) ++model.control.quotaRecoveryEpoch;
+  model.control.codexQuota = model.codexQuota.snapshot;
+  model.control.claudeQuota = model.claudeQuota.snapshot;
+  const auto &selected = model.control.quotaProvider == quota_provider::Provider::Claude
+      ? model.control.claudeQuota : model.control.codexQuota;
+  if (selected.known) model.control.remainingPercent = uint8_t(selected.remaining);
+  model.control.quotaKnown = selected.known;
+  model.control.quotaFresh = selected.fresh;
   model.control.connected = model.connected; model.control.accountLinked = model.linked;
   model.control.brightness = model.settings.brightness; model.control.on = scheduledOn();
   model.control.lightFirst = model.light.first;
@@ -1565,7 +1602,9 @@ const char *portalOtaLabel(const char *value) {
   return value;
 }
 void writePortalStats(Html &html, const View &view) {
-  html.file("templates/stats/remaining-open.html");
+  html.render("templates/stats/remaining-open.html", [&](unsigned token) {
+    if (!token) html.text(view.control.quotaProvider == quota_provider::Provider::Claude ? "Claude Code · 5 год" : "Codex");
+  });
   if (!view.control.quotaKnown) html.text("Немає даних");
   else if (!view.control.quotaFresh) html.format("%u%% · останні дані", view.control.remainingPercent);
   else html.format("%u%%", view.control.remainingPercent);
@@ -2070,6 +2109,20 @@ esp_err_t portalStatus(httpd_req_t *request) {
   number(root, "preview_stream_send_errors", previewStreamSendErrors.load(std::memory_order_relaxed));
   number(root, "ota_done", view.otaDone); number(root, "ota_total", view.otaTotal);
   const time_t epoch = std::time(nullptr); number(root, "time_epoch", epoch >= 1700000000 ? double(epoch) : 0);
+  string(root, "quota_provider", quota_provider::name(view.control.quotaProvider));
+  cJSON *quotas = cJSON_AddObjectToObject(root, "quotas");
+  if (!quotas) okay = false;
+  else {
+    const auto addQuota = [&](const char *provider, const quota_provider::Snapshot &value) {
+      cJSON *item = cJSON_AddObjectToObject(quotas, provider);
+      if (!item) { okay = false; return; }
+      number(item, "remaining", value.remaining);
+      boolean(item, "known", value.known);
+      boolean(item, "fresh", value.fresh);
+    };
+    addQuota("codex", view.control.codexQuota);
+    addQuota("claude", view.control.claudeQuota);
+  }
   boolean(root, "quota_known", view.control.quotaKnown);
   boolean(root, "quota_fresh", view.control.quotaFresh);
   if (view.control.quotaKnown) number(root, "remaining", view.control.remainingPercent);
@@ -2590,8 +2643,10 @@ esp_err_t telemetryPost(httpd_req_t *request) {
   if (!readBody(request, command.packet, sizeof(command.packet))) return error(request, "400 Bad Request", "Invalid telemetry.");
   AgentInput agent; bool legacy; uint8_t remaining, activity;
   weekly::Entry weeklyEntry; uint32_t week = 0;
+  quota_provider::Packet claudePacket;
   if (!parseTelemetry(command.packet, agent, legacy, remaining, activity) &&
-      !parseWeeklyTelemetry(command.packet, weeklyEntry, week)) return error(request, "400 Bad Request", "Invalid telemetry.");
+      !parseWeeklyTelemetry(command.packet, weeklyEntry, week) &&
+      !quota_provider::parse(command.packet, PROJECT_ACCOUNT_FINGERPRINT, claudePacket)) return error(request, "400 Bad Request", "Invalid telemetry.");
   command.receivedAt = uptimeMs();
   if (xQueueSend(telemetryQueue, &command, 0) != pdTRUE) return error(request, "503 Service Unavailable", "Telemetry queue full.");
   const uint32_t start = uptimeMs(); TelemetryReply reply{};

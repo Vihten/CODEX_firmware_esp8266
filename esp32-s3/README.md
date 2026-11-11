@@ -4,6 +4,18 @@ This is a separate ESP-IDF firmware target for ESP32-S3-WROOM-1-N16R8:
 16 MiB quad flash and 8 MiB octal PSRAM. The firmware repository now publishes
 S3 as its primary target; ESP8266 releases remain only in Git history.
 
+## Codex and Claude Quotas
+
+Version `1794408000000` alternates current Codex and Claude Code quota values
+on a five-minute cycle. Claude shows the five-hour quota with an orange sky.
+Switches smoothly move the existing sky level. A single available provider
+remains displayed when the other source is missing or stale.
+
+Use [agent 20261111170000](Codex-LAN-Agent-20261111170000.zip) and run
+`update_codex_lan_agent.cmd` for an existing installation. Its name, settings
+and token history are retained. Claude must be signed in locally as
+`marketing@tiras.ua`. Credentials remain on the PC, with no manual API key.
+
 ## Token Rankings
 
 The agents page contains independent lifetime and Kyiv Monday-to-Sunday weekly

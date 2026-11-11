@@ -20,6 +20,22 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794408000000` adds the Claude Code five-hour remaining quota for
+`marketing@tiras.ua`. Codex and Claude alternate every five minutes while both
+have fresh observations. The existing sky smoothly retargets the new remaining
+percentage without replaying its entrance or quota-reset animation. Claude uses
+an orange sky tint while classified artwork retains its colors. If only one
+provider has current data, that provider stays visible.
+
+Agent `20261111170000` polls Claude in a bounded background worker and verifies
+the live account profile. Credentials stay on the PC. Samples expire at their
+original 90-second deadline or quota reset, including during retransmission.
+The signed update retains the existing publisher key and local agent state.
+The portal identifies the active provider. Physical matrix verification is
+pending installation of this release.
+
+## City Threat Evidence
+
 Version `1794390000000` adds the public Air Force Telegram channel `kpszsu` as
 secondary evidence for objects explicitly over or inside Vinnytsia. Municipal
 `vmroficial` remains the primary alert-state source. Strict city wording excludes

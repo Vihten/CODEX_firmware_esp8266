@@ -46,6 +46,8 @@ uint16_t effectSubTick = 0;
 uint32_t sceneFrameMilli = 0;
 uint32_t quotaFrameMilli = 0, skySampleAt = 0;
 bool skySampleReady = false;
+uint8_t claudeTint = 0;
+quota_provider::Provider skyProvider = quota_provider::Provider::Codex;
 external_light::Sequence lightSequence;
 bool matrixDark = true;
 bool lightPresentationActive = false;
@@ -764,6 +766,14 @@ uint32_t updateSkySample(uint16_t target, bool frozen) {
   const uint32_t now = millis();
   const uint32_t delta = min(uint32_t(250), uint32_t(now - skySampleAt));
   skySampleAt = now;
+  if (skyProvider != control.quotaProvider) {
+    skyProvider = control.quotaProvider;
+    quotaRecovery.observe(control.quotaRecoveryEpoch, false, false);
+  }
+  const uint8_t tintTarget = control.quotaProvider == quota_provider::Provider::Claude ? 255 : 0;
+  const unsigned tintStep = max(1U, delta / 4);
+  if (claudeTint < tintTarget) claudeTint = uint8_t(min(unsigned(tintTarget), unsigned(claudeTint) + tintStep));
+  else if (claudeTint > tintTarget) claudeTint = uint8_t(unsigned(claudeTint) - min(unsigned(claudeTint), tintStep));
   if (status.memorialTransition) return quotaFrameMilli;
   const uint32_t wanted = uint32_t(target) * 1000;
   if (skySampleReady && !sceneTargetOn && sceneProgress < SCENE_DURATION_MS)
@@ -811,6 +821,9 @@ void swayCloudPixel(uint8_t *rgb, uint8_t &type, uint8_t x, uint8_t y,
 }
 
 void modulateSky(uint8_t *rgb, uint8_t type, uint8_t x, uint8_t y) {
+  const unsigned index = y * MATRIX_WIDTH + x;
+  quota_provider::tint(rgb, type, pgm_read_byte(&ENTRANCE_FIXED[index]) ||
+      pgm_read_byte(&PYRAMID_MASK[index]), claudeTint);
   int scale = 255;
   if (type == 1) {
     const uint16_t seed = x * 37 + y * 101 + 17;

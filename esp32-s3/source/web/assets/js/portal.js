@@ -543,6 +543,10 @@
           status.on !== true ? 'Матриця вимкнена. Для тесту ввімкніть її.' : ''].filter(Boolean).join(' · '));
         text('[data-air-alert-updated]', airAlert.updated_age_seconds === null ? 'Оновлення: ще немає даних' :
           `Оновлено ${integer.format(Math.floor(airAlert.updated_age_seconds))} с тому${airAlert.fresh ? '' : ' · дані застаріли'}`);
+        text('[data-city-threat-state]', airAlert.city_demo === true ? 'Ручний тест блимання · 60 с' : airAlert.city_reported === true ? 'Є свіже повідомлення про об’єкт над містом' :
+          airAlert.city_failed === true ? 'Джерело Повітряних сил тимчасово недоступне' :
+          airAlert.city_fresh === true ? 'Свіжих повідомлень про об’єкти над містом не знайдено' : 'Очікування даних Повітряних сил');
+        text('[data-city-threat-source]', airAlert.city_failed === true ? 'Зв’язок із каналом Повітряних сил втрачено. Підтверджений допис діє до завершення 5 хв від публікації.' : '');
         text('[data-air-alert-manual]', airAlert.manual ? `Ручний тест · ${airAlert.remaining_seconds} с` : 'Ручний тест не активний');
         all('[data-air-alert-play]').forEach(button => { button.disabled = status.on !== true || status.maintenance === true; });
         all('[data-air-alert-stop]').forEach(button => { button.disabled = !airAlert.manual || status.maintenance === true; });

@@ -1180,6 +1180,7 @@ void drawAirAlertIndicator(bool alternateScreen, bool procedural = false) {
   const auto overlay = airAlertVisual.overlay();
   if (!air_alert::indicatorVisible(overlay.amount, control.on,
           control.maintenance != Maintenance::None, control.brightness)) return;
+  const float amount = overlay.amount * air_alert::cityBlinkGain(control.airAlertBlink, millis());
   uint8_t *pixels = strip.getPixels();
   if (!pixels) return;
   for (unsigned y = 0; y < air_alert::kIconHeight && y < MATRIX_HEIGHT; ++y)
@@ -1198,9 +1199,9 @@ void drawAirAlertIndicator(bool alternateScreen, bool procedural = false) {
       // Preserve bright objects around the silhouette, but never punch holes in it.
       if (!ink && !fixed && !procedural && effectMask[index]) continue;
       uint8_t *grb = pixels + physicalIndex(x, y) * 3;
-      grb[0] = air_alert::composite(grb[0], ink ? overlay.green : 0, overlay.amount, control.brightness);
-      grb[1] = air_alert::composite(grb[1], ink ? overlay.red : 0, overlay.amount, control.brightness);
-      grb[2] = air_alert::composite(grb[2], ink ? overlay.blue : 0, overlay.amount, control.brightness);
+      grb[0] = air_alert::composite(grb[0], ink ? overlay.green : 0, amount, control.brightness);
+      grb[1] = air_alert::composite(grb[1], ink ? overlay.red : 0, amount, control.brightness);
+      grb[2] = air_alert::composite(grb[2], ink ? overlay.blue : 0, amount, control.brightness);
     }
 }
 

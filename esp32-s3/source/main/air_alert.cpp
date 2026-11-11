@@ -1,5 +1,6 @@
 #include "air_alert.hpp"
 #include "telegram_alert.hpp"
+#include "city_threat.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -207,6 +208,7 @@ bool wantsIo(int result) {
 PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, int64_t deadline) {
   PollResult result;
   result.generation = job.generation;
+  result.cityThreat = job.cityThreat;
   const int64_t started = esp_timer_get_time();
   const auto finish = [&]() {
     result.elapsedMs = uint32_t((esp_timer_get_time() - started) / 1000);
@@ -250,7 +252,8 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
     return finish();
   }
   char path[64] = "/s/vmroficial";
-  if (before) std::snprintf(path, sizeof(path), "/s/vmroficial?before=%lu", (unsigned long)before);
+  if (job.cityThreat) std::snprintf(path, sizeof(path), "/s/kpszsu");
+  else if (before) std::snprintf(path, sizeof(path), "/s/vmroficial?before=%lu", (unsigned long)before);
   char request[320];
   const int requestLength = std::snprintf(request, sizeof(request),
       "GET %s HTTP/1.1\r\nHost: t.me\r\nAccept: text/html\r\nAccept-Encoding: identity\r\n"
@@ -297,7 +300,8 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
   connection.close();
   if (parsed && r.complete && !r.bad && r.status == 200 && esp_timer_get_time() < deadline) {
     telegram::Diagnostics diagnostic;
-    result.valid = telegram::parsePage(r.body, r.used, page, &diagnostic);
+    result.valid = job.cityThreat ? city_threat::parsePage(r.body, r.used, page, &diagnostic) :
+        telegram::parsePage(r.body, r.used, page, &diagnostic);
     if (!result.valid) {
       // No HTML, message contents or cookies in diagnostics. An HTTP-200 login
       // or challenge page is not a verified channel and cannot imply all-clear.
@@ -324,11 +328,25 @@ PollResult poll(const PollJob &job) {
   const int64_t started = esp_timer_get_time(), deadline = started + kDeadlineUs;
   PollResult result;
   result.generation = job.generation;
+  result.cityThreat = job.cityThreat;
   uint32_t before = 0, head = 0;
   int64_t headTime = 0;
   for (unsigned attempt = 0; attempt < 3 && esp_timer_get_time() < deadline; ++attempt) {
     telegram::Page page;
     result = fetchPage(job, before, page, deadline);
+    if (job.cityThreat) {
+      result.valid = result.valid && page.posts && page.newestId && page.newestTime >= 1577836800 &&
+          page.newestTime <= int64_t(std::time(nullptr)) + 120;
+      if (result.valid) {
+        result.headId = page.newestId;
+        if (page.eventId) {
+          result.messageId = page.eventId;
+          result.messageTime = page.eventTime;
+          result.level = page.level;
+        }
+      }
+      break;
+    }
     result.valid = result.valid && page.posts && page.newestId && page.oldestId && page.newestTime >= 1577836800 &&
         page.newestTime <= int64_t(std::time(nullptr)) + 120;
     if (!result.valid) break;

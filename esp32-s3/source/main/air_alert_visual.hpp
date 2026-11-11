@@ -46,6 +46,16 @@ class Visual {
   uint8_t glyphLevel_ = 0;
 };
 
+// One pulse per second with short softened edges, driven by the renderer clock.
+inline float cityBlinkGain(bool enabled, uint32_t now) {
+  if (!enabled) return 1.0f;
+  const uint32_t phase = now % 1000;
+  if (phase < 100) return float(phase) / 100;
+  if (phase < 450) return 1.0f;
+  if (phase < 550) return float(550 - phase) / 100;
+  return 0.0f;
+}
+
 inline bool cornerPixel(unsigned x, unsigned y, unsigned width, unsigned height) {
   if (x >= width || y >= height || y >= kIconHeight) return false;
   const unsigned extent = kIconWidth < width / 2 ? kIconWidth : width / 2;

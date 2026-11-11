@@ -32,6 +32,7 @@ struct ControlFrame {
   uint8_t activityPercent = 0;
   uint8_t brightness = PROJECT_BRIGHTNESS;
   uint8_t airAlertLevel = 0;
+  bool airAlertBlink = false;
   uint8_t lightFirst = 0;
   uint8_t lightSecond = 0;
   bool lightFollowMatrix = true;

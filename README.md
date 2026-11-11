@@ -20,6 +20,23 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794390000000` adds the public Air Force Telegram channel `kpszsu` as
+secondary evidence for objects explicitly over or inside Vinnytsia. Municipal
+`vmroficial` remains the primary alert-state source. Strict city wording excludes
+routes toward the city, regional reports, negation, quotes and forwarded posts.
+During an active alert, recent city evidence pulses both corner icons once per
+second. Evidence expires five minutes after publication and municipal all-clear
+expires the previous city event. Repeated reads do not renew its deadline.
+Source failures preserve evidence only within that lifetime and remain visible
+in the web status. A manual city-blink test lasts 60 seconds.
+
+Both feeds share the existing single TLS worker and memory-safe bundle backport.
+The feature follows matrix power/schedule and the existing alert enable switch.
+It is supplementary public-channel information, subject to message and polling
+delays; missing or expired city evidence is not an all-clear.
+
+## Cloud Sway
+
 Version `1794324000000` moves clouds horizontally by one LED in either direction
 on a six-second cycle, with Q8 subpixel interpolation and restored sky behind
 the displaced clouds. The sun keeps a one-pixel sky clearance. The nearby cloud

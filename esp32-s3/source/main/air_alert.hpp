@@ -31,6 +31,7 @@ constexpr const char *failureName(Failure failure) {
 }
 
 struct PollJob {
+  bool cityThreat = false;
   uint32_t generation = 0;
   uint32_t knownHeadId = 0, knownEventId = 0;
   Level knownLevel = Level::Unknown;
@@ -38,6 +39,7 @@ struct PollJob {
 };
 
 struct PollResult {
+  bool cityThreat = false;
   uint32_t generation = 0;
   uint32_t headId = 0, messageId = 0;
   int64_t messageTime = 0;

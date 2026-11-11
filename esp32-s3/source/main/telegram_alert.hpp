@@ -124,9 +124,9 @@ inline bool classToken(Slice value, const char *wanted, bool &found) {
   return true;
 }
 
-inline bool postId(Slice value, uint32_t &id) {
-  static constexpr char prefix[] = "vmroficial/";
-  constexpr size_t prefixSize = sizeof(prefix) - 1;
+inline bool postId(Slice value, uint32_t &id, const char *prefix = "vmroficial/") {
+  if (!prefix || !*prefix) return false;
+  const size_t prefixSize = std::strlen(prefix);
   if (value.size <= prefixSize || std::memcmp(value.data, prefix, prefixSize) ||
       value.data[prefixSize] == '0') return false;
   id = 0;
@@ -359,9 +359,11 @@ struct Text {
 
 // Caller-owned storage is available for tasks with exceptionally small stacks.
 // No heap, recursion, global mutable storage, clocks, transport or persistence.
-class Parser {
+template <typename TextPolicy = detail::Text>
+class BasicParser {
  public:
-  bool parse(const char *body, size_t length, Page &out, Diagnostics *diagnostics = nullptr) {
+  bool parse(const char *body, size_t length, Page &out, Diagnostics *diagnostics = nullptr,
+             const char *channelPrefix = "vmroficial/") {
     out = Page{};
     reset();
     if (diagnostics) *diagnostics = Diagnostics{};
@@ -437,7 +439,7 @@ class Parser {
       }
       if (message && !excluded) {
         if (!historyDepth_ || postDepth_ || !detail::nameEqual(tag.name, "div") || tag.empty ||
-            page_.posts >= detail::kPostLimit || !detail::postId(tag.post, id_)) return fail("markup");
+            page_.posts >= detail::kPostLimit || !detail::postId(tag.post, id_, channelPrefix)) return fail("markup");
         for (unsigned i = 0; i < page_.posts; ++i) if (ids_[i] == id_) return fail("duplicate-id");
         postDepth_ = depth_ + 1;
         hasTime_ = hasText_ = forwarded_ = false; textValid_ = true;
@@ -446,7 +448,7 @@ class Parser {
       if (postDepth_ && forwarded && !excluded) forwarded_ = true;
       if (postDepth_ && text && !excluded) {
         if (hasText_ || !detail::nameEqual(tag.name, "div") || tag.empty) return fail("markup");
-        hasText_ = true; textDepth_ = depth_ + 1; text_ = detail::Text{};
+        hasText_ = true; textDepth_ = depth_ + 1; text_ = TextPolicy{};
       }
       if (postDepth_ && !textDepth_ && !excluded && detail::nameEqual(tag.name, "time")) {
         // Telegram also uses <time> for video duration, without a datetime.
@@ -488,7 +490,7 @@ class Parser {
   struct Frame { uint32_t offset; uint8_t length, hidden; };
   Frame stack_[detail::kDepthLimit] = {};
   uint32_t ids_[detail::kPostLimit] = {};
-  detail::Text text_;
+  TextPolicy text_;
   Page page_;
   unsigned depth_ = 0, postDepth_ = 0, textDepth_ = 0, svgDepth_ = 0;
   unsigned bodyDepth_ = 0, historyDepth_ = 0;
@@ -535,6 +537,8 @@ class Parser {
     return true;
   }
 };
+
+using Parser = BasicParser<>;
 
 static_assert(sizeof(Parser) <= 1536, "Keep parser scratch below the firmware task stack budget");
 

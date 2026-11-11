@@ -15,6 +15,7 @@
 #include "agent_release.hpp"
 #include "memorial.hpp"
 #include "air_alert.hpp"
+#include "city_presence.hpp"
 #include "air_alert_history.hpp"
 #include "external_light.hpp"
 #include "buzzer.hpp"
@@ -157,6 +158,7 @@ struct View {
   bool scheduleEnabled = false, dirty = false, nvsReady = false, restarting = false;
   bool memorialEnabled = false, memorialManual = false, memorialSaveFailed = false;
   bool airEnabled = false, airManual = false, airFresh = false, airSaveFailed = false;
+  bool cityFresh = false, cityFailed = false, cityDemo = false, cityReported = false;
   uint8_t airLevel = 0;
   air_alert::Failure airFailure = air_alert::Failure::None;
   int airHttpStatus = 0;
@@ -191,6 +193,8 @@ struct Model {
   bool memorialEnabled = false, memorialDirty = false, memorialSaveFailed = false;
   AirAlertSettings airSettings;
   air_alert::State air;
+  city_presence::State city;
+  uint32_t cityNextAt = 0;
   bool airDirty = false, airSaveFailed = false, airWorkerReady = false, airFetchFailed = false;
   uint32_t airGeneration = 1, airNextAt = 0;
   uint32_t airCheckpointSavedAt = 0;
@@ -509,11 +513,25 @@ bool backgroundTlsReady() {
 void serviceAirAlert() {
   const uint32_t now = uptimeMs();
   model.air.expire(now);
+  model.city.expire(now, int64_t(std::time(nullptr)));
   air_alert::PollResult result;
   while (air_alert::receive(result)) {
     if (result.generation != model.airGeneration) continue;
+    if (result.cityThreat) {
+      model.city.observe(result, now, int64_t(std::time(nullptr)));
+      model.cityNextAt = now + std::min(uint32_t(86400000), std::max(kAirPollIntervalMs, result.retryAfterMs));
+      if (!result.valid) {
+        diagnostic_log::Snapshot failure;
+        failure.reason = result.httpStatus; failure.detail = 100 + int32_t(result.failure);
+        failure.elapsed_ms = result.elapsedMs;
+        diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Alert,
+                           diagnostics::Code::AlertSourceFailed, failure);
+      }
+      continue;
+    }
     const uint32_t previousMessage = model.air.telegramMessageId;
     const bool accepted = model.air.accept(result, model.airGeneration, now);
+    if (accepted && result.level == air_alert::Level::Clear) model.city.expired = true;
     model.airHistory.observe(result, accepted, now);
     if (accepted && result.messageId &&
         (result.messageId != previousMessage ||
@@ -535,13 +553,19 @@ void serviceAirAlert() {
   }
   if (!model.airWorkerReady || !model.airSettings.enabled ||
       !model.connected || model.restarting || model.manifestBusy || model.manifestReady || model.updateRequested ||
-      model.control.maintenance != Maintenance::None || air_alert::busy() || !due(now, model.airNextAt)) return;
-  if (!backgroundTlsReady()) { model.airNextAt = now + 5000; return; }
+      model.control.maintenance != Maintenance::None || air_alert::busy() || (!due(now, model.airNextAt) && !due(now, model.cityNextAt))) return;
+  // Persist a new municipal event before starting the secondary TLS request.
+  if (model.airDirty && !due(now, model.airNextAt)) return;
+  if (!backgroundTlsReady()) { model.airNextAt = model.cityNextAt = now + 5000; return; }
   air_alert::PollJob job{};
+  job.cityThreat = !due(now, model.airNextAt);
   job.generation = model.airGeneration;
   job.knownHeadId = model.air.telegramHeadId; job.knownEventId = model.air.telegramMessageId;
   job.knownLevel = model.air.last; job.knownEventTime = model.air.telegramMessageTime;
-  if (air_alert::submit(job)) model.airNextAt = now + kAirPollIntervalMs;
+  if (air_alert::submit(job)) {
+    if (job.cityThreat) model.cityNextAt = now + kAirPollIntervalMs;
+    else model.airNextAt = now + kAirPollIntervalMs;
+  }
 }
 const char *airLevelName(uint8_t level) {
   return level == 1 ? "yellow" : level == 2 ? "red" : level == 4 ? "untyped" : level == 0 ? "clear" : "unknown";
@@ -549,6 +573,10 @@ const char *airLevelName(uint8_t level) {
 void fillAirAlertView(View &view) {
   const uint32_t now = uptimeMs();
   view.airEnabled = model.airSettings.enabled;
+  view.cityFresh = model.city.fresh(now);
+  view.cityFailed = model.city.failed;
+  view.cityDemo = model.city.demo;
+  view.cityReported = model.city.messageId && !model.city.expired;
   view.airManual = model.air.manual(now);
   view.airFresh = model.air.fresh(now, model.connected, !model.airFetchFailed);
   view.airSaveFailed = model.airSaveFailed;
@@ -1000,6 +1028,9 @@ void updateControl() {
   model.control.lightForcedOff = model.restarting;
   model.control.airAlertLevel = uint8_t(model.air.effective(now, model.airSettings.enabled,
       model.connected, !model.airFetchFailed));
+  model.control.airAlertBlink = model.city.active() &&
+      (model.airSettings.enabled || model.city.demo) &&
+      air_alert::active(air_alert::Level(model.control.airAlertLevel));
   model.memorial.update(now, memorialClock(), model.memorialEnabled, model.control.on);
   model.control.memorialActive = model.memorial.active;
   model.control.memorialStartedAt = model.memorial.startedAt;
@@ -1720,6 +1751,11 @@ void writeSettings(Html &html, const View &view) {
         view.control.maintenance != Maintenance::None ? "@disabled" : "");
     else if (token == 5) html.attribute(!view.airManual || view.restarting ||
         view.control.maintenance != Maintenance::None ? "@disabled" : "");
+    else if (token == 8) html.text(view.cityDemo ? "Ручний тест блимання · 60 с" : view.cityReported ? "Є свіже повідомлення про об’єкт над містом" :
+        view.cityFailed ? "Джерело Повітряних сил тимчасово недоступне" :
+        view.cityFresh ? "Свіжих повідомлень про об’єкти над містом не знайдено" :
+        "Очікування даних Повітряних сил");
+    else if (token == 9) html.text(view.cityFailed ? "Зв’язок із каналом Повітряних сил втрачено. Підтверджений допис діє до завершення 5 хв від публікації." : "");
     else if (token == 6) {
       if (view.airAge == UINT32_MAX) html.text("Оновлення: ще немає даних");
       else html.format("Оновлено %lu с тому%s", (unsigned long)view.airAge, view.airFresh ? "" : " · дані застаріли");
@@ -2074,6 +2110,11 @@ esp_err_t portalStatus(httpd_req_t *request) {
     string(airStatus, "scope", "Вінниця");
     number(airStatus, "message_id", view.airMessageId);
     boolean(airStatus, "manual", view.airManual);
+    boolean(airStatus, "city_blink", view.control.airAlertBlink);
+    boolean(airStatus, "city_demo", view.cityDemo);
+    boolean(airStatus, "city_reported", view.cityReported);
+    boolean(airStatus, "city_fresh", view.cityFresh);
+    boolean(airStatus, "city_failed", view.cityFailed);
     boolean(airStatus, "fresh", view.airFresh);
     boolean(airStatus, "save_failed", view.airSaveFailed);
     string(airStatus, "level", airLevelName(view.airLevel));
@@ -2622,9 +2663,9 @@ esp_err_t commandPost(httpd_req_t *request) {
       if ((enabled[0] && std::strcmp(enabled, "1")) || form.get("api_token")[0] || form.get("clear_token")[0])
         return error(request, "400 Bad Request", "Telegram-канал не потребує API-токена. Оновіть сторінку.");
       command.kind = CommandKind::AirAlertSave; command.enabled = enabled[0] != 0;
-    } else if (!std::strcmp(mode, "yellow") || !std::strcmp(mode, "red")) {
+    } else if (!std::strcmp(mode, "yellow") || !std::strcmp(mode, "red") || !std::strcmp(mode, "city")) {
       if (!view.control.on) return error(request, "409 Conflict", "Матриця вимкнена. Спочатку ввімкніть її.");
-      command.kind = CommandKind::AirAlertTest; command.value = !std::strcmp(mode, "red") ? 2 : 1;
+      command.kind = CommandKind::AirAlertTest; command.value = !std::strcmp(mode, "city") ? 5 : !std::strcmp(mode, "red") ? 2 : 1;
     } else if (!std::strcmp(mode, "stop")) command.kind = CommandKind::AirAlertStop;
     else return error(request, "400 Bad Request", "Некоректна дія перевірки тривоги.");
   } else if (!std::strcmp(uri, "/black-hole")) {
@@ -2755,15 +2796,19 @@ void serviceCommands() {
         if (next.enabled != model.airSettings.enabled || model.airSaveFailed) {
           model.airSettings = next; model.airDirty = true;
           ++model.airGeneration; model.airNextAt = uptimeMs();
-          model.air.stopDemo();
+          model.air.stopDemo(); model.city.stopDemo(); model.cityNextAt = uptimeMs();
         }
         break;
       }
       case CommandKind::AirAlertTest:
-        if (model.control.on) model.air.startDemo(air_alert::Level(command.value), uptimeMs());
+        if (model.control.on) {
+          model.air.startDemo(command.value == 5 ? air_alert::Level::Yellow : air_alert::Level(command.value), uptimeMs());
+          if (command.value == 5) model.city.startDemo(uptimeMs());
+          else model.city.stopDemo();
+        }
         else message("Матриця вимкнена. Перевірку тривоги не запущено.");
         break;
-      case CommandKind::AirAlertStop: model.air.stopDemo(); break;
+      case CommandKind::AirAlertStop: model.air.stopDemo(); model.city.stopDemo(); break;
       case CommandKind::BlackHolePlay:
         if (model.control.on && scheduledOn() && !model.restarting &&
             model.control.maintenance == Maintenance::None && !model.memorial.active &&

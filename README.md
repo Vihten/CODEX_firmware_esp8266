@@ -20,6 +20,13 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794412000000` shows the remaining Codex and Claude quotas together
+in the portal, alongside the provider currently displayed on the matrix.
+Claude is explicitly labeled as the five-hour window. Both values refresh
+with the existing status poll and distinguish missing and stale observations.
+
+## Claude Palette
+
 Version `1794410000000` adapts cool sky spill to the Claude palette after
 cloud and sun modulation. Antialiased cloud, ray and moon edges now use warm
 shading, including invariant blue border pixels. Neutral cores and existing

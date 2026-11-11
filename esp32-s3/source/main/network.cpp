@@ -1608,6 +1608,11 @@ void writePortalStats(Html &html, const View &view) {
   if (!view.control.quotaKnown) html.text("Немає даних");
   else if (!view.control.quotaFresh) html.format("%u%% · останні дані", view.control.remainingPercent);
   else html.format("%u%%", view.control.remainingPercent);
+  html.render("templates/stats/providers.html", [&](unsigned token) {
+    const auto &quota = token == 0 ? view.control.codexQuota : view.control.claudeQuota;
+    if (!quota.known) html.text("Немає даних");
+    else html.format(quota.fresh ? "%u%%" : "%u%% · останні дані", unsigned(quota.remaining));
+  });
   html.render("templates/stats/activity.html", [&](unsigned token) {
     switch (token) {
       case 0: html.format("%u", view.control.activityPercent); break;

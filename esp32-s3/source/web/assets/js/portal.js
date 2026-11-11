@@ -431,6 +431,12 @@
       live('remaining', status.quota_known === true ?
         `${percent(status.remaining)}${status.quota_fresh === true ? '' : ' · останні дані'}` : missing);
       live('quota-provider', status.quota_provider === 'claude' ? 'Claude Code · 5 год' : 'Codex');
+      for (const provider of ['codex', 'claude']) {
+        const quota = status.quotas?.[provider];
+        const known = quota?.known === true && finite(quota.remaining) && quota.remaining >= 0 && quota.remaining <= 100;
+        live(`${provider}-remaining`, known ?
+          `${percent(quota.remaining)}${quota.fresh === true ? '' : ' · останні дані'}` : missing);
+      }
       live('activity', percent(status.activity));
       live('agents', number(status.agents_count));
       live('wifi', status.wifi === true ? 'Підключено' : status.wifi === false ? 'Не підключено' : missing);

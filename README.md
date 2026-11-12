@@ -20,6 +20,10 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794522000000` opens the sky from night into day and closes along
+the reverse path. The single lower-left orbit preserves the actual quota
+endpoint, two opening settles and one closing settle.
+
 Version `1794520000000` distinguishes Claude comets with a two-thirds tail,
 20% slower travel, a soft wider body and subtle head illumination. Agent
 `20261112160000` supplies separate Codex/Claude activity through bounded LFX1

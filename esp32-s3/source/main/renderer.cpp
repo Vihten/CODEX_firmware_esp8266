@@ -155,7 +155,7 @@ float entranceClosingAmount() {
   }
   return current;
 }
-const int32_t ENTRANCE_ANCHOR = 65000;
+const int32_t ENTRANCE_ANCHOR = 165000;
 const int32_t ENTRANCE_PHASE[121] PROGMEM = {
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,66,262,587,1037,1611,2306,3119,4049,5094,6250,7516,8889,10367,11948,13628,15407,17282,19250,21309,23457,25691,28009,30409,32889,35446,38077,40781,43556,46398,49306,52277,55309,58399,61546,64747,68000,71302,74651,78045,81481,84958,88472,92022,95605,99219,102861,106530,110222,113936,117670,121420,125185,128963,132750,136545,140346,144149,147954,151757,155556,159348,163133,166906,170667,174412,178139,181846,185531,189191,192824,196428,200000,203418,206223,208178,209316,209832,209984,210000,209893,208999,206978,204078,200898,198133,196332,195647,195613,196019,197192,198876,200499,201522,201798,201718,201167,200297,199648,199500,199605,199895,200000
 };
@@ -237,9 +237,8 @@ void drawSceneEntrance() {
   const float phase = entrancePhasePosition;
   const float nx = sinf(-PI * phase);
   const float ny = -1.85f * cosf(-PI * phase);
-  const float closing = entranceClosingAmount();
-  const EntranceOrigin openingOrigin = entranceOrigin((.65f - phase) / .65f);
-  const float gate = entranceStrength() * entranceSmooth(phase / .2f);
+  const EntranceOrigin openingOrigin = entranceOrigin((1.65f - phase) / .65f);
+  const float gate = entranceStrength() * entranceSmooth((phase - 1) / .2f);
   for (uint16_t y = 0; y < MATRIX_HEIGHT; y++) {
     const float row = (y * 20.0f / MATRIX_HEIGHT - 18.5f) * ny + 2;
     for (uint16_t x = 0; x < MATRIX_WIDTH; x++) {
@@ -248,18 +247,12 @@ void drawSceneEntrance() {
       const uint16_t reflected = entranceMirror ? y * MATRIX_WIDTH + MATRIX_WIDTH - 1 - x : index;
       if (entranceMirror && pgm_read_byte(&ENTRANCE_FIXED[reflected])) continue;
       const float day = entranceSmooth(((x * 50.0f / MATRIX_WIDTH - 24.5f) * nx + row) / 4);
-      float visibility = phase >= 0 ? 1 - gate * (1 - day) : 1;
+      float visibility = phase > 1 ? 1 - gate * day : 1;
       const float dx = x * 50.0f / MATRIX_WIDTH - 24.5f;
       const float dy = (18.5f - y * 20.0f / MATRIX_HEIGHT) * 1.85f;
-      if (phase >= 0) {
+      if (phase > 1) {
         visibility *= entranceOriginVisibility(openingOrigin, dx, dy);
       }
-      // Let the complete night edge rotate below the last matrix row.
-      const float closed = phase >= 0 ? 0 : phase <= -1 ? 1 :
-          entranceSmooth(-((x * 50.0f / MATRIX_WIDTH - 24.5f) * nx +
-              (y * 20.0f / MATRIX_HEIGHT - 20) * ny) /
-              (1.5f * min(50.0f / MATRIX_WIDTH, 20.0f / MATRIX_HEIGHT)));
-      visibility += (closed - visibility) * closing;
       const uint8_t *rgb = &entrancePixels[reflected * 3];
       uint8_t visibleRgb[3] = {uint8_t(rgb[0] * visibility + .5f),
           uint8_t(rgb[1] * visibility + .5f), uint8_t(rgb[2] * visibility + .5f)};
@@ -1280,7 +1273,7 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
   const uint32_t entranceElapsed = sceneProgress;
   const int32_t phase = entranceMotionPhase(entranceElapsed);
   if (entranceElapsed < SCENE_DURATION_MS) {
-    const int64_t unwrapped = ENTRANCE_ANCHOR + int64_t(quota_recovery::signedPhase(sceneFrameMilli) - 200000L - ENTRANCE_ANCHOR) * phase / 200000L;
+    const int64_t unwrapped = ENTRANCE_ANCHOR + int64_t(quota_recovery::signedPhase(sceneFrameMilli) - ENTRANCE_ANCHOR) * phase / 200000L;
     entrancePhasePosition = unwrapped / 100000.0f;
     int32_t position = (unwrapped % 200000L + 200000L) % 200000L;
     entranceMirror = FRAME_COUNT != 201 && position > 100000L;

@@ -20,6 +20,9 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794508000000` narrows the inner shoulders of the Claude starburst rays
+with a gradual radial falloff, making the central silhouette less dense.
+
 Version `1794506000000` routes the pinned OTA manifest and image requests directly
 through raw.githubusercontent.com, avoiding shared-IP GitHub API quotas. Published
 manifest URLs retain compatibility with previously installed firmware. TLS trust,

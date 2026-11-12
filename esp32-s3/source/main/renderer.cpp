@@ -3,6 +3,7 @@
 #include "led_output.hpp"
 #include "subpixel.hpp"
 #include "cloud_motion.hpp"
+#include "sky_palette.hpp"
 #include "preview.hpp"
 #include "memorial_draw.hpp"
 #include "air_alert_visual.hpp"
@@ -128,7 +129,7 @@ void preserveNightSkyPixel(uint8_t *rgb, uint16_t index, uint8_t effectType, uin
   if (!brightness || effectType || pgm_read_byte(&ENTRANCE_FIXED[index]) ||
       rgb[2] < 2 || rgb[2] > 4 || rgb[1] >= rgb[2] || rgb[0] > rgb[1]) return;
   const uint8_t minimumBlue = 5;
-  rgb[2] = quota_provider::nightBlue(rgb[2], minimumBlue, claudeTint);
+  rgb[2] = sky_palette::nightBlue(rgb[2], minimumBlue, claudeTint, control.codexSkyColor);
 }
 float entranceClosingFrom = 0, entranceClosingTo = 0;
 uint32_t entranceClosingAt = 0;
@@ -877,7 +878,8 @@ void modulateSky(uint8_t *rgb, uint8_t type, uint8_t x, uint8_t y) {
   }
   for (unsigned channel = 0; channel < 3; ++channel) rgb[channel] = (uint16_t(rgb[channel]) * scale + 127) / 255;
   if (!pgm_read_byte(&PYRAMID_MASK[index]))
-    quota_provider::tint(rgb, type, pgm_read_byte(&ENTRANCE_FIXED[index]), claudeTint);
+    sky_palette::apply(rgb, type, pgm_read_byte(&ENTRANCE_FIXED[index]), claudeTint,
+        control.codexSkyColor, control.claudeSkyColor);
 }
 
 subpixel::Pixel meteorLayer[NUM_LEDS];

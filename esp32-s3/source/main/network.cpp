@@ -187,6 +187,7 @@ struct Model {
   bool rankingReadFailed = false;
   uint32_t weeklySavedAt = 0;
   Settings settings;
+  bool skyColorsDirty = false;
   bool blackHolePreview = false;
   uint32_t blackHolePreviewStartedAt = 0;
   memorial::State memorial;
@@ -681,6 +682,33 @@ void serviceExternalLight() {
   // PWM is owned by Core 1, synchronized with successfully transmitted frames.
   model.lightAllowed = external_light::ready() && model.render.lightAllowed;
 }
+void loadSkyColors() {
+  if (!model.nvsReady) return;
+  nvs_handle_t handle;
+  if (nvs_open("led_forge_s3", NVS_READONLY, &handle) != ESP_OK) return;
+  uint32_t stored[3] = {}; size_t size = sizeof(stored);
+  const auto result = nvs_get_blob(handle, "skypalette", stored, &size);
+  nvs_close(handle);
+  if (result == ESP_OK && size == sizeof(stored) && stored[0] == 1 &&
+      stored[1] <= 0xffffff && stored[2] <= 0xffffff) {
+    model.control.codexSkyColor = stored[1];
+    model.control.claudeSkyColor = stored[2];
+  }
+}
+bool saveSkyColors() {
+  if (!model.skyColorsDirty) return true;
+  const uint32_t stored[3] = {1, model.control.codexSkyColor, model.control.claudeSkyColor};
+  nvs_handle_t handle;
+  esp_err_t result = model.nvsReady ? nvs_open("led_forge_s3", NVS_READWRITE, &handle) : ESP_FAIL;
+  if (result == ESP_OK) {
+    result = nvs_set_blob(handle, "skypalette", stored, sizeof(stored));
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  if (result != ESP_OK) { message("Sky colors could not be saved; retrying."); return false; }
+  model.skyColorsDirty = false;
+  return true;
+}
 void loadBuzzerVolume() {
   if (!model.nvsReady) return;
   nvs_handle_t handle;
@@ -1132,7 +1160,7 @@ void publishView() {
   view.buzzerReady = buzzer::ready();
   view.buzzerVolume = model.buzzerVolume; view.buzzerDirty = model.buzzerDirty; view.buzzerSaveFailed = model.buzzerSaveFailed;
   view.lightDirty = model.lightDirty; view.lightSaveFailed = model.lightSaveFailed;
-  view.dirty = view.dirty || model.lightDirty || model.buzzerDirty;
+  view.dirty = view.dirty || model.lightDirty || model.buzzerDirty || model.skyColorsDirty;
   view.restarting = model.restarting; view.maintenanceTimeouts = model.maintenanceTimeouts; view.udpPackets = model.udpPackets;
   view.memorialEnabled = model.memorialEnabled; view.memorialManual = model.memorial.manual;
   view.memorialSaveFailed = model.memorialSaveFailed; view.dirty = view.dirty || model.memorialDirty;
@@ -1813,6 +1841,12 @@ void writeSettings(Html &html, const View &view) {
         view.control.maintenance != Maintenance::None ? "@disabled" : "");
     else if (token == 1) html.format("%u", unsigned(view.buzzerVolume));
     else if (token == 2) html.text(view.buzzerSaveFailed ? "Не вдалося зберегти. Повторюємо спробу." : view.buzzerDirty ? "Збереження…" : "");
+  });
+  html.render("templates/settings/sky-colors.html", [&](unsigned token) {
+    char color[8];
+    std::snprintf(color, sizeof(color), "#%06lx", static_cast<unsigned long>(
+        token == 0 ? view.control.codexSkyColor : view.control.claudeSkyColor));
+    html.text(color);
   });
   html.file("templates/settings/system-open.html");
   html.render("templates/settings/device-id.html", [&](unsigned token) {
@@ -2711,6 +2745,12 @@ esp_err_t commandPost(httpd_req_t *request) {
     if (!clockMinutes(form.get("start"), command.start) || !clockMinutes(form.get("end"), command.end)) return error(request, "400 Bad Request", "Invalid schedule time.");
     for (unsigned day = 0; day < 7; ++day) { char key[4]; std::snprintf(key, sizeof(key), "d%u", day); if (!std::strcmp(form.get(key), "1")) command.days |= 1U << day; }
     if (command.enabled && !command.days) return error(request, "400 Bad Request", "Select at least one day.");
+  } else if (!std::strcmp(uri, "/sky-colors")) {
+    command.kind = CommandKind::SkyColors;
+    const char *codex = form.get("codex"), *claude = form.get("claude");
+    if (!hexValue(codex + (codex[0] == '#'), 6, 6, command.codexSkyColor) ||
+        !hexValue(claude + (claude[0] == '#'), 6, 6, command.claudeSkyColor))
+      return error(request, "400 Bad Request", "Sky colors must contain exactly six hexadecimal digits.");
   } else if (!std::strcmp(uri, "/agent-color")) {
     command.kind = CommandKind::Color; const char *mode = form.get("mode"), *color = form.get("color");
     command.automatic = !std::strcmp(mode, "auto");
@@ -2765,7 +2805,7 @@ esp_err_t commandPost(httpd_req_t *request) {
   if (!std::strcmp(form.get("__async"), "1")) return acceptedCommand(request);
   httpd_resp_set_status(request, "303 See Other");
   httpd_resp_set_hdr(request, "Location", command.kind == CommandKind::Color ? "/agents" :
-      command.kind == CommandKind::Wifi || command.kind == CommandKind::Update || command.kind == CommandKind::Restart || command.kind == CommandKind::BuzzerTest || command.kind == CommandKind::BuzzerVolume ||
+      command.kind == CommandKind::SkyColors || command.kind == CommandKind::Wifi || command.kind == CommandKind::Update || command.kind == CommandKind::Restart || command.kind == CommandKind::BuzzerTest || command.kind == CommandKind::BuzzerVolume ||
       command.kind == CommandKind::AirAlertSave || command.kind == CommandKind::AirAlertTest || command.kind == CommandKind::AirAlertStop ||
       command.kind == CommandKind::BlackHolePlay || command.kind == CommandKind::BlackHoleStop ||
       command.kind == CommandKind::MemorialSave || command.kind == CommandKind::MemorialPlay || command.kind == CommandKind::MemorialStop ? "/settings" : "/");
@@ -2826,7 +2866,7 @@ bool initializeHttp() {
       !registerRoute("/logs", HTTP_GET, diagnosticJournal) ||
       !registerRoute("/logs.txt", HTTP_GET, diagnosticJournal) ||
       !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
-  for (const char *uri : {"/save", "/power", "/brightness", "/external-light", "/buzzer-test", "/buzzer-volume", "/schedule", "/agent-color", "/restart", "/update", "/memorial", "/black-hole", "/air-alert"})
+  for (const char *uri : {"/save", "/power", "/brightness", "/external-light", "/buzzer-test", "/buzzer-volume", "/schedule", "/sky-colors", "/agent-color", "/restart", "/update", "/memorial", "/black-hole", "/air-alert"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();
   for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js", "/assets/js/boot.js", "/assets/js/token-history.js"})
     if (!registerRoute(uri, HTTP_GET, staticAsset)) return failed();
@@ -2940,6 +2980,14 @@ void serviceCommands() {
       case CommandKind::Schedule:
         model.settings.scheduleEnabled = command.enabled; model.settings.start = command.start;
         model.settings.end = command.end; model.settings.days = command.days; dirty(); break;
+      case CommandKind::SkyColors:
+        if (command.codexSkyColor <= 0xffffff && command.claudeSkyColor <= 0xffffff &&
+            (model.control.codexSkyColor != command.codexSkyColor || model.control.claudeSkyColor != command.claudeSkyColor)) {
+          model.control.codexSkyColor = command.codexSkyColor;
+          model.control.claudeSkyColor = command.claudeSkyColor;
+          model.skyColorsDirty = true;
+        }
+        break;
       case CommandKind::Color: {
         size_t agentSlot = kAgentCapacity;
         for (size_t i = 0; i < kAgentCapacity; ++i)
@@ -3369,6 +3417,7 @@ void serviceMaintenance() {
         saved = saveAirAlertSettings() && saved;
         saved = saveExternalLight() && saved;
         saved = saveBuzzerVolume() && saved;
+        saved = saveSkyColors() && saved;
         saved = web_auth::persist() && saved;
         if (diagnostic_persistence::due(now, model.restarting || model.manifestReady))
           diagnostic_persistence::flush(now);
@@ -3380,7 +3429,7 @@ void serviceMaintenance() {
         model.persistRetryAt = now + (saved ? 0 : 5000); releaseMaintenance(); break;
       }
       case Maintenance::Ota:
-        if (model.dirty || model.weeklyDirty || model.lifetimeDirty || daily_runtime::dirty() || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || web_auth::pendingSave() || web_auth::busy() || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.lifetimeDirty || daily_runtime::dirty() || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || model.skyColorsDirty || web_auth::pendingSave() || web_auth::busy() || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
         if (!model.render.assetsReady || model.render.ledError) {
           otaMessage("OTA refused: renderer unhealthy"); model.manifestReady = false; releaseMaintenance(); break;
         }
@@ -3393,7 +3442,7 @@ void serviceMaintenance() {
         if (model.otaVisualTimedOut) return;
         model.manifestReady = false; model.otaAt = uptimeMs() + 60000; releaseMaintenance(); break;
       case Maintenance::Restart:
-        if (model.dirty || model.weeklyDirty || model.lifetimeDirty || daily_runtime::dirty() || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || web_auth::pendingSave()) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.lifetimeDirty || daily_runtime::dirty() || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || model.skyColorsDirty || web_auth::pendingSave()) { releaseMaintenance(); break; }
         if (!activeHandlers.load() && !web_auth::busy() && !uxQueueMessagesWaiting(commandQueue)) esp_restart();
         else if (now - model.maintenanceAt >= kMaintenanceTimeout) {
           model.restarting = false; ++model.maintenanceTimeouts;
@@ -3417,6 +3466,7 @@ void serviceMaintenance() {
       (diagnostic_persistence::due(now, model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
       (daily_runtime::due(now, model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
       (model.memorialDirty && due(now, model.persistRetryAt)) ||
+      (model.skyColorsDirty && due(now, model.persistRetryAt)) ||
       (model.airDirty && due(now, model.persistRetryAt)) ||
       (model.lightDirty && due(now, model.persistRetryAt)) ||
       (model.buzzerDirty && now - model.buzzerDirtyAt >= 300 && due(now, model.persistRetryAt)) ||
@@ -3426,10 +3476,10 @@ void serviceMaintenance() {
     requestMaintenance(Maintenance::Persist); return;
   }
   if (model.restarting) {
-    if (!model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !daily_runtime::dirty() && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !web_auth::pendingSave() && !web_auth::busy() && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
+    if (!model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !daily_runtime::dirty() && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !model.skyColorsDirty && !web_auth::pendingSave() && !web_auth::busy() && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
     return;
   }
-  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !daily_runtime::dirty() && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
+  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !daily_runtime::dirty() && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !model.skyColorsDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
   if (!model.connected || model.dirty || model.confirmationPending || !model.render.assetsReady || model.render.ledError) return;
   if (due(now, model.otaAt)) queueManifestCheck();
 }
@@ -3449,6 +3499,7 @@ void networkTask(void *) {
   daily_runtime::initialize(model.nvsReady);
   loadExternalLight();
   loadBuzzerVolume();
+  loadSkyColors();
   bootloader_random_enable();
   web_auth::initialize();
   bootloader_random_disable();

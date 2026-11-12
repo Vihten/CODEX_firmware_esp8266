@@ -12,7 +12,7 @@
     let authEpoch = 0;
     const awaitingState = new Map();
     const commandRoutes = new Set(['/save', '/power', '/brightness', '/external-light', '/schedule',
-      '/agent-color', '/restart', '/update', '/memorial', '/black-hole', '/air-alert', '/buzzer-test', '/buzzer-volume',
+      '/sky-colors', '/agent-color', '/restart', '/update', '/memorial', '/black-hole', '/air-alert', '/buzzer-test', '/buzzer-volume',
       '/agent-upgrade', '/agent-rename', '/agent-uninstall']);
     let pollSequence = 0, refreshAfterActive = false;
     const memorialForm = one('#memorial-settings');

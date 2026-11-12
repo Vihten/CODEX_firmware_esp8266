@@ -20,6 +20,12 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794518000000` adds independent Codex and Claude sky color controls
+in Settings. Palette values are stored in a separate versioned NVS record, with
+validation, maintenance-guarded writes and retry after storage failures. The
+renderer adapts sky and cool cloud spill while retaining neutral highlights,
+and blends the two configured palettes during provider transitions.
+
 Version `1794516000000` includes signed agent `20261112150000`, which reports
 local Claude Code transcript activity to the meteor scheduler. Codex and Claude
 activity share the existing agent identity and color. The bounded reader supports

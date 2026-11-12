@@ -20,6 +20,8 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794512000000` removes the upper cloud above the Claude starburst.
+
 Version `1794510000000` activates the automatic black hole after 15 seconds
 of controller Wi-Fi loss. Missing or stale account quota alone no longer triggers
 it. The disconnected IP screen yields to the black hole, and reconnecting restores

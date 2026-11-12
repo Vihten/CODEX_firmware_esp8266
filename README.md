@@ -20,6 +20,12 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794510000000` activates the automatic black hole after 15 seconds
+of controller Wi-Fi loss. Missing or stale account quota alone no longer triggers
+it. The disconnected IP screen yields to the black hole, and reconnecting restores
+the normal presentation after the existing recovery hold. Manual preview remains
+available.
+
 Version `1794508000000` narrows the inner shoulders of the Claude starburst rays
 with a gradual radial falloff, making the central silhouette less dense.
 

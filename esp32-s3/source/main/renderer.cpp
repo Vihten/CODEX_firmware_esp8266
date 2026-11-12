@@ -1498,7 +1498,7 @@ void renderTask(void *) {
       const uint32_t now = millis();
       airAlertVisual.update(control.airAlertLevel, now);
       if (control.maintenance == Maintenance::None && !status.memorialTransition) {
-        blackHole.update(control.quotaKnown, control.quotaFresh, now);
+        blackHole.update(true, control.connected, now);
         const bool preview = black_hole::previewActive(control.blackHolePreview, control.blackHolePreviewStartedAt, now);
         blackHolePreview.update(!preview, !preview, now);
       } else {
@@ -1650,7 +1650,7 @@ void renderTask(void *) {
         if (!control.connected) { ipHold = false; ipPresented = false; }
         if (ipHold && ipPresented && millis() - holdStarted >= 5000UL) ipHold = false;
         const bool requestedOn = control.on && lightOpeningReady;
-        const bool wantsIp = !control.connected || ipHold;
+        const bool wantsIp = (!control.connected && !blackHole.active()) || ipHold;
         if (sceneVisible) advanceSceneTimeline(maintenance ? sceneTargetOn
             : requestedOn || (flying && sceneProgress == SCENE_DURATION_MS));
         if (!requestedOn && (!sceneVisible || sceneProgress == 0)) {

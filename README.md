@@ -20,6 +20,14 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794500000000` fixes exhausted-provider fallback during stale quota
+intervals. Fresh positive sources take priority. If none are current, a unique
+known positive provider remains selected with its actual stale status instead
+of switching to a fresh zero-capacity provider. Both-zero and unknown states
+suspend rotation. Both providers recovering starts a new five-minute interval.
+
+## Zero Quota Selection
+
 Version `1794498000000` skips providers with zero remaining quota while another
 provider has fresh positive capacity. Five-minute rotation resumes when both
 have capacity. When both report zero, the current provider remains visible at

@@ -34,10 +34,14 @@ struct Rotation {
   Provider update(const Snapshot &codex, const Snapshot &claude, uint32_t now) {
     const bool codexAvailable = codex.fresh && codex.remaining > 0;
     const bool claudeAvailable = claude.fresh && claude.remaining > 0;
-    // Retain a fresh zero reading when neither account has usable capacity.
-    if (!codexAvailable && !claudeAvailable && codex.fresh != claude.fresh)
-      return update(codex.fresh, claude.fresh, now);
-    return update(codexAvailable, claudeAvailable, now);
+    if (codexAvailable || claudeAvailable)
+      return update(codexAvailable, claudeAvailable, now);
+    // Suspend rotation while data is stale, retaining the non-exhausted provider.
+    const bool codexKnownPositive = codex.known && codex.remaining > 0;
+    const bool claudeKnownPositive = claude.known && claude.remaining > 0;
+    if (codexKnownPositive != claudeKnownPositive)
+      active = claudeKnownPositive ? Provider::Claude : Provider::Codex;
+    return update(false, false, now);
   }
   Provider update(bool codexFresh, bool claudeFresh, uint32_t now) {
     if (!started) { started = true; since = now; }

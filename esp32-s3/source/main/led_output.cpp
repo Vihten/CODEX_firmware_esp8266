@@ -16,7 +16,10 @@ LedOutput::~LedOutput() {
 
 void LedOutput::release() {
   ready_ = false;
-  if (strip_) {
+  // Staging is separate from the driver's DMA buffer. If completion cannot be
+  // confirmed, retain the driver allocation rather than freeing live DMA data.
+  if (pending_) wait();
+  if (strip_ && !pending_) {
     const esp_err_t error = led_strip_del(strip_);
     if (error == ESP_OK) {
       strip_ = nullptr;
@@ -133,12 +136,34 @@ void LedOutput::clear() {
   if (pixels_) std::memset(pixels_, 0, kPixelBytes);
 }
 
-bool LedOutput::show() {
+bool LedOutput::wait() {
+  if (xPortGetCoreID() != 1 || owner_ != xTaskGetCurrentTaskHandle()) {
+    lastError_ = ESP_ERR_INVALID_STATE;
+    return false;
+  }
+  if (pending_) {
+    const esp_err_t error = led_strip_refresh_async_done(strip_);
+    if (error != ESP_OK) {
+      lastError_ = error;
+      ready_ = false;
+      return false;
+    }
+    pending_ = false;
+    quiescent_ = true;
+  }
+  // Draining an errored strip does not restore readiness or acknowledge a frame.
+  if (!ready_) return false;
+  lastError_ = ESP_OK;
+  return true;
+}
+
+bool LedOutput::show(bool synchronous) {
   if (!ready_) return false;
   if (xPortGetCoreID() != 1 || owner_ != xTaskGetCurrentTaskHandle()) {
     lastError_ = ESP_ERR_INVALID_STATE;
     return false;
   }
+  if (!wait()) return false;
   for (uint32_t i = 0; i < numPixels(); ++i) {
     const uint8_t *pixel = pixels_ + size_t(i) * 3;
     lastError_ = led_strip_set_pixel(strip_, i, pixel[1], pixel[0], pixel[2]);
@@ -150,9 +175,12 @@ bool LedOutput::show() {
   // The RMT driver waits on its completion semaphore, yielding the renderer.
   // Do not mask interrupts, spin on timing, or modify its in-flight pixel bytes.
   quiescent_ = false;
-  lastError_ = led_strip_refresh(strip_);
+  lastError_ = synchronous ? led_strip_refresh(strip_) : led_strip_refresh_async(strip_);
+  // An async start error may still leave hardware active. Require a confirmed
+  // drain before releasing the driver, and never infer idle from an error.
+  pending_ = !synchronous;
   if (lastError_ == ESP_OK) {
-    quiescent_ = true;
+    quiescent_ = synchronous;
   } else {
     ready_ = false;
   }

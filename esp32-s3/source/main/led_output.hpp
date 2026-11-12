@@ -22,7 +22,11 @@ public:
   // Call on renderer core 1. Allocates once and synchronously sends black.
   // A failed initialization stays failed; it never repeatedly churns the heap.
   bool begin();
-  bool show();
+  // Async submits the driver buffer and returns immediately. The next show
+  // drains it before copying staging pixels. Startup/black output stays sync.
+  bool show(bool synchronous = true);
+  // Renderer core/task only. Drains pending output, including after a failure.
+  bool wait();
   esp_err_t lastError() const { return lastError_; }
   // Confirmed RMT idle/no channel; readiness or an error cannot prove this.
   bool isQuiescent() const { return quiescent_; }
@@ -38,7 +42,8 @@ public:
   }
   void clear();
 
-  // Stable internal-DRAM pointer after begin; already scaled GRB, 3 bytes/pixel.
+  // Stable internal-DRAM staging after begin; scaled GRB, 3 bytes/pixel.
+  // May be edited while the separate driver buffer is in flight.
   // Raw edits are transmitted by show without a second brightness multiplication.
   uint8_t *getPixels() { return ready_ ? pixels_ : nullptr; }
   const uint8_t *getPixels() const { return ready_ ? pixels_ : nullptr; }
@@ -55,4 +60,5 @@ private:
   bool beginAttempted_ = false;
   bool ready_ = false;
   bool quiescent_ = true;
+  bool pending_ = false;
 };

@@ -20,10 +20,17 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
-Version `1794504000000` enlarges the Claude starburst from a 13-LED to a 15-LED
-physical diameter and tightens edge coverage while retaining subpixel movement.
-Claude artwork contains no solar halo effect masks. Runtime solar-ray gain also
-fades to zero with the Claude provider blend, removing inherited ray animation.
+Version `1794506000000` routes the pinned OTA manifest and image requests directly
+through raw.githubusercontent.com, avoiding shared-IP GitHub API quotas. Published
+manifest URLs retain compatibility with previously installed firmware. TLS trust,
+redirect limits, image size and SHA-256 validation remain enforced.
+
+The renderer now prepares the next frame while RMT DMA transmits the previous
+frame, targeting up to 33 output frames per second on the existing single LED
+chain. Actual cadence depends on transport duration. Authored effect timing remains
+30 Hz; manifest targetFps retains its existing compatibility meaning. Persistence,
+OTA and restart barriers drain pending output before acknowledging quiescence.
+Hardware cadence and long-duration stability still require target-device checks.
 
 ## Claude Starburst
 

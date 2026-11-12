@@ -2981,6 +2981,14 @@ esp_err_t httpEvent(esp_http_client_event_t *event) {
   if (!strcasecmp(event->header_key, "Content-Encoding") && strcasecmp(event->header_value, "identity")) headers.encoded = true;
   return ESP_OK;
 }
+const char *directGitHubUrl(const char *source) {
+  // Keep the published API URL compatible with older installed firmware.
+  if (!std::strcmp(source, kFirmwareUrl))
+    return "https://raw.githubusercontent.com/Vihten/CODEX_firmware_esp8266/main/esp32-s3/firmware.bin";
+  if (!std::strcmp(source, "https://api.github.com/repos/Vihten/CODEX_firmware_esp8266/contents/esp32-s3/manifest.json?ref=main"))
+    return "https://raw.githubusercontent.com/Vihten/CODEX_firmware_esp8266/main/esp32-s3/manifest.json";
+  return source;
+}
 bool githubHttps(const char *url) {
   if (std::strncmp(url, "https://", 8)) return false;
   const char *end = std::strchr(url + 8, '/'); if (!end) return false;
@@ -2996,7 +3004,7 @@ public:
   ~Download() { close(); }
   void close() { if (client_) { esp_http_client_close(client_); esp_http_client_cleanup(client_); client_ = nullptr; } }
   bool open(const char *source) {
-    char url[1024]; copy(url, source);
+    char url[1024]; copy(url, directGitHubUrl(source));
     for (unsigned redirects = 0; redirects <= 4; ++redirects) {
       if (!githubHttps(url)) return false;
       headers_ = {};
@@ -3006,6 +3014,7 @@ public:
       client_ = esp_http_client_init(&config); if (!client_) return false;
       esp_http_client_set_header(client_, "Accept", "application/vnd.github.raw+json");
       esp_http_client_set_header(client_, "Accept-Encoding", "identity");
+      esp_http_client_set_header(client_, "Cache-Control", "no-cache");
       esp_http_client_set_header(client_, "User-Agent", "LED-Forge-ESP32-S3");
       if (esp_http_client_open(client_, 0) != ESP_OK) return false;
       const int64_t length = esp_http_client_fetch_headers(client_);

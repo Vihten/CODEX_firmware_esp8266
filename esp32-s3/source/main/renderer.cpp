@@ -26,6 +26,8 @@ namespace {
 #define FRAME_BYTES (NUM_LEDS * 3UL)
 #define EFFECT_BYTES NUM_LEDS
 #define EVENT_FPS PROJECT_FPS
+// Transport cadence is independent of the authored 30 Hz effect clock.
+constexpr uint32_t OUTPUT_FPS = 33;
 #define EVENT_MODE 1
 #define ACTIVITY_EFFECTS 1
 #define DIRECT_AGENT_CAPACITY kAgentCapacity
@@ -1350,7 +1352,7 @@ void publishStatus() {
 }
 
 bool showFrame(bool dark = false) {
-  const bool completed = strip.show();
+  const bool completed = strip.show(dark || control.maintenance != Maintenance::None);
   status.ledError = strip.lastError();
   // Only an explicit, successfully transmitted clear is a closing ACK. Dark
   // artwork, zero brightness, or a failed transfer must not end the sequence.
@@ -1566,7 +1568,7 @@ void renderTask(void *) {
       if (maintenanceReady || (maintenance && !flying && memorialTransition)) {
         // Persist freezes the last completed frame. OTA and restart ACK only
         // after a synchronous black transfer has completed successfully.
-        bool complete = strip.isQuiescent();
+        bool complete = strip.wait() && strip.isQuiescent();
         if (control.maintenance == Maintenance::Ota || control.maintenance == Maintenance::Restart) {
           strip.clear();
           complete = showFrame(true) && strip.isQuiescent();
@@ -1704,11 +1706,11 @@ void renderTask(void *) {
     status.lastFrameUs = esp_timer_get_time() - started;
     publishStatus();
     feedWatchdog();
-    // Integer deadlines carry the remainder, giving exactly 30 deadlines/sec.
+    // Carry fractional microseconds; render into staging while RMT sends the previous frame.
     static uint32_t fraction = 0;
-    deadline += 1000000 / PROJECT_FPS;
-    fraction += 1000000 % PROJECT_FPS;
-    if (fraction >= PROJECT_FPS) { ++deadline; fraction -= PROJECT_FPS; }
+    deadline += 1000000 / OUTPUT_FPS;
+    fraction += 1000000 % OUTPUT_FPS;
+    if (fraction >= OUTPUT_FPS) { ++deadline; fraction -= OUTPUT_FPS; }
     const int64_t now = esp_timer_get_time();
     if (now >= deadline) {
       ++status.missedDeadlines;

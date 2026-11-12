@@ -20,6 +20,11 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794516000000` includes signed agent `20261112150000`, which reports
+local Claude Code transcript activity to the meteor scheduler. Codex and Claude
+activity share the existing agent identity and color. The bounded reader supports
+partial lines and concurrent writers, with expiry after idle or completed output.
+
 Version `1794514000000` removes inherited cloud motion and shimmer masks
 from the cleared sky above the Claude logo. Cloud phases are retained only
 where the current artwork still classifies a cloud.

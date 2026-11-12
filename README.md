@@ -20,6 +20,10 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794514000000` removes inherited cloud motion and shimmer masks
+from the cleared sky above the Claude logo. Cloud phases are retained only
+where the current artwork still classifies a cloud.
+
 Version `1794512000000` removes the upper cloud above the Claude starburst.
 
 Version `1794510000000` activates the automatic black hole after 15 seconds

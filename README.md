@@ -20,6 +20,19 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794502000000` replaces the sun with the Claude starburst in Claude
+mode. Its alpha silhouette comes from the official https://claude.ai/favicon.ico
+and is rasterized offline at the physical 7-by-12 mm LED pitch. The terracotta
+mark follows the solar orbit and retains subtle type-2 illumination. The existing
+provider transition blends both artwork banks before cloud sampling and shading.
+
+The additional 804,000 bytes use boot-time PSRAM allocations with complete
+failure cleanup. The Codex bank and fixed artwork retain their existing bytes.
+Both additional binary banks and their embed configuration are included in the
+standalone source. Physical appearance and target-device timing await OTA.
+
+## Stale Quota Selection
+
 Version `1794500000000` fixes exhausted-provider fallback during stale quota
 intervals. Fresh positive sources take priority. If none are current, a unique
 known positive provider remains selected with its actual stale status instead

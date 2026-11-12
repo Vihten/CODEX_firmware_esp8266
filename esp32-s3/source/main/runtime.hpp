@@ -101,6 +101,8 @@ struct AssetStore {
   uint8_t *effects = nullptr;
   size_t animationSize = 0;
   size_t effectsSize = 0;
+  uint8_t *claudeAnimation = nullptr;
+  uint8_t *claudeEffects = nullptr;
 };
 
 extern QueueHandle_t controlQueue;

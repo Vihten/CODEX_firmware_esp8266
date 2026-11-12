@@ -803,16 +803,39 @@ int16_t smoothSkyWave(uint16_t period, uint16_t phase) {
   return (int32_t(sineAt(index)) * (256 - fraction) + int32_t(sineAt(uint8_t(index + 1))) * fraction) / 256;
 }
 
+cloud_motion::Pixel readSkyPixel(uint16_t frame, unsigned index) {
+  const uint32_t maskOffset = uint32_t(frame) * EFFECT_BYTES + index;
+  const uint32_t colorOffset = maskOffset * 3;
+  const uint8_t *rgb = assets.animation + colorOffset;
+  const uint8_t type = assets.effects[maskOffset];
+  if (!claudeTint || !assets.claudeAnimation || !assets.claudeEffects)
+    return {rgb[0], rgb[1], rgb[2], type, false};
+  const uint8_t *claude = assets.claudeAnimation + colorOffset;
+  if (claudeTint == 255)
+    return {claude[0], claude[1], claude[2], assets.claudeEffects[maskOffset], false};
+  const auto blend = [](uint8_t original, uint8_t replacement) -> uint8_t {
+    return (unsigned(original) * (255 - claudeTint) +
+            unsigned(replacement) * claudeTint + 127) / 255;
+  };
+  const uint16_t fraction = (unsigned(claudeTint) * 1000 + 127) / 255;
+  return {blend(rgb[0], claude[0]), blend(rgb[1], claude[1]),
+          blend(rgb[2], claude[2]),
+          subpixel::mask(type, assets.claudeEffects[maskOffset], fraction), false};
+}
+
 void swayCloudPixel(uint8_t *rgb, uint8_t &type, uint8_t x, uint8_t y,
                     uint16_t frame, int offsetQ8) {
+  // Keep the caller's original sample at zero gain, including fixed artwork.
+  if (claudeTint && assets.claudeAnimation && assets.claudeEffects) {
+    const auto initial = readSkyPixel(frame, y * MATRIX_WIDTH + x);
+    rgb[0] = initial.r; rgb[1] = initial.g; rgb[2] = initial.b; type = initial.type;
+  }
   if (pgm_read_byte(&ENTRANCE_FIXED[y * MATRIX_WIDTH + x])) return;
   const auto color = [frame](int px, int py) {
-    const uint8_t *p = assets.animation + uint32_t(frame) * FRAME_BYTES +
-        (py * MATRIX_WIDTH + px) * 3;
-    return cloud_motion::Pixel{p[0], p[1], p[2], 0, false};
+    return readSkyPixel(frame, py * MATRIX_WIDTH + px);
   };
   const auto mask = [frame](int px, int py) {
-    return assets.effects[uint32_t(frame) * EFFECT_BYTES + py * MATRIX_WIDTH + px];
+    return readSkyPixel(frame, py * MATRIX_WIDTH + px).type;
   };
   const auto pixel = cloud_motion::sample(x, y, MATRIX_WIDTH, MATRIX_HEIGHT,
       offsetQ8, color, mask);

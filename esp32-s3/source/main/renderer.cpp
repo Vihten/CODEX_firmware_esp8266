@@ -4,6 +4,7 @@
 #include "subpixel.hpp"
 #include "cloud_motion.hpp"
 #include "sky_palette.hpp"
+#include "meteor_style.hpp"
 #include "preview.hpp"
 #include "memorial_draw.hpp"
 #include "air_alert_visual.hpp"
@@ -322,6 +323,8 @@ struct DirectAgentState {
 DirectAgentState directAgents[DIRECT_AGENT_CAPACITY] = {};
 bool directAgentMode = false;
 
+struct MeteorState;
+void configureMeteorStyle(MeteorState &meteor);
 enum MeteorLoadLevel : uint8_t { LOAD_IDLE = 0, LOAD_LOW = 1, LOAD_MEDIUM = 2, LOAD_HIGH = 3, LOAD_INTENSE = 4, LOAD_STORM = 5 };
 
 struct MeteorState {
@@ -333,6 +336,7 @@ struct MeteorState {
   uint32_t rgb;
   bool attributed;
   uint32_t clientId;
+  bool claude = false;
 };
 
 const uint8_t METEOR_CAPACITY = 12;
@@ -683,7 +687,7 @@ void updateMeteorScheduler(bool allowSpawns = true) {
   uint8_t activeCount = 0;
   for (uint8_t index = 0; index < METEOR_CAPACITY; index++) {
     if (!meteors[index].active) continue;
-    const uint32_t age = effectTick - meteors[index].spawnFrame;
+    const uint32_t age = meteor_style::ageTicks(meteors[index].claude, effectTick - meteors[index].spawnFrame);
     if (age > MATRIX_WIDTH + meteors[index].tailLength + 22UL) {
       meteors[index].active = false;
     } else {
@@ -731,6 +735,7 @@ void updateMeteorScheduler(bool allowSpawns = true) {
       meteor.rgb = source == DIRECT_AGENT_CAPACITY ? 0xFFD052UL : directAgents[source].rgb;
       meteor.attributed = source != DIRECT_AGENT_CAPACITY;
       meteor.clientId = meteor.attributed ? directAgents[source].clientId : 0;
+      configureMeteorStyle(meteor);
       schedule.pending--;
       schedule.nextFlight = effectTick + schedule.stagger;
       activeCount++;
@@ -965,13 +970,24 @@ void composeMeteorLayer(bool additive = false) {
   meteorTouchedCount = 0;
 }
 
+void configureMeteorStyle(MeteorState &meteor) {
+  meteor.claude = false;
+  if (meteor.attributed) for (const auto &input : control.agents) {
+    if (!input.present || input.clientId != meteor.clientId) continue;
+    if (!input.sourceActivityKnown || uint32_t(millis() - input.sourceActivityAt) >= 15000U) break;
+    const unsigned total = unsigned(input.codexActivity) + input.claudeActivity;
+    meteor.claude = total && eventHash(uint32_t(meteor.sequence) * 257U + meteor.clientId) % total < input.claudeActivity;
+    break;
+  }
+  meteor.tailLength = meteor_style::tail(meteor.claude, meteor.tailLength);
+}
 float smoothMeteorAge(const MeteorState &meteor) {
-  return uint32_t(effectTick - meteor.spawnFrame) + effectSubTick / 256.0f;
+  return meteor_style::age(meteor.claude, uint32_t(effectTick - meteor.spawnFrame) + effectSubTick / 256.0f);
 }
 
 void drawSmoothMeteorWake(const MeteorState &meteor) {
   const float age = smoothMeteorAge(meteor);
-  const unsigned tick = uint32_t(effectTick - meteor.spawnFrame);
+  const unsigned tick = uint32_t(age);
   const unsigned tail = 1 + ((meteor.tailLength - 1) & ~1);
   const uint16_t total = MATRIX_WIDTH + meteor.tailLength + 3;
   uint8_t normal[3], dark[3];
@@ -993,7 +1009,7 @@ void drawSmoothMeteorWake(const MeteorState &meteor) {
 
 void drawSmoothMeteor(const MeteorState &meteor) {
   const float age = smoothMeteorAge(meteor);
-  const unsigned tick = uint32_t(effectTick - meteor.spawnFrame);
+  const unsigned tick = uint32_t(age);
   const uint16_t total = MATRIX_WIDTH + meteor.tailLength + 3;
   const int span = max(1, (meteor.tailLength - 1) & ~1);
   for (int tail = meteor.tailLength - 1; tail >= -1; --tail) {
@@ -1004,8 +1020,16 @@ void drawSmoothMeteor(const MeteorState &meteor) {
     uint8_t normal[3], dark[3];
     meteorGlowPalette(meteor.rgb, tip ? 18 : brightness, tail < 0 ? 100 : (span - tail) * 70 / span, normal, dark);
     const float step = age - (1 + tail);
-    smoothMeteorPixel(MATRIX_WIDTH - step, subpixel::trajectory(step, total, meteor.sequence, meteor.attributed),
-                      normal, dark, tip ? (brightness * 100 + 9) / 18 : 100);
+    const float y = subpixel::trajectory(step, total, meteor.sequence, meteor.attributed);
+    const uint8_t opacity = tip ? (brightness * 100 + 9) / 18
+        : meteor.claude && tail <= 0 ? meteor_style::headOpacity(age, meteor.sequence) : 100;
+    smoothMeteorPixel(MATRIX_WIDTH - step, y, normal, dark, opacity);
+    if (meteor.claude && !tip) {
+      const unsigned distance = tail < 0 ? 0 : unsigned(tail);
+      const uint8_t wingOpacity = 32 * (unsigned(span) - distance) / unsigned(span);
+      smoothMeteorPixel(MATRIX_WIDTH - step, y - .32f, normal, dark, wingOpacity);
+      smoothMeteorPixel(MATRIX_WIDTH - step, y + .32f, normal, dark, wingOpacity);
+    }
   }
   const unsigned cadence = meteor.level == LOAD_LOW ? 7 : meteor.level == LOAD_MEDIUM ? 6 : meteor.level == LOAD_HIGH ? 5 : 4;
   unsigned drawn = 0;

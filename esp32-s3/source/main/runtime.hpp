@@ -17,6 +17,10 @@ struct AgentInput {
   uint32_t seenAt = 0;
   int16_t remaining = -1;
   uint8_t activity = 0;
+  bool sourceActivityKnown = false;
+  uint32_t sourceActivityAt = 0;
+  uint8_t codexActivity = 0;
+  uint8_t claudeActivity = 0;
   bool present = false;
   bool quotaForPairedAccount = false;
   char name[49] = {};

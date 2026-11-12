@@ -20,6 +20,12 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794520000000` distinguishes Claude comets with a two-thirds tail,
+20% slower travel, a soft wider body and subtle head illumination. Agent
+`20261112160000` supplies separate Codex/Claude activity through bounded LFX1
+supplements while retaining LFA3 compatibility. Each flight captures its origin
+at launch, uses the owner color, and respects existing pair and owner limits.
+
 Version `1794518000000` adds independent Codex and Claude sky color controls
 in Settings. Palette values are stored in a separate versioned NVS record, with
 validation, maintenance-guarded writes and retry after storage failures. The

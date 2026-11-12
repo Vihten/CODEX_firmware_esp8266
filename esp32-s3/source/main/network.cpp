@@ -853,6 +853,15 @@ bool parseTelemetry(const char *packet, AgentInput &agent, bool &legacy, uint8_t
   uint32_t account;
   if (count < 2 || !hexValue(fields[1], 1, 8, account) || account != PROJECT_ACCOUNT_FINGERPRINT) return false;
   int a, r;
+  if (!std::strcmp(fields[0], "LFX1")) {
+    legacy = false;
+    if (length > 64 || count != 5 || std::strlen(fields[1]) != 8 ||
+        !hexValue(fields[2], 8, 8, agent.clientId) || !agent.clientId ||
+        !percent(fields[3], false, a) || !percent(fields[4], false, r)) return false;
+    agent.sourceActivityKnown = true;
+    agent.codexActivity = uint8_t(a); agent.claudeActivity = uint8_t(r);
+    return true;
+  }
   legacy = !std::strcmp(fields[0], "LF2") || !std::strcmp(fields[0], "LF1");
   if (legacy) {
     if (count != 4 || !percent(fields[2], false, r) || !percent(fields[3], false, a)) return false;
@@ -972,6 +981,19 @@ bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
   AgentInput incoming; bool legacy = false; uint8_t remaining = 100, activity = 0;
   if (!parseTelemetry(packet, incoming, legacy, remaining, activity)) return false;
   const uint32_t now = uptimeMs();
+  if (incoming.sourceActivityKnown) {
+    for (auto &agent : model.control.agents) {
+      if (!agent.present || agent.clientId != incoming.clientId || now - agent.seenAt >= kAgentTimeout) continue;
+      agent.sourceActivityKnown = true;
+      agent.sourceActivityAt = receivedAt;
+      agent.codexActivity = incoming.codexActivity;
+      agent.claudeActivity = incoming.claudeActivity;
+      std::snprintf(ack, sizeof(ack), "LFX1_ACK,%06lX,%08lX", (unsigned long)model.deviceId,
+          (unsigned long)incoming.clientId);
+      return true;
+    }
+    return false;
+  }
   if (legacy) {
     model.legacySeen = true; model.legacyAt = receivedAt; model.legacyRemaining = remaining; model.legacyActivity = activity;
     std::snprintf(ack, sizeof(ack), "LF1_ACK,%06lX,%d", (unsigned long)model.deviceId, model.rssi);
@@ -999,6 +1021,13 @@ bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
         previous.remaining < 100 && incoming.remaining == 100;
     const bool sameColor = previous.present && previous.clientId == incoming.clientId &&
         now - previous.seenAt < kAgentTimeout && model.requestedRgb[slot] == incoming.rgb;
+    if (previous.clientId == incoming.clientId && previous.sourceActivityKnown &&
+        now - previous.sourceActivityAt < 15000) {
+      incoming.sourceActivityKnown = true;
+      incoming.sourceActivityAt = previous.sourceActivityAt;
+      incoming.codexActivity = previous.codexActivity;
+      incoming.claudeActivity = previous.claudeActivity;
+    }
     incoming.present = true; incoming.seenAt = receivedAt;
     model.requestedRgb[slot] = incoming.rgb;
     if (const auto *entry = findOverride(incoming.clientId)) incoming.rgb = entry->rgb;

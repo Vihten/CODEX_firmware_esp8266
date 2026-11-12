@@ -866,8 +866,9 @@ void modulateSky(uint8_t *rgb, uint8_t type, uint8_t x, uint8_t y) {
     const unsigned wave = 127 + smoothSkyWave(96, (angle * 3 + 96 - band * 18) % 96);
     // Alternate bright spokes with dim gaps, with a smooth outward pulse.
     const unsigned spoke = angle % 2 == 0 ? 100 : 24;
-    const unsigned glow = wave * wave * (5 - band) * 76 * spoke /
+    const unsigned solarGlow = wave * wave * (5 - band) * 76 * spoke /
         (254U * 254U * 5U * 100U);
+    const unsigned glow = (solarGlow * (255 - claudeTint) + 127) / 255;
     rgb[0] = min(255U, unsigned(rgb[0]) + glow);
     rgb[1] = min(255U, unsigned(rgb[1]) + glow * 3 / 4);
     rgb[2] = min(255U, unsigned(rgb[2]) + glow / 6);

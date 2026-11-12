@@ -20,6 +20,13 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794504000000` enlarges the Claude starburst from a 13-LED to a 15-LED
+physical diameter and tightens edge coverage while retaining subpixel movement.
+Claude artwork contains no solar halo effect masks. Runtime solar-ray gain also
+fades to zero with the Claude provider blend, removing inherited ray animation.
+
+## Claude Starburst
+
 Version `1794502000000` replaces the sun with the Claude starburst in Claude
 mode. Its alpha silhouette comes from the official https://claude.ai/favicon.ico
 and is rasterized offline at the physical 7-by-12 mm LED pitch. The terracotta

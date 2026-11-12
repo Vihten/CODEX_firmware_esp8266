@@ -1047,7 +1047,7 @@ void updateControl() {
   model.quotaResetReported = false;
   const auto previousProvider = model.control.quotaProvider;
   model.control.quotaProvider = model.quotaRotation.update(
-      model.codexQuota.snapshot.fresh, model.claudeQuota.snapshot.fresh, now);
+      model.codexQuota.snapshot, model.claudeQuota.snapshot, now);
   if (codexRecovered && previousProvider == model.control.quotaProvider &&
       previousProvider == quota_provider::Provider::Codex) ++model.control.quotaRecoveryEpoch;
   model.control.codexQuota = model.codexQuota.snapshot;

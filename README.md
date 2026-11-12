@@ -20,6 +20,13 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794498000000` skips providers with zero remaining quota while another
+provider has fresh positive capacity. Five-minute rotation resumes when both
+have capacity. When both report zero, the current provider remains visible at
+zero. Provider balances and freshness stay available independently in the portal.
+
+## Simultaneous Portal Quotas
+
 Version `1794412000000` shows the remaining Codex and Claude quotas together
 in the portal, alongside the provider currently displayed on the matrix.
 Claude is explicitly labeled as the five-hour window. Both values refresh

@@ -197,6 +197,7 @@ struct Model {
   AirAlertSettings airSettings;
   air_alert::State air;
   city_presence::State city;
+  city_presence::Sound citySound;
   uint32_t cityNextAt = 0;
   bool airDirty = false, airSaveFailed = false, airWorkerReady = false, airFetchFailed = false;
   uint32_t airGeneration = 1, airNextAt = 0;
@@ -735,14 +736,24 @@ bool saveBuzzerVolume() {
   return true;
 }
 void serviceBuzzer() {
+  const uint32_t now = uptimeMs();
   const bool allowed = !model.restarting && model.control.maintenance == Maintenance::None;
-  buzzer::service(uptimeMs(), allowed);
+  buzzer::service(now, allowed);
   if (model.restarting || model.control.maintenance == Maintenance::Ota || model.control.maintenance == Maintenance::Restart)
     model.buzzerPending = false;
   if (allowed && model.buzzerPending) {
     model.buzzerPending = false;
-    (void)buzzer::start(uptimeMs(), model.buzzerVolume);
+    (void)buzzer::start(now, model.buzzerVolume);
   }
+  const bool cityReported = !model.city.demo && model.city.active() &&
+      (!model.airSettings.enabled ||
+      air_alert::active(model.air.last));
+  const bool cityAllowed = allowed && model.control.on &&
+      (model.airSettings.enabled || model.city.demo);
+  if (model.citySound.update(model.city.messageId, cityReported, model.city.demo,
+                            model.city.demoAt, cityAllowed, now))
+    // A simultaneous manual beep coalesces with this pulse; never queue catch-up audio.
+    (void)buzzer::start(now, model.buzzerVolume);
 }
 const ColorOverride *findOverride(uint32_t id) {
   for (const auto &entry : model.settings.colors) if (entry.used && entry.clientId == id) return &entry;
@@ -1858,7 +1869,7 @@ void writeSettings(Html &html, const View &view) {
         view.control.maintenance != Maintenance::None ? "@disabled" : "");
     else if (token == 5) html.attribute(!view.airManual || view.restarting ||
         view.control.maintenance != Maintenance::None ? "@disabled" : "");
-    else if (token == 8) html.text(view.cityDemo ? "Ручний тест блимання · 60 с" : view.cityReported ? "Є свіже повідомлення про об’єкт над містом" :
+    else if (token == 8) html.text(view.cityDemo ? "Ручний тест блимання та звуку · 60 с" : view.cityReported ? "Є свіже повідомлення про об’єкт над містом" :
         view.cityFailed ? "Джерело Повітряних сил тимчасово недоступне" :
         view.cityFresh ? "Свіжих повідомлень про об’єкти над містом не знайдено" :
         "Очікування даних Повітряних сил");

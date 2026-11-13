@@ -3,6 +3,7 @@
 #include "web_auth.hpp"
 #include "preview.hpp"
 #include "network_progress.hpp"
+#include "network_memory.hpp"
 #include "recovery.hpp"
 #include "esp_attr.h"
 #include "diagnostics.hpp"
@@ -2338,7 +2339,7 @@ esp_err_t health(httpd_req_t *request) {
   HandlerScope scope; View view;
   if (!snapshot(view)) return error(request, "503 Service Unavailable", "Controller busy; retry.");
   unsigned agents = 0; for (const auto &agent : view.control.agents) agents += agent.present;
-  char body[2048];
+  char body[3072];
   const int count = std::snprintf(body, sizeof(body),
       "firmware=%llu board=esp32-s3-n16r8 controllerId=%06lX network_core=0 http_core=0 render_core=1 led_transport=rmt-dma led_pin=%d fps=%d uptime_ms=%lu render_frames=%lu render_missed=%lu render_last_us=%lu render_stack=%lu render_watchdog=%u network_stack=%lu network_loops=%lu assets_ready=%u led_error=%ld heap=%u largest_block=%u psram=%u psram_free=%u wifi_connected=%u wifi_rssi=%d wifi_sleep=none wifi_disconnects=%lu wifi_disconnect_reason=%u agent_count=%u activity=%u remaining=%u maintenance=%u maintenance_epoch=%lu render_epoch=%lu quiescent=%u maintenance_timeouts=%lu settings_dirty=%u nvs_ready=%u udp_packets=%lu ota_done=%lu ota_total=%lu reset_reason=%u\n",
       (unsigned long long)PROJECT_FIRMWARE_VERSION, (unsigned long)view.deviceId, PROJECT_DATA_PIN, PROJECT_FPS,
@@ -2384,12 +2385,30 @@ esp_err_t health(httpd_req_t *request) {
       unsigned((budgetStatus >> 1) & 3), unsigned(recoveryBudgetAvailable.load()), unsigned(budgetStatus >> 16));
   if (recoveryCount < 0 || size_t(recoveryCount) >= sizeof(body) - recoveryOffset)
     return error(request, "503 Service Unavailable", "Diagnostics too large.");
-  return httpd_resp_send(request, body, int(recoveryOffset) + recoveryCount);
+  const auto tcp = network_memory::snapshot();
+  const auto alert = air_alert::memoryStats();
+  const size_t memoryOffset = recoveryOffset + size_t(recoveryCount);
+  const int memoryCount = std::snprintf(body + memoryOffset, sizeof(body) - memoryOffset,
+      "tcp_sampled=%u tcp_age_ms=%lu tcp_active=%lu tcp_time_wait=%lu tcp_queued_bytes=%lu tcp_queued_segments=%lu tcp_sample_failures=%lu "
+      "http_handlers=%u preview_busy=%u telemetry_pending=%u "
+      "alert_polls=%lu alert_age_ms=%lu alert_heap_before=%lu alert_heap_after=%lu alert_largest_after=%lu alert_psram_before=%lu alert_psram_after=%lu alert_city=%u\n",
+      unsigned(tcp.sampled), (unsigned long)(tcp.sampled ? uptimeMs() - tcp.sampledAt : 0),
+      (unsigned long)tcp.active, (unsigned long)tcp.timeWait, (unsigned long)tcp.queuedBytes,
+      (unsigned long)tcp.queuedSegments, (unsigned long)tcp.callbackFailures,
+      unsigned(activeHandlers.load()), unsigned(previewStreamBusy.load()),
+      unsigned(telemetryQueue ? uxQueueMessagesWaiting(telemetryQueue) : 0),
+      (unsigned long)alert.polls, (unsigned long)(alert.polls ? uptimeMs() - alert.sampledAt : 0), (unsigned long)alert.heapBefore, (unsigned long)alert.heapAfter,
+      (unsigned long)alert.largestAfter, (unsigned long)alert.psramBefore,
+      (unsigned long)alert.psramAfter, unsigned(alert.cityThreat));
+  if (memoryCount < 0 || size_t(memoryCount) >= sizeof(body) - memoryOffset)
+    return error(request, "503 Service Unavailable", "Diagnostics too large.");
+  return httpd_resp_send(request, body, int(memoryOffset) + memoryCount);
 }
 void diagnosticMonitorTask(void *) {
   TickType_t wake = xTaskGetTickCount();
   int32_t previousLedError = 0;
-  uint32_t checkpointAt = 0;
+  uint32_t checkpointAt = 0, memoryWarningAt = 0;
+  bool memoryWarned = false;
   for (;;) {
     diagnostics::HealthContext context;
     context.summary.version = PROJECT_FIRMWARE_VERSION;
@@ -2451,6 +2470,32 @@ void diagnosticMonitorTask(void *) {
       recoveryGate.cancel();
     }
     diagnostics::healthCheck(context);
+    network_memory::request();
+    // Preserve numeric queue observations alongside the existing flash archive.
+    // Sampled on tcpip, copied here, never traverse lwIP lists from this task.
+    if ((context.heap_free < 49152 || context.largest_block < 16384) &&
+        (!memoryWarned || uint32_t(context.summary.uptime_ms - memoryWarningAt) >= 30000)) {
+      const auto tcp = network_memory::snapshot();
+      bool recorded = false;
+      if (tcp.sampled && uint32_t(uptimeMs() - tcp.sampledAt) < 5000) {
+        diagnostic_log::Snapshot queues;
+        queues.reason = int32_t(tcp.active); queues.detail = int32_t(tcp.timeWait);
+        queues.attempts = tcp.queuedBytes; queues.elapsed_ms = tcp.queuedSegments;
+        recorded = diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Http, uint16_t(0x0600), queues);
+      }
+      const auto alert = air_alert::memoryStats();
+      const uint32_t alertAge = uptimeMs() - alert.sampledAt;
+      if (alert.polls && alertAge < 30000) {
+        diagnostic_log::Snapshot memory;
+        memory.reason = int32_t(alert.heapBefore); memory.detail = int32_t(alert.heapAfter);
+        memory.attempts = alert.largestAfter; memory.elapsed_ms = alertAge;
+        recorded = diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Alert, uint16_t(0x0601), memory) || recorded;
+      }
+      if (recorded) {
+        memoryWarned = true;
+        memoryWarningAt = context.summary.uptime_ms;
+      }
+    }
     if (context.summary.uptime_ms - checkpointAt >= 10000) {
       diagnostics::checkpoint(context.summary);
       checkpointAt = context.summary.uptime_ms;

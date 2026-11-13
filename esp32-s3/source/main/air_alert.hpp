@@ -160,6 +160,15 @@ uint32_t retryAfterMs(const char *value);
 bool startPolling();
 bool submit(const PollJob &job);
 bool receive(PollResult &result);
+// Numeric observations across a complete poll, after all response/TLS RAII cleanup.
+// Other network tasks run concurrently, so a delta alone does not prove a leak.
+struct MemoryStats {
+  uint32_t polls = 0, sampledAt = 0, heapBefore = 0, heapAfter = 0, largestAfter = 0;
+  uint32_t psramBefore = 0, psramAfter = 0;
+  bool cityThreat = false;
+};
+MemoryStats memoryStats();
+
 bool busy();
 // Last worker stack high-water sample in bytes; initially zero.
 uint32_t workerStackFree();

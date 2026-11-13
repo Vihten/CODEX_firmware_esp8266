@@ -51,6 +51,9 @@ uint8_t jobsBytes[sizeof(PollJob)], resultsBytes[sizeof(PollResult)];
 QueueHandle_t jobs = nullptr, results = nullptr;
 std::atomic<bool> running{false}, ready{false};
 std::atomic<uint32_t> workerStackBytes{0};
+portMUX_TYPE memoryMux = portMUX_INITIALIZER_UNLOCKED;
+MemoryStats lastMemory;
+
 
 // DNS callbacks may arrive after the poll deadline. Persistent storage keeps them safe.
 struct DnsState {
@@ -386,7 +389,19 @@ void worker(void *) {
   for (;;) {
     PollJob job;
     if (xQueueReceive(jobs, &job, portMAX_DELAY) != pdTRUE) continue;
+    MemoryStats memory;
+    memory.cityThreat = job.cityThreat;
+    memory.heapBefore = uint32_t(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    memory.psramBefore = uint32_t(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     const PollResult result = poll(job);
+    memory.heapAfter = uint32_t(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    memory.largestAfter = uint32_t(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    memory.psramAfter = uint32_t(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    memory.sampledAt = uint32_t(esp_timer_get_time() / 1000);
+    portENTER_CRITICAL(&memoryMux);
+    memory.polls = lastMemory.polls + 1;
+    lastMemory = memory;
+    portEXIT_CRITICAL(&memoryMux);
     workerStackBytes.store(uxTaskGetStackHighWaterMark(nullptr), std::memory_order_relaxed);
     erase(&job, sizeof(job));
     xQueueOverwrite(results, &result);
@@ -655,6 +670,13 @@ bool submit(const PollJob &job) {
 
 bool receive(PollResult &result) {
   return ready.load(std::memory_order_acquire) && xQueueReceive(results, &result, 0) == pdTRUE;
+}
+
+MemoryStats memoryStats() {
+  portENTER_CRITICAL(&memoryMux);
+  const auto result = lastMemory;
+  portEXIT_CRITICAL(&memoryMux);
+  return result;
 }
 
 bool busy() { return running.load(std::memory_order_acquire); }

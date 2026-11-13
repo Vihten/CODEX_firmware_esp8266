@@ -20,6 +20,12 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794600000000` adds bounded TCP queue and post-HTTPS memory observations
+for diagnosing intermittent internal-RAM pressure. `/health` reports queue sizes,
+connection counts and observation age. Low-memory events preserve numeric samples
+in the existing diagnostic archive. Samples include concurrent task activity and
+do not by themselves establish a leak in the measured request.
+
 Version `1794522000000` opens the sky from night into day and closes along
 the reverse path. The single lower-left orbit preserves the actual quota
 endpoint, two opening settles and one closing settle.

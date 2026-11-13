@@ -2,6 +2,7 @@
 #include "diagnostic_persistence.hpp"
 
 #include <atomic>
+#include <cstdio>
 #include <new>
 #include <cstddef>
 #include <type_traits>
@@ -166,6 +167,16 @@ bool event(Level level, Module module, uint16_t code,
   context.wifi_connected = captured.wifi_connected;
   if (!take()) { drop(); return false; }
   const char* text = message(code);
+  char memoryText[diagnostic_log::kTextBytes];
+  if (code == 0x0600) {
+    std::snprintf(memoryText, sizeof(memoryText), "TCP pressure: active=%ld time_wait=%ld queued_bytes=%lu segments=%lu",
+        (long)context.reason, (long)context.detail, (unsigned long)context.attempts, (unsigned long)context.elapsed_ms);
+    text = memoryText;
+  } else if (code == 0x0601) {
+    std::snprintf(memoryText, sizeof(memoryText), "Alert poll memory: before=%ld after=%ld largest_after=%lu age_ms=%lu; concurrent tasks included",
+        (long)context.reason, (long)context.detail, (unsigned long)context.attempts, (unsigned long)context.elapsed_ms);
+    text = memoryText;
+  }
   const bool result = ring->append(now(), level, module, code, text,
                                   diagnostic_log::kTextBytes - 1, context, captured.unix_epoch_s);
   xSemaphoreGive(mutex);

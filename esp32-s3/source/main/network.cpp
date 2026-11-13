@@ -4,6 +4,7 @@
 #include "preview.hpp"
 #include "network_progress.hpp"
 #include "network_memory.hpp"
+#include "http_failure.hpp"
 #include "recovery.hpp"
 #include "esp_attr.h"
 #include "diagnostics.hpp"
@@ -1428,6 +1429,10 @@ esp_err_t error(httpd_req_t *request, const char *status, const char *text) {
   const int code = std::atoi(status);
   if (code >= 500) {
     diagnostic_log::Snapshot failure; failure.reason = code;
+    const auto cause = static_cast<uint32_t>(http_failure::classify(text));
+    const auto route = static_cast<uint32_t>(http_failure::route(request->uri));
+    // Pack curated route/cause IDs without repurposing the retry counter.
+    failure.detail = int32_t((route << 16) | cause);
     diagnostics::event(diagnostics::Level::Error, diagnostics::Module::Http,
                        diagnostics::Code::RequestFailed, failure);
   }
@@ -2113,7 +2118,7 @@ esp_err_t framesGet(httpd_req_t *request) {
   if (!previewStreamReady.load(std::memory_order_acquire) || !previewStreamAllowed())
     return error(request, "503 Service Unavailable", "Preview stream unavailable.");
   if (previewStreamBusy.exchange(true))
-    return error(request, "503 Service Unavailable", "Preview stream is already in use.");
+    return error(request, "409 Conflict", "Preview stream is already in use.");
   if (previewStreamSealed.load()) {
     previewStreamBusy.store(false, std::memory_order_release);
     return error(request, "503 Service Unavailable", "Preview stream is draining for maintenance.");

@@ -20,6 +20,11 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794602000000` reports preview stream contention as HTTP 409 so the
+existing browser snapshot fallback can handle it without a false service-failure
+entry. Remaining server failures record whitelisted route and cause identifiers
+in the diagnostic archive. Raw request data and query parameters are excluded.
+
 Version `1794600000000` adds bounded TCP queue and post-HTTPS memory observations
 for diagnosing intermittent internal-RAM pressure. `/health` reports queue sizes,
 connection counts and observation age. Low-memory events preserve numeric samples

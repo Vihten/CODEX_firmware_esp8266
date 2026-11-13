@@ -1,4 +1,5 @@
 #include "diagnostics.hpp"
+#include "http_failure.hpp"
 #include "diagnostic_persistence.hpp"
 
 #include <atomic>
@@ -168,7 +169,12 @@ bool event(Level level, Module module, uint16_t code,
   if (!take()) { drop(); return false; }
   const char* text = message(code);
   char memoryText[diagnostic_log::kTextBytes];
-  if (code == 0x0600) {
+  if (code == static_cast<uint16_t>(Code::RequestFailed) && context.detail >= 100) {
+    std::snprintf(memoryText, sizeof(memoryText), "HTTP %ld route=%s cause=%s",
+        (long)context.reason, http_failure::name(static_cast<http_failure::Route>(uint32_t(context.detail) >> 16)),
+        http_failure::name(static_cast<http_failure::Cause>(uint32_t(context.detail) & 0xffff)));
+    text = memoryText;
+  } else if (code == 0x0600) {
     std::snprintf(memoryText, sizeof(memoryText), "TCP pressure: active=%ld time_wait=%ld queued_bytes=%lu segments=%lu",
         (long)context.reason, (long)context.detail, (unsigned long)context.attempts, (unsigned long)context.elapsed_ms);
     text = memoryText;

@@ -20,6 +20,12 @@ the compatible `esp32-s3/firmware.bin` endpoint.
 
 ## Current Release
 
+Version `1794604000000` animates night stars with independent twinkle, smooth
+subpixel drift, fading lifecycles and occasional flares. The bounded integer
+sampler reconstructs the sky beneath moving stars, protects foreground artwork,
+and allocates no per-frame memory. Both adjacent quota frames receive the same
+animation clock before interpolation.
+
 Version `1794602000000` reports preview stream contention as HTTP 409 so the
 existing browser snapshot fallback can handle it without a false service-failure
 entry. Remaining server failures record whitelisted route and cause identifiers

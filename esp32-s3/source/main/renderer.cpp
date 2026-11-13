@@ -3,6 +3,7 @@
 #include "led_output.hpp"
 #include "subpixel.hpp"
 #include "cloud_motion.hpp"
+#include "star_motion.hpp"
 #include "sky_palette.hpp"
 #include "meteor_style.hpp"
 #include "preview.hpp"
@@ -844,15 +845,21 @@ void swayCloudPixel(uint8_t *rgb, uint8_t &type, uint8_t x, uint8_t y,
   rgb[0] = pixel.r; rgb[1] = pixel.g; rgb[2] = pixel.b; type = pixel.type;
 }
 
+void swayStarPixel(uint8_t *rgb, uint8_t &type, uint8_t x, uint8_t y, uint16_t frame) {
+  if (pgm_read_byte(&ENTRANCE_FIXED[y * MATRIX_WIDTH + x]) || (type != 0 && type != 1)) return;
+  const auto reader = [frame](int px, int py) {
+    return readSkyPixel(frame, py * MATRIX_WIDTH + px);
+  };
+  const uint64_t timeQ8 = uint64_t(effectTick) * 256 + effectSubTick;
+  const auto pixel = star_motion::sample(x, y, MATRIX_WIDTH, MATRIX_HEIGHT, timeQ8, reader);
+  if (!pixel.changed) return;
+  rgb[0] = pixel.r; rgb[1] = pixel.g; rgb[2] = pixel.b; type = pixel.type;
+}
+
 void modulateSky(uint8_t *rgb, uint8_t type, uint8_t x, uint8_t y) {
   const unsigned index = y * MATRIX_WIDTH + x;
   int scale = 255;
-  if (type == 1) {
-    const uint16_t seed = x * 37 + y * 101 + 17;
-    const uint8_t periods[] = {51, 63, 81, 99};
-    const uint8_t period = periods[seed % 4];
-    scale = 180 + 75 * smoothSkyWave(period, (seed * 7) % period) / 127;
-  } else if (type == 2 && y < MATRIX_HEIGHT - 4) {
+  if (type == 2 && y < MATRIX_HEIGHT - 4) {
     scale = 232 + 23 * smoothSkyWave(150, 0) / 127;
   } else if (type == 3) {
     scale = 218 + 37 * smoothSkyWave(210, x * 5 + y * 3) / 127;
@@ -1315,6 +1322,7 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
       const uint16_t pixelIndex = y * MATRIX_WIDTH + x;
       effectMask[pixelIndex] = effectType;
       swayCloudPixel(rgb, effectType, x, y, frame, cloudOffsetQ8);
+      swayStarPixel(rgb, effectType, x, y, frame);
       effectMask[pixelIndex] = effectType;
       modulateSky(rgb, effectType, x, y);
       if (sceneFraction) {
@@ -1322,6 +1330,7 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
         uint8_t nextRgb[3];
         memcpy(nextRgb, assets.animation + nextOffset + pixelIndex * 3, 3);
         swayCloudPixel(nextRgb, nextType, x, y, nextFrame, cloudOffsetQ8);
+        swayStarPixel(nextRgb, nextType, x, y, nextFrame);
         modulateSky(nextRgb, nextType, x, y);
         for (unsigned channel = 0; channel < 3; ++channel)
           rgb[channel] = subpixel::mix(rgb[channel], nextRgb[channel], sceneFraction);

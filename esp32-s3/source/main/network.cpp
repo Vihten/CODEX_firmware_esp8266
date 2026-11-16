@@ -5,6 +5,7 @@
 #include "network_progress.hpp"
 #include "network_memory.hpp"
 #include "http_failure.hpp"
+#include "clock_recovery.hpp"
 #include "recovery.hpp"
 #include "esp_attr.h"
 #include "diagnostics.hpp"
@@ -91,6 +92,8 @@ constexpr char kFirmwareUrl[] = "https://api.github.com/repos/Vihten/CODEX_firmw
 constexpr uint32_t kAgentTimeout = 7000, kMaintenanceTimeout = 10000;
 constexpr uint32_t kOtaInterval = 15 * 60 * 1000;
 constexpr uint32_t kAirPollIntervalMs = 15000;
+std::atomic<uint32_t> lastClockSyncAt{0};
+std::atomic<bool> clockSyncSeen{false};
 constexpr uint16_t kUdpPort = 4210;
 constexpr uint32_t kSettingsMagic = 0x4c465333;
 struct ColorOverride { uint32_t clientId; uint32_t rgb; uint8_t used; uint8_t reserved[3]; };
@@ -151,6 +154,7 @@ struct View {
   char ssid[33] = {}, ap[32] = {}, message[96] = {}, ota[96] = {};
   uint32_t deviceId = 0, maintenanceTimeouts = 0, udpPackets = 0, otaDone = 0, otaTotal = 0;
   uint32_t netStack = 0, networkLoops = 0, disconnects = 0;
+  uint32_t clockRetries = 0;
   uint32_t recoveryOfflineMs = 0;
   uint16_t recoveryCode = 0;
   uint8_t recoveryStage = 0, recoveryStacks = 0, recoveryFaults = 0;
@@ -235,7 +239,8 @@ struct Model {
   quota_provider::Sample codexSamples[kAgentCapacity], claudeSamples[kAgentCapacity];
   bool nvsReady = false, dirty = false, wifiChanged = false, stationConnecting = false;
   bool restarting = false, updateRequested = false, manifestReady = false;
-  bool releasePending = false, confirmationPending = false, sntpStarted = false;
+  bool releasePending = false, confirmationPending = false;
+  clock_recovery::State clockRecovery;
   bool manifestBusy = false, manifestWorkerReady = false, wifiReady = false, httpReady = false;
   char apName[32] = {}, message[96] = {}, ota[96] = "Not checked";
 } model;
@@ -516,6 +521,21 @@ bool backgroundTlsReady() {
   constexpr unsigned caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
   return heap_caps_get_free_size(caps) >= 32768 && heap_caps_get_largest_free_block(caps) >= 16384;
 }
+bool scheduledOn() {
+  const Settings &s = model.settings;
+  if (s.power == 1) return true;
+  if (s.power == 2) return false;
+  if (!s.scheduleEnabled) return true;
+  const time_t now = std::time(nullptr);
+  if (now < 1700000000) return false;
+  tm local{}; localtime_r(&now, &local);
+  const unsigned minute = unsigned(local.tm_hour * 60 + local.tm_min);
+  const unsigned day = unsigned(local.tm_wday);
+  if (s.start == s.end) return (s.days & (1U << day)) != 0;
+  if (s.start < s.end) return (s.days & (1U << day)) && minute >= s.start && minute < s.end;
+  if (minute >= s.start) return (s.days & (1U << day)) != 0;
+  return minute < s.end && (s.days & (1U << ((day + 6) % 7)));
+}
 void serviceAirAlert() {
   const uint32_t now = uptimeMs();
   model.air.expire(now);
@@ -557,7 +577,7 @@ void serviceAirAlert() {
     }
     model.airNextAt = now + std::min(uint32_t(86400000), std::max(kAirPollIntervalMs, result.retryAfterMs));
   }
-  if (!model.airWorkerReady || !model.airSettings.enabled ||
+  if (!scheduledOn() || !model.airWorkerReady || !model.airSettings.enabled ||
       !model.connected || model.restarting || model.manifestBusy || model.manifestReady || model.updateRequested ||
       model.control.maintenance != Maintenance::None || air_alert::busy() || (!due(now, model.airNextAt) && !due(now, model.cityNextAt))) return;
   // Persist a new municipal event before starting the secondary TLS request.
@@ -1073,21 +1093,6 @@ void serviceTelemetry() {
     if (acceptTelemetry(packet, ack, uptimeMs())) sendto(model.udp, ack, std::strlen(ack), 0, reinterpret_cast<sockaddr *>(&peer), size);
   }
 }
-bool scheduledOn() {
-  const Settings &s = model.settings;
-  if (s.power == 1) return true;
-  if (s.power == 2) return false;
-  if (!s.scheduleEnabled) return true;
-  const time_t now = std::time(nullptr);
-  if (now < 1700000000) return false;
-  tm local{}; localtime_r(&now, &local);
-  const unsigned minute = unsigned(local.tm_hour * 60 + local.tm_min);
-  const unsigned day = unsigned(local.tm_wday);
-  if (s.start == s.end) return (s.days & (1U << day)) != 0;
-  if (s.start < s.end) return (s.days & (1U << day)) && minute >= s.start && minute < s.end;
-  if (minute >= s.start) return (s.days & (1U << day)) != 0;
-  return minute < s.end && (s.days & (1U << ((day + 6) % 7)));
-}
 void updateControl() {
   // Scheduled memorial activation and publication must exclude stale watchdog
   // snapshots just like manual commands. Nested maintenance keeps its guard.
@@ -1194,6 +1199,7 @@ void publishView() {
   overlayRanking(view.weekly);
   overlayRanking(view.lifetime);
   view.control = model.control; view.render = model.render;
+  view.clockRetries = model.clockRecovery.retries;
   copy(view.ssid, model.settings.ssid); copy(view.ap, model.apName); copy(view.message, model.message); copy(view.ota, model.ota);
   view.deviceId = model.deviceId; view.rssi = model.rssi; view.power = model.settings.power;
   view.start = model.settings.start; view.end = model.settings.end; view.days = model.settings.days;
@@ -1314,10 +1320,6 @@ void serviceWifi() {
       model.wifiNegativeSamples = 0;
       if (sampleDue) model.rssi = accessPoint.rssi;
       std::snprintf(model.control.ip, sizeof(model.control.ip), IPSTR, IP2STR(&ip.ip));
-      if (!model.sntpStarted) {
-        esp_sntp_setoperatingmode(SNTP_OPMODE_POLL); esp_sntp_setservername(0, const_cast<char *>("pool.ntp.org"));
-        esp_sntp_init(); model.sntpStarted = true;
-      }
     } else {
       if (sampleDue && model.wifiNegativeSamples < 3) ++model.wifiNegativeSamples;
       if (model.connected && model.wifiNegativeSamples >= 3) {
@@ -1356,6 +1358,29 @@ void serviceWifi() {
     }
     if (model.stationAttempts < 3) ++model.stationAttempts;
     model.stationRetryAt = now + 30000;
+  }
+}
+void serviceClock() {
+  const uint32_t now = uptimeMs();
+  const bool enabled = esp_sntp_enabled();
+  if (!model.clockRecovery.request(now, model.connected, std::time(nullptr) >= 1700000000, enabled)) return;
+  if (enabled) esp_sntp_stop();
+  esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+  esp_sntp_setservername(0, const_cast<char *>(clock_recovery::servers[model.clockRecovery.serverIndex]));
+  esp_sntp_set_time_sync_notification_cb([](struct timeval *) {
+    lastClockSyncAt.store(uptimeMs(), std::memory_order_relaxed);
+    clockSyncSeen.store(true, std::memory_order_release);
+  });
+  esp_sntp_init();
+  if (model.clockRecovery.retries)
+    ESP_LOGW(kTag, "Clock synchronization retry %lu using server %u",
+             (unsigned long)model.clockRecovery.retries, unsigned(model.clockRecovery.serverIndex));
+  if (model.clockRecovery.retries == 1 ||
+      (model.clockRecovery.retries && model.clockRecovery.retries % 5 == 0)) {
+    diagnostic_log::Snapshot failure;
+    failure.attempts = model.clockRecovery.retries;
+    failure.detail = int32_t(model.clockRecovery.serverIndex);
+    diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::System, uint16_t(0x0107), failure);
   }
 }
 void serviceWifiRecovery() {
@@ -2194,6 +2219,9 @@ esp_err_t portalStatus(httpd_req_t *request) {
   number(root, "preview_stream_send_errors", previewStreamSendErrors.load(std::memory_order_relaxed));
   number(root, "ota_done", view.otaDone); number(root, "ota_total", view.otaTotal);
   const time_t epoch = std::time(nullptr); number(root, "time_epoch", epoch >= 1700000000 ? double(epoch) : 0);
+  boolean(root, "standby", !view.control.on);
+  boolean(root, "clock_ready", epoch >= 1700000000);
+  number(root, "clock_retries", view.clockRetries);
   string(root, "quota_provider", quota_provider::name(view.control.quotaProvider));
   cJSON *quotas = cJSON_AddObjectToObject(root, "quotas");
   if (!quotas) okay = false;
@@ -2418,7 +2446,18 @@ esp_err_t health(httpd_req_t *request) {
       (unsigned long)alert.psramAfter, unsigned(alert.cityThreat));
   if (memoryCount < 0 || size_t(memoryCount) >= sizeof(body) - memoryOffset)
     return error(request, "503 Service Unavailable", "Diagnostics too large.");
-  return httpd_resp_send(request, body, int(memoryOffset) + memoryCount);
+  const size_t clockOffset = memoryOffset + size_t(memoryCount);
+  const bool synced = clockSyncSeen.load(std::memory_order_acquire);
+  const uint32_t syncedAt = lastClockSyncAt.load(std::memory_order_relaxed);
+  const uint32_t observedAt = uptimeMs();
+  const int clockCount = std::snprintf(body + clockOffset, sizeof(body) - clockOffset,
+      "standby=%u clock_ready=%u clock_retries=%lu clock_synced=%u clock_sync_age_ms=%lu\n",
+      unsigned(!view.control.on), unsigned(std::time(nullptr) >= 1700000000),
+      (unsigned long)view.clockRetries, unsigned(synced),
+      (unsigned long)(synced ? observedAt - syncedAt : 0));
+  if (clockCount < 0 || size_t(clockCount) >= sizeof(body) - clockOffset)
+    return error(request, "503 Service Unavailable", "Diagnostics too large.");
+  return httpd_resp_send(request, body, int(clockOffset) + clockCount);
 }
 void diagnosticMonitorTask(void *) {
   TickType_t wake = xTaskGetTickCount();
@@ -3571,7 +3610,7 @@ void serviceMaintenance() {
   }
   if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !daily_runtime::dirty() && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !model.skyColorsDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
   if (!model.connected || model.dirty || model.confirmationPending || !model.render.assetsReady || model.render.ledError) return;
-  if (due(now, model.otaAt)) queueManifestCheck();
+  if (due(now, model.otaAt) && (model.control.on || model.updateRequested)) queueManifestCheck();
 }
 } // namespace
 
@@ -3651,6 +3690,7 @@ void networkTask(void *) {
     }
     markNetworkProgress(network_progress::Stage::Wifi);
     serviceWifi();
+    serviceClock();
     serviceWifiRecovery();
     markNetworkProgress(network_progress::Stage::Commands);
     serviceCommands();
@@ -3682,6 +3722,6 @@ void networkTask(void *) {
     // A blocking flash transfer must not leave thousands of overdue polling ticks.
     if (xTaskGetTickCount() - wake > pdMS_TO_TICKS(100)) wake = xTaskGetTickCount();
     completeNetworkProgress();
-    vTaskDelayUntil(&wake, pdMS_TO_TICKS(20));
+    vTaskDelayUntil(&wake, pdMS_TO_TICKS(model.control.on ? 20 : 50));
   }
 }

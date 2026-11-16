@@ -1512,6 +1512,13 @@ void renderTask(void *) {
       sceneTimelineAt = skySampleAt = millis();
       effectOrigin = started - (int64_t(effectTick) * 256 + effectSubTick) * 1000000 / (EVENT_FPS * 256);
     }
+    // Only a completed black transfer permits standby. Keep closing, light
+    // ramps and all maintenance handshakes on their normal render path.
+    const bool darkStandby = outputReady && !parked &&
+        control.maintenance == Maintenance::None && !control.on &&
+        matrixDark && strip.isQuiescent() && !sceneVisible && sceneProgress == 0 &&
+        !status.memorialTransition && !memorialForceOff && !meteorFlightInProgress() &&
+        (!lightApplied || !lightFollows || lightSequence.gain() == 0);
     if (parked) {
       blackHole.pause(millis());
       blackHolePreview.pause(millis());
@@ -1521,6 +1528,21 @@ void renderTask(void *) {
       // Core 0 revokes animation and waits for the stop-frame ACK before flash.
       status.quiescent = strip.isQuiescent();
       status.maintenanceEpoch = acknowledgedEpoch;
+    } else if (darkStandby) {
+      if (fresh) applyControlAgents();
+      const uint32_t now = millis();
+      // The staging buffer is confirmed black. Refresh cold preview requests
+      // without an LED transfer; capturePreview owns demand and rate limiting.
+      capturePreview(strip.getPixels(), strip.getBrightness(), status.frames, now, physicalIndex);
+      blackHole.pause(now);
+      blackHolePreview.pause(now);
+      quotaRecovery.observe(control.quotaRecoveryEpoch, false, false);
+      // Freeze hidden effects and rebase clocks so waking never catches up
+      // an entire night of animation or meteor maintenance.
+      sceneTimelineAt = skySampleAt = previousRenderAt = now;
+      lastMeteorMaintenanceAt = now;
+      effectOrigin = started - (int64_t(effectTick) * 256 + effectSubTick) * 1000000 / (EVENT_FPS * 256);
+      memorialWasActive = false;
     } else if (outputReady) {
       if (fresh) applyControlAgents();
       const uint32_t now = millis();
@@ -1734,6 +1756,14 @@ void renderTask(void *) {
     status.lastFrameUs = esp_timer_get_time() - started;
     publishStatus();
     feedWatchdog();
+    if (darkStandby) {
+      // Poll within the 60 ms cold-preview wait while feeding the watchdog
+      // and publishing progress.
+      // Rebase output pacing so standby cannot accumulate missed deadlines.
+      deadline = esp_timer_get_time();
+      vTaskDelay(max(TickType_t(1), pdMS_TO_TICKS(40)));
+      continue;
+    }
     // Carry fractional microseconds; render into staging while RMT sends the previous frame.
     static uint32_t fraction = 0;
     deadline += 1000000 / OUTPUT_FPS;

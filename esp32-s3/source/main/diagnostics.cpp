@@ -81,6 +81,7 @@ const char* message(uint16_t code) noexcept {
     case 0x0101: return "Storage failed";
     case 0x0102: return "Maintenance timed out";
     case 0x0103: return "Socket initialization failed";
+    case 0x0107: return "Clock synchronization delayed; trying another NTP server";
     case 0x0200: return "Wi-Fi event queue overflow";
     case 0x0201: return "Wi-Fi connection loss reconciled";
     case 0x0202: return "Wi-Fi initialization failed";

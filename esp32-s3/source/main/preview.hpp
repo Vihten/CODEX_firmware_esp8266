@@ -10,7 +10,8 @@ static_assert(kPreviewFrameBytes <= 4096, "Preview exceeds the bounded HTTP task
 using PreviewMapping = uint16_t (*)(uint8_t, uint8_t);
 
 bool initializePreview();
-// Called only by the renderer after a successful LED transfer. Never waits.
+// Renderer supplies a successfully transmitted frame, including confirmed black
+// retained during standby. Never waits.
 void capturePreview(const uint8_t *grb, uint8_t brightness, uint32_t sequence,
                     uint32_t now, PreviewMapping mapping);
 // Copies under a short lock, then releases it before any network transmission.

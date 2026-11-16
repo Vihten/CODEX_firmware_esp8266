@@ -1857,12 +1857,13 @@ void writeSettings(Html &html, const View &view) {
   html.render("templates/settings/black-hole.html", [&](unsigned token) {
     const bool active = view.control.blackHolePreview &&
         uint32_t(uptimeMs() - view.control.blackHolePreviewStartedAt) < 60000U;
-    if (token == 0) html.text(active ? "Відтворюється" : "Не відтворюється");
+    if (token == 0) html.text(active ? "Відтворюється" : "");
     else if (token == 1) html.attribute(!view.control.on || view.control.memorialActive ||
         view.render.memorialTransition || view.restarting ||
         view.control.maintenance != Maintenance::None ? "@disabled" : "");
     else if (token == 2) html.attribute(!active || view.restarting ||
         view.control.maintenance != Maintenance::None ? "@disabled" : "");
+    else if (token == 3 && !active) html.file("templates/hidden.html");
   });
   html.text("</div></details>");
   html.text("<details class='settings-group' name='device-settings' id='settings-alerts'><summary><h2>Сповіщення та звук</h2></summary><div class='settings-group-body'>");

@@ -1,8 +1,7 @@
-<section class='section' aria-labelledby='quota-rotation-heading'>
+<section class='section settings-row' aria-labelledby='quota-rotation-heading'>
 <div class='section-head'><h2 id='quota-rotation-heading'>Перемикання сервісів</h2></div>
 <form method='post' action='/quota-rotation'>
-<div class='field'><label for='quota-rotation-minutes'>Показувати кожен сервіс, хв</label><input id='quota-rotation-minutes' name='minutes' type='number' min='1' max='60' step='1' value='{{0}}' aria-describedby='quota-rotation-help' required></div>
-<p id='quota-rotation-help' class='muted'>Від 1 до 60 хвилин. Codex і Claude чергуються, коли в обох є доступні ліміти.</p>
+<div class='field'><label for='quota-rotation-minutes'>Інтервал, хв</label><input id='quota-rotation-minutes' name='minutes' type='number' min='1' max='60' step='1' value='{{0}}' required></div>
 <button type='submit'>Застосувати</button>
 </form>
 </section>

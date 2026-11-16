@@ -472,12 +472,13 @@
       const blackHole = status.black_hole;
       if (blackHole && typeof blackHole.manual === 'boolean' &&
           Number.isInteger(blackHole.remaining_seconds) && blackHole.remaining_seconds >= 0 && blackHole.remaining_seconds <= 60) {
-        text('[data-black-hole-state]', blackHole.manual ? `Відтворення · ${blackHole.remaining_seconds} с` : 'Перевірка не відтворюється');
+        text('[data-black-hole-state]', blackHole.manual ? `Відтворення · ${blackHole.remaining_seconds} с` : '');
         all('[data-black-hole-play]').forEach(button => {
           button.disabled = blackHole.can_play !== true || status.on !== true || status.maintenance === true || memorial?.active === true;
         });
         all('[data-black-hole-stop]').forEach(button => {
           button.disabled = !blackHole.manual || status.maintenance === true;
+          button.hidden = !blackHole.manual;
         });
       }
       all('[data-buzzer-test]').forEach(button => { button.disabled = status.buzzer_ready !== true || status.maintenance === true; });

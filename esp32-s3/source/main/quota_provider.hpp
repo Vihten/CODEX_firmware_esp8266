@@ -30,7 +30,7 @@ struct State {
 struct Rotation {
   static constexpr uint32_t claudeGraceMs = 120000;
   Provider active = Provider::Codex;
-  uint32_t since = 0, claudeFreshAt = 0;
+  uint32_t since = 0, claudeFreshAt = 0, interval = rotationMs;
   // The snapshot overload passes rotation eligibility to the boolean overload.
   bool started = false, bothFresh = false;
   bool seenFresh = false;
@@ -42,7 +42,7 @@ struct Rotation {
     return snapshot.fresh || (provider == Provider::Claude && snapshot.remaining > 0 &&
         seenFresh && uint32_t(now - claudeFreshAt) < claudeGraceMs);
   }
-  Provider update(const Snapshot &codex, const Snapshot &claude, uint32_t now) {
+  Provider update(const Snapshot &codex, const Snapshot &claude, uint32_t now, uint32_t intervalMs = rotationMs) {
     if (claude.known && claude.fresh && claude.remaining >= 0 && claude.remaining <= 100) {
       claudeFreshAt = now; seenFresh = true;
     } else if (seenFresh && uint32_t(now - claudeFreshAt) >= claudeGraceMs) {
@@ -54,14 +54,16 @@ struct Rotation {
     const bool codexPositive = codexAvailable && codex.remaining > 0;
     const bool claudePositive = claudeAvailable && claude.remaining > 0;
     if (codexPositive || claudePositive)
-      return update(codexPositive, claudePositive, now);
+      return update(codexPositive, claudePositive, now, intervalMs);
     // Zero remains valid data, but two exhausted providers do not rotate.
     if (codexAvailable != claudeAvailable)
       active = claudeAvailable ? Provider::Claude : Provider::Codex;
     // Neither available: retain identity only; available() reports no data.
-    return update(false, false, now);
+    return update(false, false, now, intervalMs);
   }
-  Provider update(bool codexFresh, bool claudeFresh, uint32_t now) {
+  Provider update(bool codexFresh, bool claudeFresh, uint32_t now, uint32_t intervalMs = rotationMs) {
+    if (!intervalMs) intervalMs = rotationMs;
+    if (interval != intervalMs) { interval = intervalMs; since = now; }
     if (!started) { started = true; since = now; }
     const bool both = codexFresh && claudeFresh;
     if (both && !bothFresh) since = now;
@@ -69,9 +71,9 @@ struct Rotation {
     Provider next = active;
     if (codexFresh != claudeFresh) next = claudeFresh ? Provider::Claude : Provider::Codex;
     else if (codexFresh) {
-      const uint32_t turns = uint32_t(now - since) / rotationMs;
+      const uint32_t turns = uint32_t(now - since) / interval;
       if (turns & 1U) next = active == Provider::Codex ? Provider::Claude : Provider::Codex;
-      if (turns) since += turns * rotationMs;
+      if (turns) since += turns * interval;
     }
     if (next != active) { active = next; if (!both) since = now; }
     return active;

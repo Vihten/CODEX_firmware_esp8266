@@ -711,6 +711,9 @@ void loadSkyColors() {
   if (nvs_open("led_forge_s3", NVS_READONLY, &handle) != ESP_OK) return;
   uint32_t stored[3] = {}; size_t size = sizeof(stored);
   const auto result = nvs_get_blob(handle, "skypalette", stored, &size);
+  uint8_t minutes = 5;
+  if (nvs_get_u8(handle, "quota_rotation", &minutes) == ESP_OK && minutes >= 1 && minutes <= 60)
+    model.control.quotaRotationMinutes = minutes;
   nvs_close(handle);
   if (result == ESP_OK && size == sizeof(stored) && stored[0] == 1 &&
       stored[1] <= 0xffffff && stored[2] <= 0xffffff) {
@@ -725,10 +728,11 @@ bool saveSkyColors() {
   esp_err_t result = model.nvsReady ? nvs_open("led_forge_s3", NVS_READWRITE, &handle) : ESP_FAIL;
   if (result == ESP_OK) {
     result = nvs_set_blob(handle, "skypalette", stored, sizeof(stored));
+    if (result == ESP_OK) result = nvs_set_u8(handle, "quota_rotation", model.control.quotaRotationMinutes);
     if (result == ESP_OK) result = nvs_commit(handle);
     nvs_close(handle);
   }
-  if (result != ESP_OK) { message("Sky colors could not be saved; retrying."); return false; }
+  if (result != ESP_OK) { message("Display settings could not be saved; retrying."); return false; }
   model.skyColorsDirty = false;
   return true;
 }
@@ -1122,7 +1126,7 @@ void updateControl() {
   model.quotaResetReported = false;
   const auto previousProvider = model.control.quotaProvider;
   model.control.quotaProvider = model.quotaRotation.update(
-      model.codexQuota.snapshot, model.claudeQuota.snapshot, now);
+      model.codexQuota.snapshot, model.claudeQuota.snapshot, now, uint32_t(model.control.quotaRotationMinutes) * 60000U);
   if (codexRecovered && previousProvider == model.control.quotaProvider &&
       previousProvider == quota_provider::Provider::Codex) ++model.control.quotaRecoveryEpoch;
   model.control.codexQuota = model.codexQuota.snapshot;
@@ -1920,6 +1924,9 @@ void writeSettings(Html &html, const View &view) {
         token == 0 ? view.control.codexSkyColor : view.control.claudeSkyColor));
     html.text(color);
   });
+  html.render("templates/settings/quota-rotation.html", [&](unsigned token) {
+    if (token == 0) html.format("%u", unsigned(view.control.quotaRotationMinutes));
+  });
   html.file("templates/settings/system-open.html");
   html.render("templates/settings/device-id.html", [&](unsigned token) {
     switch (token) {
@@ -2240,6 +2247,7 @@ esp_err_t portalStatus(httpd_req_t *request) {
   boolean(root, "quota_known", view.control.quotaKnown);
   boolean(root, "quota_fresh", view.control.quotaFresh);
   boolean(root, "quota_available", view.control.quotaAvailable);
+  number(root, "quota_rotation_minutes", view.control.quotaRotationMinutes);
   if (view.control.quotaKnown) number(root, "remaining", view.control.remainingPercent);
   else if (!cJSON_AddNullToObject(root, "remaining")) okay = false;
   boolean(root, "wifi", view.control.connected); boolean(root, "on", view.control.on);
@@ -2895,6 +2903,10 @@ esp_err_t commandPost(httpd_req_t *request) {
     if (!clockMinutes(form.get("start"), command.start) || !clockMinutes(form.get("end"), command.end)) return error(request, "400 Bad Request", "Invalid schedule time.");
     for (unsigned day = 0; day < 7; ++day) { char key[4]; std::snprintf(key, sizeof(key), "d%u", day); if (!std::strcmp(form.get(key), "1")) command.days |= 1U << day; }
     if (command.enabled && !command.days) return error(request, "400 Bad Request", "Select at least one day.");
+  } else if (!std::strcmp(uri, "/quota-rotation")) {
+    if (!unsignedValue(form.get("minutes"), 60, number) || number < 1)
+      return error(request, "400 Bad Request", "Інтервал має бути від 1 до 60 хвилин.");
+    command.kind = CommandKind::QuotaRotation; command.value = uint8_t(number);
   } else if (!std::strcmp(uri, "/sky-colors")) {
     command.kind = CommandKind::SkyColors;
     const char *codex = form.get("codex"), *claude = form.get("claude");
@@ -2955,7 +2967,7 @@ esp_err_t commandPost(httpd_req_t *request) {
   if (!std::strcmp(form.get("__async"), "1")) return acceptedCommand(request);
   httpd_resp_set_status(request, "303 See Other");
   httpd_resp_set_hdr(request, "Location", command.kind == CommandKind::Color ? "/agents" :
-      command.kind == CommandKind::SkyColors || command.kind == CommandKind::Wifi || command.kind == CommandKind::Update || command.kind == CommandKind::Restart || command.kind == CommandKind::BuzzerTest || command.kind == CommandKind::BuzzerVolume ||
+      command.kind == CommandKind::QuotaRotation || command.kind == CommandKind::SkyColors || command.kind == CommandKind::Wifi || command.kind == CommandKind::Update || command.kind == CommandKind::Restart || command.kind == CommandKind::BuzzerTest || command.kind == CommandKind::BuzzerVolume ||
       command.kind == CommandKind::AirAlertSave || command.kind == CommandKind::AirAlertTest || command.kind == CommandKind::AirAlertStop ||
       command.kind == CommandKind::BlackHolePlay || command.kind == CommandKind::BlackHoleStop ||
       command.kind == CommandKind::MemorialSave || command.kind == CommandKind::MemorialPlay || command.kind == CommandKind::MemorialStop ? "/settings" : "/");
@@ -3016,7 +3028,7 @@ bool initializeHttp() {
       !registerRoute("/logs", HTTP_GET, diagnosticJournal) ||
       !registerRoute("/logs.txt", HTTP_GET, diagnosticJournal) ||
       !registerRoute("/agent", HTTP_POST, telemetryPost)) return failed();
-  for (const char *uri : {"/save", "/power", "/brightness", "/external-light", "/buzzer-test", "/buzzer-volume", "/schedule", "/sky-colors", "/agent-color", "/restart", "/update", "/memorial", "/black-hole", "/air-alert"})
+  for (const char *uri : {"/save", "/power", "/brightness", "/external-light", "/buzzer-test", "/buzzer-volume", "/schedule", "/sky-colors", "/quota-rotation", "/agent-color", "/restart", "/update", "/memorial", "/black-hole", "/air-alert"})
     if (!registerRoute(uri, HTTP_POST, commandPost)) return failed();
   for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js", "/assets/js/boot.js", "/assets/js/token-history.js"})
     if (!registerRoute(uri, HTTP_GET, staticAsset)) return failed();
@@ -3130,6 +3142,12 @@ void serviceCommands() {
       case CommandKind::Schedule:
         model.settings.scheduleEnabled = command.enabled; model.settings.start = command.start;
         model.settings.end = command.end; model.settings.days = command.days; dirty(); break;
+      case CommandKind::QuotaRotation:
+        if (command.value >= 1 && command.value <= 60 && model.control.quotaRotationMinutes != command.value) {
+          model.control.quotaRotationMinutes = command.value;
+          model.skyColorsDirty = true;
+        }
+        break;
       case CommandKind::SkyColors:
         if (command.codexSkyColor <= 0xffffff && command.claudeSkyColor <= 0xffffff &&
             (model.control.codexSkyColor != command.codexSkyColor || model.control.claudeSkyColor != command.claudeSkyColor)) {

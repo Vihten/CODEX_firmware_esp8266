@@ -12,11 +12,12 @@
     let authEpoch = 0;
     const awaitingState = new Map();
     const commandRoutes = new Set(['/save', '/power', '/brightness', '/external-light', '/schedule',
-      '/sky-colors', '/agent-color', '/restart', '/update', '/memorial', '/black-hole', '/air-alert', '/buzzer-test', '/buzzer-volume',
+      '/sky-colors', '/quota-rotation', '/agent-color', '/restart', '/update', '/memorial', '/black-hole', '/air-alert', '/buzzer-test', '/buzzer-volume',
       '/agent-upgrade', '/agent-rename', '/agent-uninstall']);
     let pollSequence = 0, refreshAfterActive = false;
     const memorialForm = one('#memorial-settings');
     const airAlertForm = one('#air-alert-settings');
+    const rotationInput = one('#quota-rotation-minutes');
     const liveNodes = new Map();
     all('[data-live]').forEach(node => {
       const key = node.dataset.live;
@@ -124,6 +125,7 @@
           status.memorial.enabled === (value('enabled') === '1');
         case '/air-alert': return value('mode') === 'save' && status.air_alert &&
           status.air_alert.enabled === (value('enabled') === '1');
+        case '/quota-rotation': return status.quota_rotation_minutes === Number(value('minutes'));
         case '/agent-rename': return agent && agent.name === value('name');
         case '/agent-color': return agent && (value('mode') === 'auto' ? agent.custom_color === false :
           agent.custom_color === true && agent.color?.toLowerCase() === value('color')?.toLowerCase());
@@ -131,7 +133,7 @@
       }
     };
     const tracksState = record => ['/brightness', '/buzzer-volume', '/power', '/external-light',
-      '/agent-rename', '/agent-color'].includes(record.path) ||
+      '/quota-rotation', '/agent-rename', '/agent-color'].includes(record.path) ||
       (['/memorial', '/air-alert'].includes(record.path) && record.data.get('mode') === 'save');
     const acceptedMessage = record => {
       switch (record.path) {
@@ -431,6 +433,10 @@
       live('remaining', status.quota_known === true ?
         `${percent(status.remaining)}${status.quota_fresh === true ? '' : ' · останні дані'}` : missing);
       live('quota-provider', status.quota_provider === 'claude' ? 'Claude Code · 5 год' : 'Codex');
+      if (rotationInput && !dirtyForms.has(rotationInput.closest('form')) &&
+          Number.isInteger(status.quota_rotation_minutes) && status.quota_rotation_minutes >= 1 && status.quota_rotation_minutes <= 60) {
+        rotationInput.value = String(status.quota_rotation_minutes);
+      }
       for (const provider of ['codex', 'claude']) {
         const quota = status.quotas?.[provider];
         const known = quota?.known === true && finite(quota.remaining) && quota.remaining >= 0 && quota.remaining <= 100;

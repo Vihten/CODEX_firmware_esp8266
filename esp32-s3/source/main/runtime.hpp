@@ -31,6 +31,7 @@ struct ControlFrame {
   quota_provider::Snapshot codexQuota, claudeQuota;
   uint32_t codexSkyColor = 0x5089cc;
   uint32_t claudeSkyColor = 0xff8039;
+  uint8_t quotaRotationMinutes = 5;
   uint32_t quotaRecoveryEpoch = 0;
   uint32_t otaVisualSequence = 0;
   uint8_t otaVisualPercent = 0;
@@ -81,7 +82,7 @@ struct RenderStatus {
   uint8_t lightSecondOutput = 0;
 };
 
-enum class CommandKind : uint8_t { Wifi, Power, Brightness, Schedule, Color, SkyColors, Restart, Update, AgentPoll, AgentUpgrade, AgentRename, AgentUninstall, MemorialSave, MemorialPlay, MemorialStop, AirAlertSave, AirAlertTest, AirAlertStop, ExternalLight, BuzzerTest, BuzzerVolume, BlackHolePlay, BlackHoleStop };
+enum class CommandKind : uint8_t { Wifi, Power, Brightness, Schedule, Color, SkyColors, Restart, Update, AgentPoll, AgentUpgrade, AgentRename, AgentUninstall, MemorialSave, MemorialPlay, MemorialStop, AirAlertSave, AirAlertTest, AirAlertStop, ExternalLight, BuzzerTest, BuzzerVolume, BlackHolePlay, BlackHoleStop, QuotaRotation };
 struct NetworkCommand {
   uint64_t agentVersion = 0;
   uint64_t agentNonceCounter = 0;

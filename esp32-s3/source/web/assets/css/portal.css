@@ -223,3 +223,17 @@ table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
 @media(hover:hover) and (pointer:fine){.token-history .token-history-cell:hover{outline:2px solid var(--text);outline-offset:3px}}
 @media(forced-colors:active){.token-history .token-history-cell[data-unknown=true]{border-style:dashed}.token-history .token-history-cell[aria-pressed=true]{outline-color:Highlight}}
 @media(max-width:36rem){.token-history-summary{gap:.5rem}.token-history-date{font-size:.6875rem}.token-history-details{padding:1rem}}
+
+/* Settings: flat native disclosure rows, with compact grouped controls. */
+.settings-groups{margin-top:1rem;border-top:1px solid var(--line)}
+.settings-groups>.settings-group{min-width:0;margin:0;padding:0;border-top:0;border-bottom:1px solid var(--line)}
+.settings-group>summary{min-height:44px;padding:1rem 0;overflow-wrap:anywhere}
+.settings-group>summary h2{display:inline;margin:0;font-size:1.125rem}
+.settings-group>summary:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+.settings-group[open]>summary{margin-bottom:0}
+.settings-group-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:2rem;align-items:start;min-width:0;padding-bottom:1rem}
+.settings-group-body>section{min-width:0;padding:1rem 0;border-bottom:0}
+.settings-group-body .section-head{margin-bottom:1rem}
+.settings-group-body>section:has(form[action='/air-alert']){grid-column:1/-1}
+@media(max-width:760px){.settings-group-body,.settings-group-body .form-grid,.settings-group-body .light-channels{grid-template-columns:minmax(0,1fr)}}
+.settings-group-body form[action='/sky-colors'] .form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}

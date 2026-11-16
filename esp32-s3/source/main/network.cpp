@@ -1843,43 +1843,16 @@ void writeOverview(Html &html, const View &view) {
   writeAgentSummary(html, view);
 }
 void writeSettings(Html &html, const View &view) {
-  html.file("templates/settings/workspace-open.html");
-  html.text(view.control.connected ? "Підключено" : "Точка доступу"); html.file("templates/settings/wifi-heading-close.html");
-  html.render("templates/settings/ip.html", [&](unsigned token) {
-    switch (token) {
-      case 0: html.format("%s", view.control.ip); break;
-    }
+  html.text("<div class='settings-groups'>");
+  html.text("<details class='settings-group' name='device-settings' id='settings-appearance'><summary><h2>Вигляд і ліміти</h2></summary><div class='settings-group-body'>");
+  html.render("templates/settings/sky-colors.html", [&](unsigned token) {
+    char color[8];
+    std::snprintf(color, sizeof(color), "#%06lx", static_cast<unsigned long>(
+        token == 0 ? view.control.codexSkyColor : view.control.claudeSkyColor));
+    html.text(color);
   });
-  html.file("templates/settings/wifi-form-open.html");
-  html.escaped(view.ssid);
-  html.file("templates/settings/password-input.html");
-  html.file("templates/settings/wifi-actions.html");
-  html.file("templates/settings/ota-open.html");
-  html.escaped(portalOtaLabel(view.ota));
-  html.file("templates/settings/ota-progress-open.html");
-  if (!view.otaTotal) html.file("templates/hidden.html");
-  html.render("templates/settings/ota-progress-value.html", [&](unsigned token) {
-    switch (token) {
-      case 0: html.format("%u", view.otaTotal ? unsigned(uint64_t(view.otaDone) * 100 / view.otaTotal) : 0); break;
-    }
-  });
-  html.render("templates/settings/firmware-version.html", [&](unsigned token) {
-    switch (token) {
-      case 0: html.format("%llu", (unsigned long long)PROJECT_FIRMWARE_VERSION); break;
-    }
-  });
-  html.file("templates/settings/ota-actions.html");
-  html.render("templates/settings/memorial.html", [&](unsigned token) {
-    if (token == 0) html.attribute(view.memorialEnabled ? "@checked" : "");
-    else if (token == 1) html.text(view.control.memorialActive ? "Відтворюється" : "Не відтворюється");
-    else if (token == 2) html.attribute(!view.control.on || view.control.memorialActive || view.restarting ||
-        view.control.maintenance != Maintenance::None ? "@disabled" : "");
-    else if (token == 3) html.attribute(!view.control.memorialActive || view.restarting ||
-        view.control.maintenance != Maintenance::None ? "@disabled" : "");
-    else if (token == 4) html.text(view.memorialSaveFailed ? "Не вдалося зберегти. Спробуйте ще раз." :
-        view.dirty ? "Збереження…" : "");
-    else if (token == 5) html.text(!view.control.on ? "Матриця вимкнена. Для відтворення ввімкніть її." :
-        std::time(nullptr) < 1700000000 ? "Очікування часу NTP. Ручне відтворення доступне." : "");
+  html.render("templates/settings/quota-rotation.html", [&](unsigned token) {
+    if (token == 0) html.format("%u", unsigned(view.control.quotaRotationMinutes));
   });
   html.render("templates/settings/black-hole.html", [&](unsigned token) {
     const bool active = view.control.blackHolePreview &&
@@ -1891,6 +1864,8 @@ void writeSettings(Html &html, const View &view) {
     else if (token == 2) html.attribute(!active || view.restarting ||
         view.control.maintenance != Maintenance::None ? "@disabled" : "");
   });
+  html.text("</div></details>");
+  html.text("<details class='settings-group' name='device-settings' id='settings-alerts'><summary><h2>Сповіщення та звук</h2></summary><div class='settings-group-body'>");
   html.render("templates/settings/air-alert.html", [&](unsigned token) {
     if (token == 0) html.attribute(view.airEnabled ? "@checked" : "");
     else if (token == 1) html.text(view.airStatus);
@@ -1918,15 +1893,48 @@ void writeSettings(Html &html, const View &view) {
     else if (token == 1) html.format("%u", unsigned(view.buzzerVolume));
     else if (token == 2) html.text(view.buzzerSaveFailed ? "Не вдалося зберегти. Повторюємо спробу." : view.buzzerDirty ? "Збереження…" : "");
   });
-  html.render("templates/settings/sky-colors.html", [&](unsigned token) {
-    char color[8];
-    std::snprintf(color, sizeof(color), "#%06lx", static_cast<unsigned long>(
-        token == 0 ? view.control.codexSkyColor : view.control.claudeSkyColor));
-    html.text(color);
+  html.render("templates/settings/memorial.html", [&](unsigned token) {
+    if (token == 0) html.attribute(view.memorialEnabled ? "@checked" : "");
+    else if (token == 1) html.text(view.control.memorialActive ? "Відтворюється" : "Не відтворюється");
+    else if (token == 2) html.attribute(!view.control.on || view.control.memorialActive || view.restarting ||
+        view.control.maintenance != Maintenance::None ? "@disabled" : "");
+    else if (token == 3) html.attribute(!view.control.memorialActive || view.restarting ||
+        view.control.maintenance != Maintenance::None ? "@disabled" : "");
+    else if (token == 4) html.text(view.memorialSaveFailed ? "Не вдалося зберегти. Спробуйте ще раз." :
+        view.dirty ? "Збереження…" : "");
+    else if (token == 5) html.text(!view.control.on ? "Матриця вимкнена. Для відтворення ввімкніть її." :
+        std::time(nullptr) < 1700000000 ? "Очікування часу NTP. Ручне відтворення доступне." : "");
   });
-  html.render("templates/settings/quota-rotation.html", [&](unsigned token) {
-    if (token == 0) html.format("%u", unsigned(view.control.quotaRotationMinutes));
+  html.text("</div></details>");
+  html.text("<details class='settings-group' name='device-settings' id='settings-network'><summary><h2>Мережа й оновлення</h2></summary><div class='settings-group-body'>");
+  html.file("templates/settings/workspace-open.html");
+  html.text(view.control.connected ? "Підключено" : "Точка доступу"); html.file("templates/settings/wifi-heading-close.html");
+  html.render("templates/settings/ip.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%s", view.control.ip); break;
+    }
   });
+  html.file("templates/settings/wifi-form-open.html");
+  html.escaped(view.ssid);
+  html.file("templates/settings/password-input.html");
+  html.file("templates/settings/wifi-actions.html");
+  html.file("templates/settings/ota-open.html");
+  html.escaped(portalOtaLabel(view.ota));
+  html.file("templates/settings/ota-progress-open.html");
+  if (!view.otaTotal) html.file("templates/hidden.html");
+  html.render("templates/settings/ota-progress-value.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%u", view.otaTotal ? unsigned(uint64_t(view.otaDone) * 100 / view.otaTotal) : 0); break;
+    }
+  });
+  html.render("templates/settings/firmware-version.html", [&](unsigned token) {
+    switch (token) {
+      case 0: html.format("%llu", (unsigned long long)PROJECT_FIRMWARE_VERSION); break;
+    }
+  });
+  html.file("templates/settings/ota-actions.html");
+  html.text("</div></details>");
+  html.text("<details class='settings-group' name='device-settings' id='settings-system'><summary><h2>Система та діагностика</h2></summary><div class='settings-group-body'>");
   html.file("templates/settings/system-open.html");
   html.render("templates/settings/device-id.html", [&](unsigned token) {
     switch (token) {
@@ -1957,7 +1965,10 @@ void writeSettings(Html &html, const View &view) {
   html.file("templates/settings/maintenance-open.html");
   if (view.restarting) html.file("templates/disabled.html");
   html.file("templates/settings/maintenance-close.html");
+  html.text("</div></details>");
+  html.text("</div>");
 }
+
 void writeTokenCount(Html &html, uint64_t value) {
   char digits[21]; std::snprintf(digits, sizeof(digits), "%llu", (unsigned long long)value);
   const size_t length = std::strlen(digits);

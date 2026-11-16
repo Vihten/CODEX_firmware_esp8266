@@ -790,7 +790,7 @@ uint32_t updateSkySample(uint16_t target, bool frozen) {
     }
     if (!frozen) {
       const int32_t distance = (int32_t(wanted) - int32_t(quotaFrameMilli) + 300000) % 200000 - 100000;
-      const int32_t step = min(uint32_t(std::abs(distance)), delta * 4);
+      const int32_t step = min(uint32_t(std::abs(distance)), delta * 6);
       const int32_t phase = int32_t(quotaFrameMilli) + (distance < 0 ? -step : step);
       quotaFrameMilli = uint32_t((phase + 200000) % 200000);
     }

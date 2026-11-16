@@ -12,7 +12,7 @@ constexpr int32_t signedPhase(uint32_t phase) {
 // Rare quota resets use the authored sky rotation, not a new full scene entrance.
 class Motion {
  public:
-  static constexpr uint32_t durationMs = 2600;
+  static constexpr uint32_t durationMs = 1733;
 
   void observe(uint32_t epoch, bool visible, bool allowNew = true) {
     if (epoch != epoch_) {
@@ -37,8 +37,9 @@ class Motion {
     if (!active_) return target;
     elapsed_ += delta < durationMs - elapsed_ ? delta : durationMs - elapsed_;
     if (elapsed_ == durationMs) { active_ = false; return target; }
-    const float seconds = elapsed_ / 1000.0f;
     const float t = float(elapsed_) / durationMs;
+    // Preserve the authored spring shape while playing it 50% faster.
+    const float seconds = t * 2.6f;
     const float taper = 1 - t * t * (3 - 2 * t);
     // Zero initial velocity; a small overshoot naturally settles at solar noon.
     const float displacement = offset_ * std::exp(-5.0f * seconds) *

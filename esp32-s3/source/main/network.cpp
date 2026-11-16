@@ -1132,6 +1132,7 @@ void updateControl() {
   if (selected.known) model.control.remainingPercent = uint8_t(selected.remaining);
   model.control.quotaKnown = selected.known;
   model.control.quotaFresh = selected.fresh;
+  model.control.quotaAvailable = model.quotaRotation.available(model.control.quotaProvider, selected, now);
   model.control.connected = model.connected; model.control.accountLinked = model.linked;
   model.control.brightness = model.settings.brightness; model.control.on = scheduledOn();
   model.control.lightFirst = model.light.first;
@@ -2238,6 +2239,7 @@ esp_err_t portalStatus(httpd_req_t *request) {
   }
   boolean(root, "quota_known", view.control.quotaKnown);
   boolean(root, "quota_fresh", view.control.quotaFresh);
+  boolean(root, "quota_available", view.control.quotaAvailable);
   if (view.control.quotaKnown) number(root, "remaining", view.control.remainingPercent);
   else if (!cJSON_AddNullToObject(root, "remaining")) okay = false;
   boolean(root, "wifi", view.control.connected); boolean(root, "on", view.control.on);

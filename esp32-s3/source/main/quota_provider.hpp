@@ -34,19 +34,31 @@ struct Rotation {
   // The snapshot overload passes rotation eligibility to the boolean overload.
   bool started = false, bothFresh = false;
   bool seenFresh = false;
+  // Fresh known balances include zero. Only Claude's known positive balance
+  // can bridge a transient polling failure, for <120 seconds since last fresh.
+  // Call after update() so the current fresh Claude snapshot anchors its grace.
+  bool available(Provider provider, const Snapshot &snapshot, uint32_t now) const {
+    if (!snapshot.known || snapshot.remaining < 0 || snapshot.remaining > 100) return false;
+    return snapshot.fresh || (provider == Provider::Claude && snapshot.remaining > 0 &&
+        seenFresh && uint32_t(now - claudeFreshAt) < claudeGraceMs);
+  }
   Provider update(const Snapshot &codex, const Snapshot &claude, uint32_t now) {
-    if (claude.fresh) { claudeFreshAt = now; seenFresh = true; }
-    const bool codexAvailable = codex.fresh && codex.remaining > 0;
-    const bool claudeAvailable = claude.known && claude.remaining > 0 &&
-        (claude.fresh || (seenFresh && uint32_t(now - claudeFreshAt) < claudeGraceMs));
-    // Grace bridges Claude polling gaps while Codex is fresh. Both-stale fallback stays suspended.
-    if (codexAvailable || (claude.fresh && claudeAvailable))
-      return update(codexAvailable, claudeAvailable, now);
-    // Suspend rotation while data is stale, retaining the non-exhausted provider.
-    const bool codexKnownPositive = codex.known && codex.remaining > 0;
-    const bool claudeKnownPositive = claude.known && claude.remaining > 0;
-    if (codexKnownPositive != claudeKnownPositive)
-      active = claudeKnownPositive ? Provider::Claude : Provider::Codex;
+    if (claude.known && claude.fresh && claude.remaining >= 0 && claude.remaining <= 100) {
+      claudeFreshAt = now; seenFresh = true;
+    } else if (seenFresh && uint32_t(now - claudeFreshAt) >= claudeGraceMs) {
+      // Latch expiry so an old cache cannot revive on a later millis() wrap.
+      seenFresh = false;
+    }
+    const bool codexAvailable = available(Provider::Codex, codex, now);
+    const bool claudeAvailable = available(Provider::Claude, claude, now);
+    const bool codexPositive = codexAvailable && codex.remaining > 0;
+    const bool claudePositive = claudeAvailable && claude.remaining > 0;
+    if (codexPositive || claudePositive)
+      return update(codexPositive, claudePositive, now);
+    // Zero remains valid data, but two exhausted providers do not rotate.
+    if (codexAvailable != claudeAvailable)
+      active = claudeAvailable ? Provider::Claude : Provider::Codex;
+    // Neither available: retain identity only; available() reports no data.
     return update(false, false, now);
   }
   Provider update(bool codexFresh, bool claudeFresh, uint32_t now) {

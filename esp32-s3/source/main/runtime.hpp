@@ -38,6 +38,7 @@ struct ControlFrame {
   uint8_t remainingPercent = 100;
   bool quotaKnown = false;
   bool quotaFresh = false;
+  bool quotaAvailable = false;
   uint8_t activityPercent = 0;
   uint8_t brightness = PROJECT_BRIGHTNESS;
   uint8_t airAlertLevel = 0;

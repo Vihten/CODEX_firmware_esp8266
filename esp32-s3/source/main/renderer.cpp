@@ -1548,7 +1548,7 @@ void renderTask(void *) {
       const uint32_t now = millis();
       airAlertVisual.update(control.airAlertLevel, now);
       if (control.maintenance == Maintenance::None && !status.memorialTransition) {
-        blackHole.update(true, control.connected, now);
+        blackHole.update(control.quotaAvailable, control.connected, now);
         const bool preview = black_hole::previewActive(control.blackHolePreview, control.blackHolePreviewStartedAt, now);
         blackHolePreview.update(!preview, !preview, now);
       } else {

@@ -28,13 +28,19 @@ struct State {
   }
 };
 struct Rotation {
+  static constexpr uint32_t claudeGraceMs = 120000;
   Provider active = Provider::Codex;
-  uint32_t since = 0;
+  uint32_t since = 0, claudeFreshAt = 0;
+  // The snapshot overload passes rotation eligibility to the boolean overload.
   bool started = false, bothFresh = false;
+  bool seenFresh = false;
   Provider update(const Snapshot &codex, const Snapshot &claude, uint32_t now) {
+    if (claude.fresh) { claudeFreshAt = now; seenFresh = true; }
     const bool codexAvailable = codex.fresh && codex.remaining > 0;
-    const bool claudeAvailable = claude.fresh && claude.remaining > 0;
-    if (codexAvailable || claudeAvailable)
+    const bool claudeAvailable = claude.known && claude.remaining > 0 &&
+        (claude.fresh || (seenFresh && uint32_t(now - claudeFreshAt) < claudeGraceMs));
+    // Grace bridges Claude polling gaps while Codex is fresh. Both-stale fallback stays suspended.
+    if (codexAvailable || (claude.fresh && claudeAvailable))
       return update(codexAvailable, claudeAvailable, now);
     // Suspend rotation while data is stale, retaining the non-exhausted provider.
     const bool codexKnownPositive = codex.known && codex.remaining > 0;

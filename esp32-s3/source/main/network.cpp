@@ -2309,6 +2309,17 @@ esp_err_t portalStatus(httpd_req_t *request) {
         number(last, "heap_before_tls", failure.heapBeforeTls);
         number(last, "largest_before_tls", failure.largestBeforeTls);
         number(last, "clock_before_tls", double(failure.clockBeforeTls));
+        string(last, "fetch_phase", air_alert::fetchPhaseName(failure.fetchPhase));
+        number(last, "page_attempt", failure.pageAttempt);
+        number(last, "body_bytes", failure.bodyBytes);
+        number(last, "wire_bytes", failure.wireBytes);
+        number(last, "read_calls", failure.readCalls);
+        number(last, "read_waits", failure.readWaits);
+        number(last, "dns_ms", failure.dnsMs);
+        number(last, "connect_ms", failure.connectMs);
+        number(last, "write_ms", failure.writeMs);
+        number(last, "read_ms", failure.readMs);
+        number(last, "parse_ms", failure.parseMs);
       }
     }
     number(airStatus, "remaining_seconds", view.airRemaining);
@@ -2435,7 +2446,9 @@ esp_err_t health(httpd_req_t *request) {
   const int memoryCount = std::snprintf(body + memoryOffset, sizeof(body) - memoryOffset,
       "tcp_sampled=%u tcp_age_ms=%lu tcp_active=%lu tcp_time_wait=%lu tcp_queued_bytes=%lu tcp_queued_segments=%lu tcp_sample_failures=%lu "
       "http_handlers=%u preview_busy=%u telemetry_pending=%u "
-      "alert_polls=%lu alert_age_ms=%lu alert_heap_before=%lu alert_heap_after=%lu alert_largest_after=%lu alert_psram_before=%lu alert_psram_after=%lu alert_city=%u\n",
+      "alert_polls=%lu alert_age_ms=%lu alert_heap_before=%lu alert_heap_after=%lu alert_largest_after=%lu alert_psram_before=%lu alert_psram_after=%lu alert_city=%u "
+      "alert_phase=%s alert_page=%u alert_failure=%s alert_body_bytes=%lu alert_wire_bytes=%lu alert_read_calls=%lu alert_read_waits=%lu "
+      "alert_dns_ms=%lu alert_connect_ms=%lu alert_write_ms=%lu alert_read_ms=%lu alert_parse_ms=%lu\n",
       unsigned(tcp.sampled), (unsigned long)(tcp.sampled ? uptimeMs() - tcp.sampledAt : 0),
       (unsigned long)tcp.active, (unsigned long)tcp.timeWait, (unsigned long)tcp.queuedBytes,
       (unsigned long)tcp.queuedSegments, (unsigned long)tcp.callbackFailures,
@@ -2443,7 +2456,13 @@ esp_err_t health(httpd_req_t *request) {
       unsigned(telemetryQueue ? uxQueueMessagesWaiting(telemetryQueue) : 0),
       (unsigned long)alert.polls, (unsigned long)(alert.polls ? uptimeMs() - alert.sampledAt : 0), (unsigned long)alert.heapBefore, (unsigned long)alert.heapAfter,
       (unsigned long)alert.largestAfter, (unsigned long)alert.psramBefore,
-      (unsigned long)alert.psramAfter, unsigned(alert.cityThreat));
+      (unsigned long)alert.psramAfter, unsigned(alert.cityThreat),
+      air_alert::fetchPhaseName(alert.result.fetchPhase), unsigned(alert.result.pageAttempt), air_alert::failureName(alert.result.failure),
+      (unsigned long)alert.result.bodyBytes, (unsigned long)alert.result.wireBytes,
+      (unsigned long)alert.result.readCalls, (unsigned long)alert.result.readWaits,
+      (unsigned long)alert.result.dnsMs, (unsigned long)alert.result.connectMs,
+      (unsigned long)alert.result.writeMs, (unsigned long)alert.result.readMs,
+      (unsigned long)alert.result.parseMs);
   if (memoryCount < 0 || size_t(memoryCount) >= sizeof(body) - memoryOffset)
     return error(request, "503 Service Unavailable", "Diagnostics too large.");
   const size_t clockOffset = memoryOffset + size_t(memoryCount);

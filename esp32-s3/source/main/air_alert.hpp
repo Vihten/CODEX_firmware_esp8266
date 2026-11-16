@@ -15,6 +15,19 @@ constexpr bool sameEventLevel(Level previous, Level next) {
 }
 enum class Failure : uint8_t { None, Memory, Dns, Tls, Write, Read, Http, Payload, Timeout };
 
+enum class FetchPhase : uint8_t { None, Dns, Connect, Write, Read, Parse };
+constexpr const char *fetchPhaseName(FetchPhase phase) {
+  switch (phase) {
+    case FetchPhase::None: return "none";
+    case FetchPhase::Dns: return "dns";
+    case FetchPhase::Connect: return "connect";
+    case FetchPhase::Write: return "write";
+    case FetchPhase::Read: return "read";
+    case FetchPhase::Parse: return "parse";
+  }
+  return "unknown";
+}
+
 constexpr const char *failureName(Failure failure) {
   switch (failure) {
     case Failure::None: return "none";
@@ -48,6 +61,12 @@ struct PollResult {
   bool valid = false;
   Failure failure = Failure::None;
   uint32_t elapsedMs = 0;
+  // Last attempted page only; elapsedMs covers the entire bounded poll.
+  // Phase is the last phase entered, retained on success or failure.
+  FetchPhase fetchPhase = FetchPhase::None;
+  uint8_t pageAttempt = 0;  // One-based, at most three.
+  uint32_t bodyBytes = 0, wireBytes = 0, readCalls = 0, readWaits = 0;
+  uint32_t dnsMs = 0, connectMs = 0, writeMs = 0, readMs = 0, parseMs = 0;
   int tlsError = 0, tlsCode = 0, tlsFlags = 0;
   uint32_t heapBeforeTls = 0, largestBeforeTls = 0;
   int64_t clockBeforeTls = 0;
@@ -163,6 +182,7 @@ bool receive(PollResult &result);
 // Numeric observations across a complete poll, after all response/TLS RAII cleanup.
 // Other network tasks run concurrently, so a delta alone does not prove a leak.
 struct MemoryStats {
+  PollResult result{};
   uint32_t polls = 0, sampledAt = 0, heapBefore = 0, heapAfter = 0, largestAfter = 0;
   uint32_t psramBefore = 0, psramAfter = 0;
   bool cityThreat = false;

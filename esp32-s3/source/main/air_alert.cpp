@@ -213,13 +213,32 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
   result.generation = job.generation;
   result.cityThreat = job.cityThreat;
   const int64_t started = esp_timer_get_time();
+  int64_t phaseStarted = started;
+  const auto recordPhase = [&]() {
+    const uint32_t ms = uint32_t((esp_timer_get_time() - phaseStarted) / 1000);
+    switch (result.fetchPhase) {
+      case FetchPhase::Dns: result.dnsMs = ms; break;
+      case FetchPhase::Connect: result.connectMs = ms; break;
+      case FetchPhase::Write: result.writeMs = ms; break;
+      case FetchPhase::Read: result.readMs = ms; break;
+      case FetchPhase::Parse: result.parseMs = ms; break;
+      case FetchPhase::None: break;
+    }
+  };
+  const auto enterPhase = [&](FetchPhase phase) {
+    recordPhase();
+    result.fetchPhase = phase;
+    phaseStarted = esp_timer_get_time();
+  };
   const auto finish = [&]() {
+    recordPhase();
     result.elapsedMs = uint32_t((esp_timer_get_time() - started) / 1000);
     return result;
   };
   Response r;
   if (!r.body) { result.failure = Failure::Memory; return finish(); }
   char address[48] = {};
+  enterPhase(FetchPhase::Dns);
   if (!resolve(address, sizeof(address), deadline)) {
     result.failure = esp_timer_get_time() >= deadline ? Failure::Timeout : Failure::Dns;
     return finish();
@@ -227,6 +246,7 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
   result.heapBeforeTls = uint32_t(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   result.largestBeforeTls = uint32_t(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   result.clockBeforeTls = int64_t(std::time(nullptr));
+  enterPhase(FetchPhase::Connect);
   TlsSession connection;
   esp_tls_t *tls = connection.value;
   if (!tls) { result.failure = Failure::Memory; return finish(); }
@@ -255,6 +275,7 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
     return finish();
   }
   char path[64] = "/s/vmroficial";
+  enterPhase(FetchPhase::Write);
   if (job.cityThreat) std::snprintf(path, sizeof(path), "/s/kpszsu");
   else if (before) std::snprintf(path, sizeof(path), "/s/vmroficial?before=%lu", (unsigned long)before);
   char request[320];
@@ -267,7 +288,7 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
     const int count = int(esp_tls_conn_write(tls, request + sent, requestSize - sent));
     if (count > 0) sent += size_t(count);
     else if (!wantsIo(count)) break;
-    vTaskDelay(1);
+    else vTaskDelay(1);
   }
   http_parser parser{};
   http_parser_init(&parser, HTTP_RESPONSE);
@@ -280,9 +301,13 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
   settings.on_message_complete = messageComplete;
   bool parsed = sent == size_t(requestSize);
   size_t wireBytes = 0;
+  unsigned readyReads = 0;
+  // Failed/expired writes must retain their own phase, without attempting reads.
+  if (parsed && esp_timer_get_time() < deadline) enterPhase(FetchPhase::Read);
   while (parsed && !r.complete && esp_timer_get_time() < deadline) {
     char chunk[512];
     const int count = int(esp_tls_conn_read(tls, chunk, sizeof(chunk)));
+    ++result.readCalls;
     if (count > 0) {
       wireBytes += size_t(count);
       // Includes framing and headers, so endless tiny chunks cannot consume unbounded work.
@@ -294,14 +319,24 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
       parsed = HTTP_PARSER_ERRNO(&parser) == HPE_OK || HTTP_PARSER_ERRNO(&parser) == HPE_PAUSED;
       break;
     } else if (!wantsIo(count)) { parsed = false; break; }
-    vTaskDelay(1);
+    // Drain ready TLS data without charging one scheduler tick per 512 bytes
+    // against the shared pagination deadline. Still let idle/lower-priority
+    // tasks run after at most 32 reads (16 KiB), including tiny fragments.
+    if (parsed && !r.complete && (count < 0 || ++readyReads == 32)) {
+      if (count < 0) ++result.readWaits;
+      readyReads = 0;
+      vTaskDelay(1);
+    }
   }
   result.httpStatus = int(r.status);
+  result.bodyBytes = uint32_t(r.used);
+  result.wireBytes = uint32_t(wireBytes);
   if (r.status == 429) result.retryAfterMs = r.retry;
   // Release internal TLS buffers before the bounded HTML scan.
   captureTlsError();
   connection.close();
   if (parsed && r.complete && !r.bad && r.status == 200 && esp_timer_get_time() < deadline) {
+    enterPhase(FetchPhase::Parse);
     telegram::Diagnostics diagnostic;
     result.valid = job.cityThreat ? city_threat::parsePage(r.body, r.used, page, &diagnostic) :
         telegram::parsePage(r.body, r.used, page, &diagnostic);
@@ -337,6 +372,7 @@ PollResult poll(const PollJob &job) {
   for (unsigned attempt = 0; attempt < 3 && esp_timer_get_time() < deadline; ++attempt) {
     telegram::Page page;
     result = fetchPage(job, before, page, deadline);
+    result.pageAttempt = uint8_t(attempt + 1);
     if (job.cityThreat) {
       result.valid = result.valid && page.posts && page.newestId && page.newestTime >= 1577836800 &&
           page.newestTime <= int64_t(std::time(nullptr)) + 120;
@@ -394,6 +430,7 @@ void worker(void *) {
     memory.heapBefore = uint32_t(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     memory.psramBefore = uint32_t(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     const PollResult result = poll(job);
+    memory.result = result;
     memory.heapAfter = uint32_t(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     memory.largestAfter = uint32_t(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     memory.psramAfter = uint32_t(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));

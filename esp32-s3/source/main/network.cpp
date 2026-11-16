@@ -2999,7 +2999,7 @@ bool machineRoute(const char *uri, httpd_method_t method) {
 }
 bool initializeHttp() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG(); config.core_id = 0; config.stack_size = 16384;
-  config.max_uri_handlers = 48; config.max_open_sockets = 4; config.lru_purge_enable = true;
+  config.max_uri_handlers = 64; config.max_open_sockets = 4; config.lru_purge_enable = true;
   // Cookies and browser cache validators share this buffer. The 1 KiB IDF
   // default can reject authenticated asset requests before our handlers run.
   // Keep the limit bounded; do not increase socket count or task stack use.

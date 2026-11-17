@@ -21,7 +21,7 @@
     let pollSequence = 0, refreshAfterActive = false;
     const memorialForm = one('#memorial-settings');
     const airAlertForm = one('#air-alert-settings');
-    const rotationInput = one('#quota-rotation-minutes');
+    const rotationInputs = all('#quota-rotation-minutes,form[action="/sky-colors"] input[name=minutes]');
     const liveNodes = new Map();
     all('[data-live]').forEach(node => {
       const key = node.dataset.live;
@@ -80,11 +80,32 @@
     const text = (selector, value, root = document) => setText(all(selector, root), value);
     const live = (key, value) => setText(liveNodes.get(key) || [], value);
     const connection = (label, state = '') => (liveNodes.get('connection') || []).forEach(node => {
+      if (window.portalAuthExpired === true) label = '';
       if (node.textContent !== label) node.textContent = label;
       node.dataset.state = state;
     });
     const authenticated = () => window.portalAuthExpired !== true;
-    const automatic = () => authenticated() && pageActive && !document.hidden && (!toggle || toggle.checked);
+    const automatic = () => authenticated() && pageActive && !document.hidden &&
+      (!toggle || !toggle.isConnected || toggle.closest('[hidden]') ||
+        (typeof toggle.getClientRects === 'function' && toggle.getClientRects().length === 0) ||
+        window.getComputedStyle?.(toggle).display === 'none' ||
+        window.getComputedStyle?.(toggle).visibility === 'hidden' || toggle.checked);
+    const showSessionBanner = () => {
+      const banner = one('#session-banner');
+      if (!banner) return;
+      banner.hidden = false;
+      banner.setAttribute('role', 'status');
+      banner.setAttribute('aria-live', 'polite');
+      let message = one('[data-session-message]', banner);
+      if (!message) {
+        message = document.createElement('span');
+        message.dataset.sessionMessage = '';
+        const link = one('a', banner) || document.createElement('a');
+        link.href = '/login'; link.textContent = 'Увійти';
+        banner.replaceChildren(message, ' ', link);
+      }
+      message.textContent = 'Сеанс завершено. Увійдіть знову.';
+    };
     const stopForAuth = () => {
       window.portalAuthExpired = true;
       ++authEpoch;
@@ -99,8 +120,14 @@
       baseline = null;
       setLightOutputs(null);
       connection('Сеанс завершено. Увійдіть знову.', 'error');
-      for (const form of all('form')) if (commandRoutes.has(new URL(form.action, location.href).pathname))
-        formFeedback(form, 'Сеанс завершено.', true);
+      const dialog = one('#device-settings-dialog');
+      const modalWasOpen = dialog?.open === true;
+      if (modalWasOpen && typeof dialog.close === 'function') {
+        try { dialog.close(); } catch (_) { /* The session banner remains available. */ }
+      }
+      showSessionBanner();
+      if (modalWasOpen) one('#session-banner a')?.focus({preventScroll: true});
+      all('[data-command-feedback]').forEach(node => { node.textContent = ''; node.hidden = true; });
     };
     const expireSession = () => {
       if (!authenticated()) return;
@@ -121,6 +148,7 @@
       .map(input => [input.name, input.value, input.checked,
         input.multiple ? Array.from(input.selectedOptions, option => option.value) : null]));
     const formFeedback = (form, message, login = false) => {
+      if (login || !authenticated()) { showSessionBanner(); return; }
       let node = one('[data-command-feedback]', form);
       if (!node) {
         node = document.createElement('p');
@@ -131,11 +159,6 @@
         form.append(node);
       }
       node.textContent = message;
-      if (login) {
-        const link = document.createElement('a');
-        link.href = '/login'; link.textContent = 'Увійти';
-        node.append(' ', link);
-      }
     };
     const reflected = (record, status) => {
       const data = record.data, value = name => data.get(name);
@@ -156,6 +179,10 @@
         case '/air-alert': return value('mode') === 'save' && status.air_alert &&
           status.air_alert.enabled === (value('enabled') === '1');
         case '/quota-rotation': return status.quota_rotation_minutes === Number(value('minutes'));
+        case '/sky-colors': return ['codex', 'claude'].every(provider =>
+          !data.has(provider) || (typeof status.sky_colors?.[provider] === 'string' &&
+            status.sky_colors[provider].toLowerCase() === value(provider)?.toLowerCase())) &&
+          (!data.has('minutes') || status.quota_rotation_minutes === Number(value('minutes')));
         case '/agent-rename': return agent && agent.name === value('name');
         case '/agent-color': return agent && (value('mode') === 'auto' ? agent.custom_color === false :
           agent.custom_color === true && agent.color?.toLowerCase() === value('color')?.toLowerCase());
@@ -163,7 +190,7 @@
       }
     };
     const tracksState = record => ['/brightness', '/buzzer-volume', '/power', '/external-light',
-      '/quota-rotation', '/agent-rename', '/agent-color'].includes(record.path) ||
+      '/quota-rotation', '/sky-colors', '/agent-rename', '/agent-color'].includes(record.path) ||
       (['/memorial', '/air-alert'].includes(record.path) && record.data.get('mode') === 'save');
     const acceptedMessage = record => {
       switch (record.path) {
@@ -328,23 +355,25 @@
         schedule: {title: 'Розклад матриці', form: one('form[action="/schedule"]')},
         lighting: {title: 'Зовнішня підсвітка', form: one('form[action="/external-light"]')},
       };
-      const controls = one('[data-device-controls]');
-      const lightPanel = one('#external-light-panel');
-      if (lightPanel && content && heading && targets.lighting.form &&
-          typeof settingsDialog.showModal === 'function') lightPanel.hidden = true;
-      if (controls && content && heading && typeof settingsDialog.showModal === 'function' &&
-          Object.values(targets).every(target => target.form)) controls.hidden = true;
+      if (content && heading && typeof settingsDialog.showModal === 'function') {
+        for (const key of ['schedule', 'lighting']) {
+          const wrapper = targets[key].form?.closest('[data-device-advanced]');
+          if (wrapper) wrapper.hidden = true;
+        }
+      }
       let moved = null, placeholder = null, trigger = null;
       settingsDialog.addEventListener('close', () => {
         if (moved && placeholder) placeholder.replaceWith(moved);
         moved = placeholder = null;
-        if (trigger && trigger.isConnected) trigger.focus({preventScroll: true});
+        if (authenticated() && trigger && trigger.isConnected) trigger.focus({preventScroll: true});
         trigger = null;
       });
-      all('[data-device-settings]').forEach(button => button.addEventListener('click', () => {
+      all('[data-device-settings]').forEach(button => button.addEventListener('click', event => {
+        if (!authenticated()) { event.preventDefault(); showSessionBanner(); return; }
         const target = targets[button.dataset.deviceSettings];
         if (!target || !target.form || !content || !heading || settingsDialog.open) return;
         if (typeof settingsDialog.showModal !== 'function') {
+          if (button.tagName === 'A') return;
           target.form.scrollIntoView({block: 'center'});
           const field = one('input:not([type=hidden]),button', target.form);
           if (field) field.focus();
@@ -357,7 +386,15 @@
         trigger = button;
         heading.textContent = target.title;
         content.append(moved);
-        settingsDialog.showModal();
+        try { settingsDialog.showModal(); }
+        catch (_) {
+          placeholder.replaceWith(moved);
+          const wrapper = moved.closest('[data-device-advanced]');
+          if (wrapper) wrapper.hidden = false;
+          moved = placeholder = trigger = null;
+          return;
+        }
+        event.preventDefault();
         const field = one('input:not([type=hidden]),button', moved);
         if (field) field.focus({preventScroll: true});
       }));
@@ -445,6 +482,14 @@
     };
     const quotaClock = new Intl.DateTimeFormat('uk-UA', {hour: '2-digit', minute: '2-digit'});
     const otaProgress = one('#ota-progress');
+    const appearanceForms = all('form[action="/sky-colors"]');
+    const quotaGuidance = all('[data-quota-guidance]');
+    const quotaCards = new Map(all('[data-quota-card]').map(card => [card.dataset.quotaCard, {
+      card, meter: one('[data-quota-meter]', card), current: one('[data-quota-current]', card),
+      meta: one(`[data-live="${card.dataset.quotaCard}-quota-meta"]`, card), empty: one('[data-quota-empty]', card),
+    }]));
+    const compactSeconds = seconds => seconds < 60 ? `${Math.floor(seconds)} ${portalStrings.seconds}` :
+      seconds < 3600 ? `${Math.floor(seconds / 60)} ${portalStrings.minutes}` : `${Math.floor(seconds / 3600)} ${portalStrings.hours}`;
     const update = (status, sequence) => {
       reconcileSubmissions(status, sequence);
       const stamp = {uptime: status.uptime_ms, frames: status.frames, device: status.device_id, version: status.version};
@@ -456,16 +501,41 @@
       live('remaining', status.quota_known === true ?
         `${percent(status.remaining)}${status.quota_fresh === true ? '' : ` · ${portalStrings.remainingLastData}`}` : missing);
       live('quota-provider', status.quota_provider === 'claude' ? 'Claude Code · 5 год' : 'Codex');
-      if (rotationInput && !dirtyForms.has(rotationInput.closest('form')) &&
-          Number.isInteger(status.quota_rotation_minutes) && status.quota_rotation_minutes >= 1 && status.quota_rotation_minutes <= 60) {
-        rotationInput.value = String(status.quota_rotation_minutes);
-      }
+      if (Number.isInteger(status.quota_rotation_minutes) && status.quota_rotation_minutes >= 1 && status.quota_rotation_minutes <= 60)
+        rotationInputs.forEach(input => {
+          if (!dirtyForms.has(input.closest('form'))) input.value = String(status.quota_rotation_minutes);
+        });
+      appearanceForms.forEach(form => {
+        if (dirtyForms.has(form)) return;
+        for (const provider of ['codex', 'claude']) {
+          const color = status.sky_colors?.[provider];
+          const input = one(`input[name=${provider}]`, form);
+          if (input && typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)) input.value = color.toLowerCase();
+        }
+      });
       for (const provider of ['codex', 'claude']) {
         const quota = status.quotas?.[provider];
         const known = quota?.known === true && finite(quota.remaining) && quota.remaining >= 0 && quota.remaining <= 100;
-        live(`${provider}-remaining`, known ?
-          `${percent(quota.remaining)}${quota.fresh === true ? '' : ` · ${portalStrings.remainingLastData}`}` : missing);
+        const view = quotaCards.get(provider);
+        live(`${provider}-remaining`, known ? `${percent(quota.remaining)}${!view && quota.fresh !== true ? ` · ${portalStrings.remainingLastData}` : ''}` : view ? '—' : missing);
+        if (view) {
+          const current = known && status.on === true && status.quota_available === true && status.quota_provider === provider;
+          view.card.dataset.known = String(known);
+          view.card.dataset.active = String(current);
+          view.card.dataset.stale = String(known && (quota.stale === true || quota.fresh === false));
+          if (view.current) view.current.hidden = !current;
+          if (view.meter) { view.meter.hidden = !known; view.meter.max = 100; view.meter.value = known ? quota.remaining : 0; }
+          if (view.meta) view.meta.hidden = !known;
+          if (view.empty) view.empty.hidden = known;
+          const color = status.sky_colors?.[provider];
+          if (typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)) view.card.style.setProperty('--quota-color', color);
+        }
       }
+      const bothQuotasKnown = ['codex', 'claude'].every(provider => {
+        const quota = status.quotas?.[provider];
+        return quota?.known === true && finite(quota.remaining) && quota.remaining >= 0 && quota.remaining <= 100;
+      });
+      quotaGuidance.forEach(node => { node.hidden = bothQuotasKnown; });
       live('activity', percent(status.activity));
       live('agents', number(status.agents_count));
       live('wifi', status.wifi === true ? 'Підключено' : status.wifi === false ? 'Не підключено' : missing);
@@ -483,11 +553,14 @@
           live(`${provider}-quota-meta`, '');
           continue;
         }
-        const reset = finite(quota?.reset_at) && quota.reset_at > 0 && quota.reset_at <= 8640000000000
-          ? `${portalStrings.resetPrefix}${quotaClock.format(new Date(quota.reset_at * 1000))}` : portalStrings.resetUnknown;
+        const validReset = finite(quota?.reset_at) && quota.reset_at > 0 && quota.reset_at <= 8640000000000;
+        let reset = validReset ? `${portalStrings.resetPrefix}${quotaClock.format(new Date(quota.reset_at * 1000))}` : portalStrings.resetUnknown;
+        if (validReset && quotaCards.has(provider) && finite(status.time_epoch) && status.time_epoch >= 1700000000 && status.time_epoch <= 8640000000000) {
+          const remaining = Math.ceil(quota.reset_at - status.time_epoch);
+          reset += remaining > 0 ? ` · через ${compactSeconds(remaining)}` : ' · очікуємо скидання';
+        }
         const age = finite(quota?.age_seconds) && quota.age_seconds >= 0
-          ? `${portalStrings.agePrefix}${quota.age_seconds < 60 ? `${Math.floor(quota.age_seconds)} ${portalStrings.seconds}` : quota.age_seconds < 3600
-            ? `${Math.floor(quota.age_seconds / 60)} ${portalStrings.minutes}` : `${Math.floor(quota.age_seconds / 3600)} ${portalStrings.hours}`}${portalStrings.ageSuffix}` : portalStrings.ageUnknown;
+          ? `${portalStrings.agePrefix}${compactSeconds(quota.age_seconds)}${portalStrings.ageSuffix}` : portalStrings.ageUnknown;
         live(`${provider}-quota-meta`, `${reset} · ${age}${quota?.stale === true ? ` · ${portalStrings.stale}` : ''}`);
       }
       const progress = otaProgress;
@@ -640,6 +713,7 @@
           rows.splice(rows.indexOf(row), 1);
           rows.splice(index, 0, row);
         });
+        if (root.closest('.agent-summary-compact')) ordered.forEach((row, index) => { row.hidden = index >= 3; });
       });
       if (focused && focused.isConnected && !focused.disabled && document.activeElement !== focused) {
         focused.focus({preventScroll: true});

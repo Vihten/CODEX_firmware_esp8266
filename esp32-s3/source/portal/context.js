@@ -16,7 +16,7 @@
     let pollSequence = 0, refreshAfterActive = false;
     const memorialForm = one('#memorial-settings');
     const airAlertForm = one('#air-alert-settings');
-    const rotationInput = one('#quota-rotation-minutes');
+    const rotationInputs = all('#quota-rotation-minutes,form[action="/sky-colors"] input[name=minutes]');
     const liveNodes = new Map();
     all('[data-live]').forEach(node => {
       const key = node.dataset.live;
@@ -75,11 +75,32 @@
     const text = (selector, value, root = document) => setText(all(selector, root), value);
     const live = (key, value) => setText(liveNodes.get(key) || [], value);
     const connection = (label, state = '') => (liveNodes.get('connection') || []).forEach(node => {
+      if (window.portalAuthExpired === true) label = '';
       if (node.textContent !== label) node.textContent = label;
       node.dataset.state = state;
     });
     const authenticated = () => window.portalAuthExpired !== true;
-    const automatic = () => authenticated() && pageActive && !document.hidden && (!toggle || toggle.checked);
+    const automatic = () => authenticated() && pageActive && !document.hidden &&
+      (!toggle || !toggle.isConnected || toggle.closest('[hidden]') ||
+        (typeof toggle.getClientRects === 'function' && toggle.getClientRects().length === 0) ||
+        window.getComputedStyle?.(toggle).display === 'none' ||
+        window.getComputedStyle?.(toggle).visibility === 'hidden' || toggle.checked);
+    const showSessionBanner = () => {
+      const banner = one('#session-banner');
+      if (!banner) return;
+      banner.hidden = false;
+      banner.setAttribute('role', 'status');
+      banner.setAttribute('aria-live', 'polite');
+      let message = one('[data-session-message]', banner);
+      if (!message) {
+        message = document.createElement('span');
+        message.dataset.sessionMessage = '';
+        const link = one('a', banner) || document.createElement('a');
+        link.href = '/login'; link.textContent = 'Увійти';
+        banner.replaceChildren(message, ' ', link);
+      }
+      message.textContent = 'Сеанс завершено. Увійдіть знову.';
+    };
     const stopForAuth = () => {
       window.portalAuthExpired = true;
       ++authEpoch;
@@ -94,8 +115,14 @@
       baseline = null;
       setLightOutputs(null);
       connection('Сеанс завершено. Увійдіть знову.', 'error');
-      for (const form of all('form')) if (commandRoutes.has(new URL(form.action, location.href).pathname))
-        formFeedback(form, 'Сеанс завершено.', true);
+      const dialog = one('#device-settings-dialog');
+      const modalWasOpen = dialog?.open === true;
+      if (modalWasOpen && typeof dialog.close === 'function') {
+        try { dialog.close(); } catch (_) { /* The session banner remains available. */ }
+      }
+      showSessionBanner();
+      if (modalWasOpen) one('#session-banner a')?.focus({preventScroll: true});
+      all('[data-command-feedback]').forEach(node => { node.textContent = ''; node.hidden = true; });
     };
     const expireSession = () => {
       if (!authenticated()) return;

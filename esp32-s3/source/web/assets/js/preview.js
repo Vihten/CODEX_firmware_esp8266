@@ -7,6 +7,9 @@
     const state = document.querySelector('#preview-state');
     const normalize = document.querySelector('#preview-normalize');
     if (!details || !canvas || !state || !normalize) return;
+    // Initial desktop convenience only. Resizing and page restore never reopen
+    // a preview the user has collapsed, and phones keep the native closed state.
+    if (window.innerWidth > 600) details.open = true;
     const context = canvas.getContext('2d');
     const label = (text, kind = '') => {
       if (state.textContent !== text) state.textContent = text;
@@ -113,13 +116,12 @@
         active.controller.abort();
       }
       canvas.dataset.paused = 'true';
-      if (window.portalAuthExpired === true) label('Сеанс завершено. Увійдіть знову.', 'error');
+      if (window.portalAuthExpired === true) label('', 'error');
       else label(frame ? 'Перегляд призупинено · останній кадр' : 'Перегляд вимкнено');
     };
     const stopForAuth = () => {
       window.portalAuthExpired = true;
       pause();
-      label('Сеанс завершено. Увійдіть знову.', 'error');
     };
     const poll = async () => {
       if (active || !enabled()) return;
@@ -135,7 +137,6 @@
           stopForAuth();
           window.dispatchEvent(new Event('portal-auth-expired'));
           pageActive = false;
-          window.location.replace('/login');
           return;
         }
         if (useStream && (!response.ok || !response.body || !response.body.getReader)) {

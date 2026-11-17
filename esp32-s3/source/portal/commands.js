@@ -9,6 +9,7 @@
       .map(input => [input.name, input.value, input.checked,
         input.multiple ? Array.from(input.selectedOptions, option => option.value) : null]));
     const formFeedback = (form, message, login = false) => {
+      if (login || !authenticated()) { showSessionBanner(); return; }
       let node = one('[data-command-feedback]', form);
       if (!node) {
         node = document.createElement('p');
@@ -19,11 +20,6 @@
         form.append(node);
       }
       node.textContent = message;
-      if (login) {
-        const link = document.createElement('a');
-        link.href = '/login'; link.textContent = 'Увійти';
-        node.append(' ', link);
-      }
     };
     const reflected = (record, status) => {
       const data = record.data, value = name => data.get(name);
@@ -44,6 +40,10 @@
         case '/air-alert': return value('mode') === 'save' && status.air_alert &&
           status.air_alert.enabled === (value('enabled') === '1');
         case '/quota-rotation': return status.quota_rotation_minutes === Number(value('minutes'));
+        case '/sky-colors': return ['codex', 'claude'].every(provider =>
+          !data.has(provider) || (typeof status.sky_colors?.[provider] === 'string' &&
+            status.sky_colors[provider].toLowerCase() === value(provider)?.toLowerCase())) &&
+          (!data.has('minutes') || status.quota_rotation_minutes === Number(value('minutes')));
         case '/agent-rename': return agent && agent.name === value('name');
         case '/agent-color': return agent && (value('mode') === 'auto' ? agent.custom_color === false :
           agent.custom_color === true && agent.color?.toLowerCase() === value('color')?.toLowerCase());
@@ -51,7 +51,7 @@
       }
     };
     const tracksState = record => ['/brightness', '/buzzer-volume', '/power', '/external-light',
-      '/quota-rotation', '/agent-rename', '/agent-color'].includes(record.path) ||
+      '/quota-rotation', '/sky-colors', '/agent-rename', '/agent-color'].includes(record.path) ||
       (['/memorial', '/air-alert'].includes(record.path) && record.data.get('mode') === 'save');
     const acceptedMessage = record => {
       switch (record.path) {

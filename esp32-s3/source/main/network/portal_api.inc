@@ -209,6 +209,15 @@ esp_err_t portalStatus(httpd_req_t *request) {
   boolean(root, "quota_fresh", view.control.quotaFresh);
   boolean(root, "quota_available", view.control.quotaAvailable);
   number(root, "quota_rotation_minutes", view.control.quotaRotationMinutes);
+  cJSON *skyColors = cJSON_AddObjectToObject(root, "sky_colors");
+  if (!skyColors) okay = false;
+  else {
+    char codex[8], claude[8];
+    std::snprintf(codex, sizeof(codex), "#%06lX", (unsigned long)view.control.codexSkyColor & 0xffffffUL);
+    std::snprintf(claude, sizeof(claude), "#%06lX", (unsigned long)view.control.claudeSkyColor & 0xffffffUL);
+    string(skyColors, "codex", codex);
+    string(skyColors, "claude", claude);
+  }
   if (view.control.quotaKnown) number(root, "remaining", view.control.remainingPercent);
   else if (!cJSON_AddNullToObject(root, "remaining")) okay = false;
   boolean(root, "wifi", view.control.connected); boolean(root, "on", view.control.on);
@@ -597,6 +606,7 @@ struct Form {
     return true;
   }
   const char *get(const char *key) const { for (size_t i = 0; i < count; ++i) if (!std::strcmp(key, fields[i].key)) return fields[i].value; return ""; }
+  bool has(const char *key) const { for (size_t i = 0; i < count; ++i) if (!std::strcmp(key, fields[i].key)) return true; return false; }
 };
 esp_err_t acceptedCommand(httpd_req_t *request) {
   httpd_resp_set_status(request, "202 Accepted");
@@ -872,6 +882,12 @@ esp_err_t commandPost(httpd_req_t *request) {
     command.kind = CommandKind::QuotaRotation; command.value = uint8_t(number);
   } else if (!std::strcmp(uri, "/sky-colors")) {
     command.kind = CommandKind::SkyColors;
+    // Absent preserves the legacy color-only request; present-but-empty is invalid.
+    if (form.has("minutes")) {
+      if (!unsignedValue(form.get("minutes"), 60, number) || number < 1)
+        return error(request, "400 Bad Request", "Rotation interval must be between 1 and 60 minutes.");
+      command.value = uint8_t(number);
+    }
     const char *codex = form.get("codex"), *claude = form.get("claude");
     if (!hexValue(codex + (codex[0] == '#'), 6, 6, command.codexSkyColor) ||
         !hexValue(claude + (claude[0] == '#'), 6, 6, command.claudeSkyColor))

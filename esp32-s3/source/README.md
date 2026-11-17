@@ -660,3 +660,31 @@ The loader reveals at DOM-ready rather than waiting for the device image.
 See `main/network/README.md` and `portal/README.md` for private network modules
 and deterministic JavaScript assembly. Shared UI strings live in
 `portal/messages.uk.json`; the generator emits both JS and C++ constants.
+
+
+## Quota-first portal layout (2026-11-17)
+
+Overview presents separate Codex and Claude quota cards with remaining percentage,
+provider-colored bars, reset countdown/data age, and the active-service marker.
+Unknown balances retain an em dash and one shared actionable agent notice; stale
+known balances remain visible with their age and stale label.
+
+Power and brightness forms are visible above the preview. Explicit Schedule and
+Lighting links open the original forms in a dialog when supported; native anchors
+and inline forms remain usable without JavaScript. Casing hotspots are additional
+shortcuts. Phones start with the preview collapsed and lazily load the housing
+image; desktop preview is limited to 680 CSS pixels. Overview lists three agents.
+
+The compact header uses a connection indicator, with automatic polling retained.
+Session expiry closes an open settings dialog, restores the moved form, focuses
+one shared login banner, and prevents reopening settings until login. Polling,
+preview streams and queued commands stop on expiry.
+
+Settings groups open independently. Appearance submits both sky colors and the
+rotation interval through one validated `/sky-colors` command, with atomic owner-
+task application and the existing NVS persistence group. Color-only legacy POSTs
+and `/quota-rotation` remain compatible. Test actions use secondary styling.
+
+The Agents page puts connections first and provides native anchors to connections,
+ranking, and token history. No extra HTTP routes, sockets or per-frame allocations
+are introduced by this layout.

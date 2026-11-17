@@ -222,40 +222,52 @@ const char *portalOtaLabel(const char *value) {
   return value;
 }
 void writePortalStats(Html &html, const View &view) {
-  html.render("templates/stats/remaining-open.html", [&](unsigned token) {
-    if (!token) html.text(view.control.quotaProvider == quota_provider::Provider::Claude ? "Claude Code · 5 год" : "Codex");
-  });
-  if (!view.control.quotaKnown) html.text(portal_strings::missing);
-  else if (!view.control.quotaFresh) html.format("%u%% · %s", view.control.remainingPercent, portal_strings::remainingLastData);
-  else html.format("%u%%", view.control.remainingPercent);
-  html.render("templates/stats/providers.html", [&](unsigned token) {
-    const auto &quota = (token % 2) == 0 ? view.control.codexQuota : view.control.claudeQuota;
-    if (token >= 2) {
-      if (quota.resetAt) {
-        const time_t reset = quota.resetAt; tm local{}; char text[32];
-        if (localtime_r(&reset, &local) && std::strftime(text, sizeof(text), "%d.%m %H:%M", &local)) {
-          html.text("Скидання: "); html.text(text);
-        } else html.text(portal_strings::resetUnknown);
-      } else html.text(portal_strings::resetUnknown);
-      if (quota.ageSeconds != UINT32_MAX) html.format(" · вік даних: %lu с", (unsigned long)quota.ageSeconds);
-      else { html.text(" · "); html.text(portal_strings::ageUnknown); }
-      if (!quota.fresh) { html.text(" · "); html.text(portal_strings::stale); }
-      return;
-    }
-    if (!quota.known) html.text(portal_strings::missing);
-    else html.format(quota.fresh ? "%u%%" : "%u%% · %s", unsigned(quota.remaining), portal_strings::remainingLastData);
-  });
-  html.render("templates/stats/activity.html", [&](unsigned token) {
-    switch (token) {
-      case 0: html.format("%u", view.control.activityPercent); break;
-    }
-  });
-  html.render("templates/stats/agents.html", [&](unsigned token) {
-    switch (token) {
-      case 0: html.format("%u", portalAgentCount(view)); break;
-      case 1: html.format("%u", unsigned(kAgentCapacity)); break;
-    }
-  });
+  html.text("<div class='quota-cards' aria-label='Ліміти сервісів'>");
+  for (unsigned service = 0; service < 2; ++service) {
+    const auto &quota = service ? view.control.claudeQuota : view.control.codexQuota;
+    const bool known = quota.known && quota.remaining >= 0 && quota.remaining <= 100;
+    const bool current = known && view.control.on && view.control.quotaAvailable &&
+        (service ? quota_provider::Provider::Claude : quota_provider::Provider::Codex) == view.control.quotaProvider;
+    html.render("templates/stats/quota-card.html", [&](unsigned token) {
+      switch (token) {
+        case 0: html.text(service ? "claude" : "codex"); break;
+        case 1: html.text(service ? "Claude Code" : "Codex"); break;
+        case 2: if (!current) html.file("templates/hidden.html"); break;
+        case 3: if (known) html.format("%u%%", unsigned(quota.remaining)); else html.text("—"); break;
+        case 4: html.format("%u", known ? unsigned(quota.remaining) : 0); break;
+        case 5: {
+          if (!known) break;
+          const time_t epoch = std::time(nullptr);
+          if (quota.resetAt && epoch >= 1700000000) {
+            if (uint64_t(epoch) < quota.resetAt) {
+              const uint32_t minutes = (quota.resetAt - uint32_t(epoch) + 59) / 60;
+              if (minutes >= 60) html.format("Скидання через %lu год %lu хв", (unsigned long)(minutes / 60), (unsigned long)(minutes % 60));
+              else html.format("Скидання через %lu хв", (unsigned long)minutes);
+            } else html.text("Очікуємо оновлення ліміту");
+          } else html.text(portal_strings::resetUnknown);
+          if (quota.ageSeconds != UINT32_MAX) {
+            if (quota.ageSeconds < 60) html.format(" · дані %lu с тому", (unsigned long)quota.ageSeconds);
+            else if (quota.ageSeconds < 3600) html.format(" · дані %lu хв тому", (unsigned long)(quota.ageSeconds / 60));
+            else html.format(" · дані %lu год тому", (unsigned long)(quota.ageSeconds / 3600));
+          }
+          if (!quota.fresh) { html.text(" · "); html.text(portal_strings::stale); }
+          break;
+        }
+        case 6: if (!known) html.file("templates/hidden.html"); break;
+        case 7: html.format("#%06lX", (unsigned long)(service ? view.control.claudeSkyColor : view.control.codexSkyColor)); break;
+        case 8: html.text(known ? "true" : "false"); break;
+        case 9: if (known) html.file("templates/hidden.html"); break;
+      }
+    });
+  }
+  html.text("</div><p class='quota-empty-notice' data-quota-guidance");
+  if (view.control.codexQuota.known && view.control.claudeQuota.known) html.file("templates/hidden.html");
+  html.text(">Немає даних від агентів. Перевірте, чи запущено агент на ПК. <a href='/agents#agent-connections'>Перевірити агентів</a></p>");
+  html.text("<div class='overview-status'><dl class='stats'><div><dt>Активність</dt><dd data-live='activity'>");
+  html.format("%u%%", view.control.activityPercent);
+  html.text("</dd></div><div><dt>Агенти на зв’язку</dt><dd><span data-live='agents'>");
+  html.format("%u", portalAgentCount(view));
+  html.format("</span><span class='stat-capacity'> / %u</span></dd></div>", unsigned(kAgentCapacity));
   html.file("templates/stats/wifi-open.html"); html.text(view.control.connected ? "Підключено" : "Точка доступу");
   html.file("templates/stats/stats-close.html");
 }
@@ -330,8 +342,7 @@ void writeAgentSummary(Html &html, const View &view) {
 }
 void writeOverview(Html &html, const View &view) {
   writePortalStats(html, view);
-  html.file("templates/overview/matrix-preview.html");
-  html.file("templates/overview/workspace-open.html");
+  html.text("<div class='overview-toolbar' data-overview-toolbar data-device-controls><section class='matrix-quick-controls'><div class='section-head'><h2>Матриця</h2><span class='muted' data-live='matrix'>");
   html.text(portalMatrixState(view)); html.file("templates/overview/power-heading.html");
   html.file("templates/overview/power-form-open.html");
   for (unsigned mode = 0; mode < 3; ++mode)
@@ -355,7 +366,9 @@ void writeOverview(Html &html, const View &view) {
     }
   });
   html.file("templates/overview/brightness-actions.html");
-  html.file("templates/overview/column-next.html"); writeSchedule(html, view); html.file("templates/overview/workspace-close.html");
+  html.text("<div class='actions overview-advanced-actions'><a class='button secondary' href='#schedule-panel' data-device-settings='schedule' aria-haspopup='dialog'>Розклад…</a><a class='button secondary' href='#external-light-panel' data-device-settings='lighting' aria-haspopup='dialog'>Підсвітка…</a></div></div>");
+  html.text("<div data-device-advanced id='schedule-panel'>"); writeSchedule(html, view); html.text("</div>");
+  html.text("<div data-device-advanced>");
   html.render("templates/overview/external-light.html", [&](unsigned token) {
     switch (token) {
       case 0: html.format("%u", view.light.first); break;
@@ -368,19 +381,16 @@ void writeOverview(Html &html, const View &view) {
       case 5: html.attribute(!view.lightReady || view.restarting || view.control.maintenance == Maintenance::Ota ? "@disabled" : ""); break;
     }
   });
+  html.text("</div>");
+  html.file("templates/overview/matrix-preview.html");
   writeAgentSummary(html, view);
 }
 void writeSettings(Html &html, const View &view) {
   html.text("<div class='settings-groups'>");
-  html.text("<details class='settings-group' name='device-settings' id='settings-appearance'><summary><h2>Вигляд і ліміти</h2></summary><div class='settings-group-body'>");
-  html.render("templates/settings/sky-colors.html", [&](unsigned token) {
-    char color[8];
-    std::snprintf(color, sizeof(color), "#%06lx", static_cast<unsigned long>(
-        token == 0 ? view.control.codexSkyColor : view.control.claudeSkyColor));
-    html.text(color);
-  });
-  html.render("templates/settings/quota-rotation.html", [&](unsigned token) {
-    if (token == 0) html.format("%u", unsigned(view.control.quotaRotationMinutes));
+  html.text("<details class='settings-group' id='settings-appearance'><summary><h2>Вигляд і ліміти</h2></summary><div class='settings-group-body'>");
+  html.render("templates/settings/appearance.html", [&](unsigned token) {
+    if (token < 2) html.format("#%06lX", (unsigned long)(token == 0 ? view.control.codexSkyColor : view.control.claudeSkyColor));
+    else if (token == 2) html.format("%u", unsigned(view.control.quotaRotationMinutes));
   });
   html.render("templates/settings/black-hole.html", [&](unsigned token) {
     const bool active = view.control.blackHolePreview &&
@@ -394,7 +404,7 @@ void writeSettings(Html &html, const View &view) {
     else if (token == 3 && !active) html.file("templates/hidden.html");
   });
   html.text("</div></details>");
-  html.text("<details class='settings-group' name='device-settings' id='settings-alerts'><summary><h2>Сповіщення та звук</h2></summary><div class='settings-group-body'>");
+  html.text("<details class='settings-group' id='settings-alerts'><summary><h2>Сповіщення та звук</h2></summary><div class='settings-group-body'>");
   html.render("templates/settings/air-alert.html", [&](unsigned token) {
     if (token == 0) html.attribute(view.airEnabled ? "@checked" : "");
     else if (token == 1) html.text(view.airStatus);
@@ -435,7 +445,7 @@ void writeSettings(Html &html, const View &view) {
         std::time(nullptr) < 1700000000 ? "Очікування часу NTP. Ручне відтворення доступне." : "");
   });
   html.text("</div></details>");
-  html.text("<details class='settings-group' name='device-settings' id='settings-network'><summary><h2>Мережа й оновлення</h2></summary><div class='settings-group-body'>");
+  html.text("<details class='settings-group' id='settings-network'><summary><h2>Мережа й оновлення</h2></summary><div class='settings-group-body'>");
   html.file("templates/settings/workspace-open.html");
   html.text(view.control.connected ? "Підключено" : "Точка доступу"); html.file("templates/settings/wifi-heading-close.html");
   html.render("templates/settings/ip.html", [&](unsigned token) {
@@ -463,7 +473,7 @@ void writeSettings(Html &html, const View &view) {
   });
   html.file("templates/settings/ota-actions.html");
   html.text("</div></details>");
-  html.text("<details class='settings-group' name='device-settings' id='settings-system'><summary><h2>Система та діагностика</h2></summary><div class='settings-group-body'>");
+  html.text("<details class='settings-group' id='settings-system'><summary><h2>Система та діагностика</h2></summary><div class='settings-group-body'>");
   html.file("templates/settings/system-open.html");
   html.render("templates/settings/device-id.html", [&](unsigned token) {
     switch (token) {
@@ -568,11 +578,17 @@ esp_err_t page(httpd_req_t *request) {
   html.file("templates/shell/main-open.html");
   html.text(agentsPage ? "Агенти" : settingsPage ? "Налаштування" : "Огляд");
   html.file("templates/shell/heading-close.html");
+  html.text("<div id='session-banner' data-session-banner role='alert' hidden><span>Сеанс завершено. </span><a href='/login'>Увійти знову</a></div>");
   if (view.message[0]) { html.file("templates/shell/notice-open.html"); html.escaped(view.message); html.file("templates/shell/paragraph-close.html"); }
   if (view.dirty) html.file("templates/shell/saving-notice.html");
   if (view.restarting) html.file("templates/shell/restart-notice.html");
   if (!view.render.assetsReady || view.render.ledError) html.file("templates/shell/matrix-error-notice.html");
-  if (agentsPage) { writeWeekly(html, view); writeLifetime(html, view); html.file("templates/shell/section-open.html"); writeAgents(html, view); html.file("templates/summary/section-close.html"); }
+  if (agentsPage) {
+    html.text("<nav class='agent-page-nav' aria-label='Розділи агентів'><a href='#agent-connections'>Підключення</a><a href='#agent-rankings'>Рейтинг</a><a href='#agent-history'>Історія</a></nav>");
+    html.text("<section id='agent-connections' class='section'>"); writeAgents(html, view); html.text("</section>");
+    html.text("<div id='agent-rankings'>"); writeWeekly(html, view); html.text("</div>");
+    html.text("<div id='agent-history'>"); writeLifetime(html, view); html.text("</div>");
+  }
   else if (settingsPage) writeSettings(html, view);
   else writeOverview(html, view);
   html.file("templates/shell/footer.html");

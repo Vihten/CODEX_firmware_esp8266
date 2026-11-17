@@ -103,9 +103,12 @@ void serviceCommands() {
         break;
       case CommandKind::SkyColors:
         if (command.codexSkyColor <= 0xffffff && command.claudeSkyColor <= 0xffffff &&
-            (model.control.codexSkyColor != command.codexSkyColor || model.control.claudeSkyColor != command.claudeSkyColor)) {
+            command.value <= 60 &&
+            (model.control.codexSkyColor != command.codexSkyColor || model.control.claudeSkyColor != command.claudeSkyColor ||
+             (command.value && model.control.quotaRotationMinutes != command.value))) {
           model.control.codexSkyColor = command.codexSkyColor;
           model.control.claudeSkyColor = command.claudeSkyColor;
+          if (command.value) model.control.quotaRotationMinutes = command.value;
           model.skyColorsDirty = true;
         }
         break;

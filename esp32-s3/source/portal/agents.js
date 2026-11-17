@@ -29,6 +29,7 @@
           rows.splice(rows.indexOf(row), 1);
           rows.splice(index, 0, row);
         });
+        if (root.closest('.agent-summary-compact')) ordered.forEach((row, index) => { row.hidden = index >= 3; });
       });
       if (focused && focused.isConnected && !focused.disabled && document.activeElement !== focused) {
         focused.focus({preventScroll: true});

@@ -8,23 +8,25 @@
         schedule: {title: 'Розклад матриці', form: one('form[action="/schedule"]')},
         lighting: {title: 'Зовнішня підсвітка', form: one('form[action="/external-light"]')},
       };
-      const controls = one('[data-device-controls]');
-      const lightPanel = one('#external-light-panel');
-      if (lightPanel && content && heading && targets.lighting.form &&
-          typeof settingsDialog.showModal === 'function') lightPanel.hidden = true;
-      if (controls && content && heading && typeof settingsDialog.showModal === 'function' &&
-          Object.values(targets).every(target => target.form)) controls.hidden = true;
+      if (content && heading && typeof settingsDialog.showModal === 'function') {
+        for (const key of ['schedule', 'lighting']) {
+          const wrapper = targets[key].form?.closest('[data-device-advanced]');
+          if (wrapper) wrapper.hidden = true;
+        }
+      }
       let moved = null, placeholder = null, trigger = null;
       settingsDialog.addEventListener('close', () => {
         if (moved && placeholder) placeholder.replaceWith(moved);
         moved = placeholder = null;
-        if (trigger && trigger.isConnected) trigger.focus({preventScroll: true});
+        if (authenticated() && trigger && trigger.isConnected) trigger.focus({preventScroll: true});
         trigger = null;
       });
-      all('[data-device-settings]').forEach(button => button.addEventListener('click', () => {
+      all('[data-device-settings]').forEach(button => button.addEventListener('click', event => {
+        if (!authenticated()) { event.preventDefault(); showSessionBanner(); return; }
         const target = targets[button.dataset.deviceSettings];
         if (!target || !target.form || !content || !heading || settingsDialog.open) return;
         if (typeof settingsDialog.showModal !== 'function') {
+          if (button.tagName === 'A') return;
           target.form.scrollIntoView({block: 'center'});
           const field = one('input:not([type=hidden]),button', target.form);
           if (field) field.focus();
@@ -37,7 +39,15 @@
         trigger = button;
         heading.textContent = target.title;
         content.append(moved);
-        settingsDialog.showModal();
+        try { settingsDialog.showModal(); }
+        catch (_) {
+          placeholder.replaceWith(moved);
+          const wrapper = moved.closest('[data-device-advanced]');
+          if (wrapper) wrapper.hidden = false;
+          moved = placeholder = trigger = null;
+          return;
+        }
+        event.preventDefault();
         const field = one('input:not([type=hidden]),button', moved);
         if (field) field.focus({preventScroll: true});
       }));

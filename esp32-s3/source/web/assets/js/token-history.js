@@ -87,7 +87,7 @@
       active?.abort();
       clear();
       if (refreshButton) refreshButton.disabled = true;
-      status.textContent = 'Сесію завершено. Увійдіть знову, щоб переглянути історію.';
+      status.textContent = '';
     };
     env.addEventListener('portal-auth-expired', stopForAuth);
     function inspect(id) {

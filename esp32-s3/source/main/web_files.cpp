@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <strings.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -23,25 +24,18 @@ extern const uint8_t bundleEnd[] asm("_binary_web_bundle_bin_end");
 char root[32] = {}, version[65] = {};
 bool ready = false;
 
-struct CachedAsset { const char *path; char etag[40]; };
+// Validators describe the exact wire representation. Revisions identify the source asset.
+struct CachedAsset { const char *path; char etag[68]; char gzipEtag[68]; char revision[17]; };
 CachedAsset cachedAssets[] = {
-  {"assets/css/portal.css", {}}, {"assets/css/preview.css", {}},
-  {"assets/js/portal.js", {}}, {"assets/js/preview.js", {}},
-  {"images/device.webp", {}}, {"images/favicon.svg", {}},
-  {"assets/js/boot.js", {}}, {"assets/js/token-history.js", {}}
+  {"assets/css/portal.css", {}, {}, {}}, {"assets/css/preview.css", {}, {}, {}},
+  {"assets/js/portal.js", {}, {}, {}}, {"assets/js/preview.js", {}, {}, {}},
+  {"images/device.webp", {}, {}, {}}, {"images/favicon.svg", {}, {}, {}},
+  {"assets/js/boot.js", {}, {}, {}}, {"assets/js/token-history.js", {}, {}, {}}
 };
-void initializeAssetEtags() {
-  // Two independent 64-bit SHA prefixes keep validators within the header budget.
-  char firmware[17];
-  const auto *app = esp_app_get_description();
-  for (size_t i = 0; i < 8; ++i)
-    std::snprintf(firmware + i * 2, 3, "%02x", app->app_elf_sha256[i]);
-  for (size_t i = 0; i < sizeof(cachedAssets) / sizeof(cachedAssets[0]); ++i)
-    std::snprintf(cachedAssets[i].etag, sizeof(cachedAssets[i].etag), "\"%s-%.16s-%u\"", firmware, version, unsigned(i));
-}
-const char *assetEtag(const char *path) {
+char portalPolicy[384] = {};
+const CachedAsset *assetFor(const char *path) {
   if (ready) for (const auto &asset : cachedAssets)
-    if (!std::strcmp(path, asset.path)) return asset.etag;
+    if (!std::strcmp(path, asset.path)) return &asset;
   return nullptr;
 }
 bool matchesAssetEtag(const char *header, const char *etag) {
@@ -106,6 +100,41 @@ bool nextEntry(const uint8_t *&cursor, Entry &entry) {
   if (std::strlen(entry.path) != length || !validPath(entry.path)) return false;
   entry.data = cursor + length; cursor += length + entry.size;
   return true;
+}
+void initializeAssetEtags() {
+  const uint8_t *cursor = bundleStart + 44;
+  while (cursor < bundleEnd) {
+    Entry entry;
+    if (!nextEntry(cursor, entry)) break; // Bundle was fully verified before installation.
+    for (auto &asset : cachedAssets) {
+      const size_t length = std::strlen(asset.path);
+      const bool plain = !std::strcmp(entry.path, asset.path);
+      const bool gzip = !std::strncmp(entry.path, asset.path, length) && !std::strcmp(entry.path + length, ".gz");
+      if (!plain && !gzip) continue;
+      char *etag = gzip ? asset.gzipEtag : asset.etag;
+      etag[0] = '"';
+      for (size_t i = 0; i < 32; ++i) std::snprintf(etag + 1 + i * 2, 3, "%02x", entry.hash[i]);
+      etag[65] = '"'; etag[66] = 0;
+      if (plain) { std::memcpy(asset.revision, etag + 1, 16); asset.revision[16] = 0; }
+      if (plain && !std::strcmp(asset.path, "assets/js/boot.js")) {
+        constexpr char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        char hash[45]; size_t written = 0;
+        for (size_t i = 0; i < 32; i += 3) {
+          const uint32_t bits = uint32_t(entry.hash[i]) << 16 |
+              (i + 1 < 32 ? uint32_t(entry.hash[i + 1]) << 8 : 0) |
+              (i + 2 < 32 ? entry.hash[i + 2] : 0);
+          hash[written++] = alphabet[(bits >> 18) & 63];
+          hash[written++] = alphabet[(bits >> 12) & 63];
+          hash[written++] = i + 1 < 32 ? alphabet[(bits >> 6) & 63] : '=';
+          hash[written++] = i + 2 < 32 ? alphabet[bits & 63] : '=';
+        }
+        hash[written] = 0;
+        std::snprintf(portalPolicy, sizeof(portalPolicy),
+            "default-src 'none'; script-src 'self' 'sha256-%s'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'", hash);
+      }
+    }
+  }
 }
 bool validateBundle(uint32_t &count) {
   const size_t size = bundleEnd - bundleStart;
@@ -250,18 +279,78 @@ FILE *openWebFile(const char *relativePath) {
 }
 const char *webFilesVersion() { return ready ? version : "unavailable"; }
 
+esp_err_t setPortalSecurityHeaders(httpd_req_t *request) {
+  if (!ready || !portalPolicy[0]) return ESP_FAIL;
+  if (httpd_resp_set_hdr(request, "Content-Security-Policy", portalPolicy) != ESP_OK ||
+      httpd_resp_set_hdr(request, "X-Frame-Options", "DENY") != ESP_OK ||
+      httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff") != ESP_OK ||
+      httpd_resp_set_hdr(request, "Referrer-Policy", "no-referrer") != ESP_OK) return ESP_FAIL;
+  return ESP_OK;
+}
+
+// Bounded token parser; explicit gzip;q=0 takes precedence over wildcard support.
+bool acceptsGzip(httpd_req_t *request) {
+  char header[256];
+  const size_t length = httpd_req_get_hdr_value_len(request, "Accept-Encoding");
+  if (!length || length >= sizeof(header) ||
+      httpd_req_get_hdr_value_str(request, "Accept-Encoding", header, sizeof(header)) != ESP_OK) return false;
+  bool wildcard = false, explicitGzip = false, allowed = false;
+  for (char *part = header; part && *part;) {
+    char *next = std::strchr(part, ','); if (next) *next++ = 0;
+    while (*part == ' ' || *part == '\t') ++part;
+    char *end = part + std::strlen(part);
+    while (end > part && (end[-1] == ' ' || end[-1] == '\t')) *--end = 0;
+    char *parameters = std::strchr(part, ';');
+    bool positive = true;
+    if (parameters) {
+      *parameters++ = 0;
+      while (*part && (part[std::strlen(part)-1] == ' ' || part[std::strlen(part)-1] == '\t')) part[std::strlen(part)-1] = 0;
+      while (*parameters == ' ' || *parameters == '\t') ++parameters;
+      if (*parameters != 'q' && *parameters != 'Q') return false;
+      ++parameters; if (*parameters++ != '=') return false;
+      // RFC qvalue: 0[.0..999] or 1[.000], at most three fractional digits.
+      if (*parameters != '0' && *parameters != '1') return false;
+      const bool one = *parameters++ == '1'; positive = one;
+      unsigned digits = 0;
+      if (*parameters == '.') {
+        ++parameters;
+        while (*parameters >= '0' && *parameters <= '9') {
+          if (++digits > 3 || (one && *parameters != '0')) return false;
+          positive |= *parameters++ != '0';
+        }
+      }
+      if (*parameters) return false;
+    }
+    if (!strcasecmp(part, "gzip")) { explicitGzip = true; allowed = positive; }
+    else if (!std::strcmp(part, "*")) wildcard = positive;
+    part = next;
+  }
+  return explicitGzip ? allowed : wildcard;
+}
+
 esp_err_t serveWebFile(httpd_req_t *request, const char *relativePath, const char *mime) {
-  FILE *file = openWebFile(relativePath);
+  const CachedAsset *asset = assetFor(relativePath);
+  const bool gzip = asset && asset->gzipEtag[0] && acceptsGzip(request);
+  char compressedPath[160];
+  if (gzip) std::snprintf(compressedPath, sizeof(compressedPath), "%s.gz", relativePath);
+  FILE *file = openWebFile(gzip ? compressedPath : relativePath);
   if (!file) {
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
     return httpd_resp_send_err(request, HTTPD_404_NOT_FOUND, "Web file unavailable");
   }
   httpd_resp_set_type(request, mime);
   httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
-  const char *etag = assetEtag(relativePath);
-  httpd_resp_set_hdr(request, "Cache-Control", etag ? "private, no-cache" : "no-store");
-  if (etag) {
-    // Stable URLs must revalidate even immediately after firmware replacement.
+  // Only an exact current content revision gets immutable caching. Old/unversioned
+  // URLs revalidate, so a firmware replacement cannot pin stale scripts forever.
+  char query[32];
+  const bool versioned = asset && httpd_req_get_url_query_str(request, query, sizeof(query)) == ESP_OK &&
+      !std::strncmp(query, "v=", 2) && !std::strcmp(query + 2, asset->revision);
+  httpd_resp_set_hdr(request, "Cache-Control", asset ?
+      (versioned ? "public, max-age=31536000, immutable" : "public, no-cache") : "no-store");
+  if (asset) {
+    httpd_resp_set_hdr(request, "Vary", "Accept-Encoding");
+    const char *etag = gzip ? asset->gzipEtag : asset->etag;
+    if (gzip) httpd_resp_set_hdr(request, "Content-Encoding", "gzip");
     httpd_resp_set_hdr(request, "ETag", etag);
     if (assetNotModified(request, etag)) {
       std::fclose(file);

@@ -81,6 +81,15 @@
       hide(); model = null; signature = ''; hovered = null;
       buttons.clear(); grid.replaceChildren(); find('week-total').textContent = '';
     };
+    const stopForAuth = () => {
+      denied = true;
+      stopPolling();
+      active?.abort();
+      clear();
+      if (refreshButton) refreshButton.disabled = true;
+      status.textContent = 'Сесію завершено. Увійдіть знову, щоб переглянути історію.';
+    };
+    env.addEventListener('portal-auth-expired', stopForAuth);
     function inspect(id) {
       if (!model?.available || !buttons.has(id)) return;
       if (selected !== id) hide();
@@ -165,7 +174,7 @@
       try {
         const response = await env.fetch('/token-history', {credentials: 'same-origin', cache: 'no-store', signal: request.signal, headers: {Accept: 'application/json'}});
         if (request.signal.aborted || disposed) return;
-        if (response.status === 401) { denied = true; stopPolling(); clear(); status.textContent = 'Сесію завершено. Увійдіть знову, щоб переглянути історію.'; return; }
+        if (response.status === 401) { stopForAuth(); env.expireSession?.(); return; }
         if (!response.ok) throw new Error('History request failed');
         const next = normalize(await response.json());
         if (request.signal.aborted || disposed) return;
@@ -173,7 +182,7 @@
         model = next; render();
         status.textContent = next.save_failed ? 'Не вдалося зберегти історію на контролері. Показано поточні дані; після перезапуску вони можуть бути втрачені.' : next.saving ? 'Історія зберігається на контролері…' : model.days.size ? 'Поточний тиждень · усі агенти. Пунктиром позначено дні без даних.' : 'Ще немає записаних днів. Невідомі значення не означають нуль токенів.';
       } catch (error) {
-        if (!disposed && !doc.hidden) status.textContent = model ? 'Не вдалося оновити історію. Показано останні отримані дані; повторна спроба — через 30 секунд.' : 'Не вдалося завантажити історію. Повторна спроба — через 30 секунд.';
+        if (!denied && !disposed && !doc.hidden) status.textContent = model ? 'Не вдалося оновити історію. Показано останні отримані дані; повторна спроба — через 30 секунд.' : 'Не вдалося завантажити історію. Повторна спроба — через 30 секунд.';
       } finally {
         env.clearTimeout(timeout);
         if (active === request) { active = null; root.setAttribute('aria-busy', 'false'); }
@@ -194,12 +203,15 @@
     doc.addEventListener('visibilitychange', onVisibility);
     env.addEventListener('focus', () => { void refresh(); });
     env.addEventListener('pagehide', onPageHide); env.addEventListener('pageshow', onPageShow);
-    void refresh();
+    if (env.authExpired?.()) stopForAuth();
+    else void refresh();
     return {refresh, inspect};
   }
   if (typeof module !== 'undefined' && module.exports) module.exports = {parseDate, key, add, monday, normalize, week, cells, level, mount};
   if (typeof document !== 'undefined') {
     const root = document.querySelector('#token-history');
-    if (root) mount(root, {fetch: window.fetch.bind(window), AbortController: window.AbortController, now: () => performance.now(), setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window), addEventListener: window.addEventListener.bind(window)});
+    if (root) mount(root, {fetch: window.fetch.bind(window), AbortController: window.AbortController, now: () => performance.now(), setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window), addEventListener: window.addEventListener.bind(window),
+      authExpired: () => window.portalAuthExpired === true,
+      expireSession: () => { window.portalAuthExpired = true; window.dispatchEvent(new Event('portal-auth-expired')); }});
   }
 })();

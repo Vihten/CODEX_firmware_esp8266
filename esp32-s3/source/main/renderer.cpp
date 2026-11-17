@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <type_traits>
 
 namespace {
 #define NUM_LEDS PROJECT_PIXELS
@@ -30,16 +31,27 @@ namespace {
 #define EFFECT_BYTES NUM_LEDS
 #define EVENT_FPS PROJECT_FPS
 // Transport cadence is independent of the authored 30 Hz effect clock.
-constexpr uint32_t OUTPUT_FPS = 33;
+constexpr uint32_t OUTPUT_FPS = 27;
 #define EVENT_MODE 1
 #define ACTIVITY_EFFECTS 1
 #define DIRECT_AGENT_CAPACITY kAgentCapacity
 #define DIRECT_AGENT_TIMEOUT_MS 7000UL
 #define PROGMEM
-#define PI 3.14159265358979323846
-#define min(a, b) ((a) < (b) ? (a) : (b))
-#define max(a, b) ((a) > (b) ? (a) : (b))
-#define constrain(x, low, high) ((x) < (low) ? (low) : ((x) > (high) ? (high) : (x)))
+// The merger inserts Arduino-era calls verbatim. Value-returning functions
+// preserve mixed arithmetic types without macro leakage or repeated evaluation.
+constexpr double PI = 3.14159265358979323846;
+template <typename A, typename B>
+constexpr typename std::common_type<A, B>::type min(A a, B b) {
+  return a < b ? a : b;
+}
+template <typename A, typename B>
+constexpr typename std::common_type<A, B>::type max(A a, B b) {
+  return a > b ? a : b;
+}
+template <typename T, typename L, typename H>
+constexpr typename std::common_type<T, L, H>::type constrain(T value, L low, H high) {
+  return value < low ? low : (value > high ? high : value);
+}
 #define pgm_read_byte(address) (*reinterpret_cast<const uint8_t *>(address))
 #define pgm_read_dword(address) (*reinterpret_cast<const uint32_t *>(address))
 
@@ -59,6 +71,7 @@ bool lightPresentationActive = false;
 bool lightOpeningReady = true;
 air_alert::Visual airAlertVisual;
 quota_recovery::Motion quotaRecovery;
+quota_recovery::ProviderTransition providerTransition;
 black_hole::State blackHole;
 black_hole::State blackHolePreview{0};
 uint8_t blackHoleAmount() { return max(blackHole.amount(), blackHolePreview.amount()); }
@@ -768,21 +781,28 @@ uint32_t updateSkySample(uint16_t target, bool frozen) {
   const uint32_t now = millis();
   const uint32_t delta = min(uint32_t(250), uint32_t(now - skySampleAt));
   skySampleAt = now;
-  if (skyProvider != control.quotaProvider) {
-    skyProvider = control.quotaProvider;
-    quotaRecovery.observe(control.quotaRecoveryEpoch, false, false);
-  }
   const uint8_t tintTarget = control.quotaProvider == quota_provider::Provider::Claude ? 255 : 0;
-  const unsigned tintStep = max(1U, delta / 4);
-  if (claudeTint < tintTarget) claudeTint = uint8_t(min(unsigned(tintTarget), unsigned(claudeTint) + tintStep));
-  else if (claudeTint > tintTarget) claudeTint = uint8_t(unsigned(claudeTint) - min(unsigned(claudeTint), tintStep));
   if (status.memorialTransition) return quotaFrameMilli;
   const uint32_t wanted = uint32_t(target) * 1000;
   if (skySampleReady && !sceneTargetOn && sceneProgress < SCENE_DURATION_MS)
     return quotaFrameMilli;
   if (!skySampleReady || sceneProgress < SCENE_DURATION_MS) {
     skySampleReady = true; quotaFrameMilli = wanted;
+    claudeTint = tintTarget;
+    skyProvider = control.quotaProvider;
+    providerTransition = {};
   } else {
+    // Meteor holds freeze the provider's identity and position together.
+    if (frozen && !quotaRecovery.active()) return quotaFrameMilli;
+    if (!frozen && skyProvider != control.quotaProvider) {
+      skyProvider = control.quotaProvider;
+      quotaRecovery.observe(control.quotaRecoveryEpoch, false, false);
+      providerTransition.begin(quotaFrameMilli, claudeTint);
+    }
+    if (providerTransition.active()) {
+      providerTransition.advance(delta, wanted, tintTarget, quotaFrameMilli, claudeTint);
+      return quotaFrameMilli;
+    }
     if (quotaRecovery.pending() && !frozen) quotaRecovery.begin(quotaFrameMilli, wanted);
     if (quotaRecovery.active()) {
       quotaFrameMilli = quotaRecovery.advance(delta, wanted);
@@ -1270,6 +1290,53 @@ void drawAirAlertIndicator(bool alternateScreen, bool procedural = false) {
     }
 }
 
+void drawExhaustedProviders() {
+  if (!control.on || !control.connected || !control.accountLinked ||
+      control.maintenance != Maintenance::None || status.memorialTransition ||
+      sceneProgress < SCENE_DURATION_MS || blackHoleAmount()) return;
+  // Independent two-pixel marks on the bottom edge; never select an exhausted
+  // provider as the main scene or interfere with the alert's upper corners.
+  const auto mark = [](const quota_provider::Snapshot &snapshot, unsigned x, uint32_t color) {
+    if (!snapshot.known || !snapshot.fresh || snapshot.remaining != 0) return;
+    for (unsigned dx = 0; dx < 2 && x + dx < MATRIX_WIDTH; ++dx)
+      strip.setPixelColor(physicalIndex(x + dx, MATRIX_HEIGHT - 1), color);
+  };
+  mark(control.codexQuota, 0, control.codexSkyColor);
+  mark(control.claudeQuota, 3, control.claudeSkyColor);
+}
+
+void preserveGammaNightBackground() {
+  if (!control.on || !control.brightness || !sceneVisible || !sceneTargetOn ||
+      sceneProgress < SCENE_DURATION_MS || status.memorialTransition ||
+      control.maintenance != Maintenance::None || blackHoleAmount() ||
+      sceneFrameMilli < 75000 || sceneFrameMilli > 125000) return;
+  uint8_t *pixels = strip.getPixels();
+  if (!pixels) return;
+  // Use the driver's brightness-normalized gamma policy, not a fixed staged
+  // threshold. Find the smallest staged input that can survive as output 1.
+  unsigned threshold = 1;
+  while (threshold < control.brightness &&
+         !led_output_policy::correct(uint8_t(threshold), true, 0, control.brightness))
+    ++threshold;
+  for (unsigned y = 0; y < MATRIX_HEIGHT; ++y)
+    for (unsigned x = 0; x < MATRIX_WIDTH; ++x) {
+      const unsigned index = y * MATRIX_WIDTH + x;
+      if (effectMask[index] || pgm_read_byte(&ENTRANCE_FIXED[index]) ||
+          pgm_read_byte(&PYRAMID_MASK[index])) continue;
+      uint8_t *grb = pixels + physicalIndex(x, y) * 3;
+      const unsigned peak = max(grb[0], max(grb[1], grb[2]));
+      if (peak >= threshold) continue;
+      // entrancePixels retains prebrightness RGB. It distinguishes dim sky
+      // rounded to staged zero from genuinely black artwork/voids.
+      const uint8_t *rgb = entrancePixels + index * 3;
+      const unsigned sourcePeak = max(rgb[0], max(rgb[1], rgb[2]));
+      if (!sourcePeak) continue;
+      const uint8_t source[3] = {rgb[1], rgb[0], rgb[2]};
+      for (unsigned channel = 0; channel < 3; ++channel)
+        grb[channel] = uint8_t((unsigned(source[channel]) * threshold + sourcePeak / 2) / sourcePeak);
+    }
+}
+
 bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
                  uint16_t &frame, bool finishingMeteorFlight) {
 #if EVENT_MODE
@@ -1366,7 +1433,9 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
   drawSceneVisibility();
   #endif
 
+  preserveGammaNightBackground();
   drawBlackHole();
+  drawExhaustedProviders();
   return true;
 }
 
@@ -1379,7 +1448,16 @@ void publishStatus() {
   xQueueOverwrite(renderStatusQueue, &status);
 }
 
+void configureOutputCorrection(bool dark) {
+  // One transfer curve for every visible frame, including service artwork.
+  // Control/maintenance flags change before their visual drains finish, so
+  // gating gamma on those flags would make existing midtones jump in brightness.
+  // Explicit black is invariant under either curve; current limiting runs last.
+  strip.setOutputCorrection(!dark, 0);
+}
+
 bool showFrame(bool dark = false) {
+  configureOutputCorrection(dark);
   const bool completed = strip.show(dark || control.maintenance != Maintenance::None);
   status.ledError = strip.lastError();
   // Only an explicit, successfully transmitted clear is a closing ACK. Dark

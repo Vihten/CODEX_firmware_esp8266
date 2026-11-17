@@ -1,11 +1,12 @@
 if(NOT CMAKE_SCRIPT_MODE_FILE)
 file(GLOB_RECURSE WEB_SOURCE_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/../web/*")
+file(GLOB_RECURSE PORTAL_SOURCE_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/../portal/*")
 execute_process(
   COMMAND "${PYTHON}" "${CMAKE_CURRENT_LIST_DIR}/../build_web_bundle.py"
           "${CMAKE_CURRENT_LIST_DIR}/../web" "${CMAKE_CURRENT_LIST_DIR}/web_bundle.bin"
   COMMAND_ERROR_IS_FATAL ANY
 )
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${WEB_SOURCE_FILES}
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${WEB_SOURCE_FILES} ${PORTAL_SOURCE_FILES}
              "${CMAKE_CURRENT_LIST_DIR}/../build_web_bundle.py")
 endif()
 
@@ -17,6 +18,6 @@ idf_component_register(
           esp_https_ota nvs_flash espressif__cjson espressif__led_strip mbedtls esp-tls http_parser esp_driver_gpio esp_driver_ledc esp_psram joltwallet__littlefs
 )
 
-# The renderer must prepare the next 1000-LED frame inside a 33.3 ms budget.
+# The renderer must prepare the next 1000-LED frame inside a 37 ms transport budget (27 Hz).
 # Optimize this CPU-bound translation unit while retaining normal assertions.
 set_source_files_properties(renderer.cpp PROPERTIES COMPILE_OPTIONS "-O2")

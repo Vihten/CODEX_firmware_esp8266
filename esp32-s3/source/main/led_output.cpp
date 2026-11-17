@@ -164,9 +164,23 @@ bool LedOutput::show(bool synchronous) {
     return false;
   }
   if (!wait()) return false;
+  const uint8_t effectiveBrightness = getBrightness();
+  // Estimate the exact corrected frame, including raw renderer overlays. Two
+  // passes avoid a temporary frame allocation and leave staging/readback intact.
+  uint64_t channelSum = 0;
+  for (size_t i = 0; i < kPixelBytes; ++i)
+    channelSum += led_output_policy::correct(pixels_[i], gamma_, nonzeroFloor_, effectiveBrightness);
+  const uint32_t scale = led_output_policy::scaleFor(channelSum, numPixels());
+  const auto output = [this, scale, effectiveBrightness](uint8_t value) {
+    return led_output_policy::scaled(
+        led_output_policy::correct(value, gamma_, nonzeroFloor_, effectiveBrightness), scale);
+  };
+  uint64_t outputSum = 0;
   for (uint32_t i = 0; i < numPixels(); ++i) {
     const uint8_t *pixel = pixels_ + size_t(i) * 3;
-    lastError_ = led_strip_set_pixel(strip_, i, pixel[1], pixel[0], pixel[2]);
+    const uint8_t red = output(pixel[1]), green = output(pixel[0]), blue = output(pixel[2]);
+    outputSum += uint32_t(red) + green + blue;
+    lastError_ = led_strip_set_pixel(strip_, i, red, green, blue);
     if (lastError_ != ESP_OK) {
       ready_ = false;
       return false;
@@ -181,6 +195,13 @@ bool LedOutput::show(bool synchronous) {
   pending_ = !synchronous;
   if (lastError_ == ESP_OK) {
     quiescent_ = synchronous;
+    outputScaleQ16_ = scale;
+    // Count the actual rounded driver bytes, not the unquantized scale estimate.
+    const uint64_t matrixMa = uint64_t(numPixels()) * led_output_policy::kIdlePerPixelMa +
+        (outputSum * led_output_policy::kChannelMa + 254) / 255;
+    const uint64_t supplyMa = matrixMa + led_output_policy::kControllerMa + led_output_policy::kExternalMa;
+    estimatedMatrixCurrentMa_ = matrixMa > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(matrixMa);
+    estimatedSupplyCurrentMa_ = supplyMa > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(supplyMa);
   } else {
     ready_ = false;
   }

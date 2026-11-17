@@ -31,7 +31,7 @@
     let drawnRgb = null;
     let intersecting = !('IntersectionObserver' in window);
     let pageActive = true;
-    const enabled = () => details.open && !document.hidden && intersecting && pageActive;
+    const enabled = () => window.portalAuthExpired !== true && details.open && !document.hidden && intersecting && pageActive;
     const draw = () => {
       if (!frame) {
         context.fillStyle = '#080a09';
@@ -113,7 +113,13 @@
         active.controller.abort();
       }
       canvas.dataset.paused = 'true';
-      label(frame ? 'Перегляд призупинено · останній кадр' : 'Перегляд вимкнено');
+      if (window.portalAuthExpired === true) label('Сеанс завершено. Увійдіть знову.', 'error');
+      else label(frame ? 'Перегляд призупинено · останній кадр' : 'Перегляд вимкнено');
+    };
+    const stopForAuth = () => {
+      window.portalAuthExpired = true;
+      pause();
+      label('Сеанс завершено. Увійдіть знову.', 'error');
     };
     const poll = async () => {
       if (active || !enabled()) return;
@@ -124,7 +130,10 @@
       let delay = null;
       try {
         const response = await fetch(useStream ? '/frames' : '/frame', {cache: 'no-store', signal: request.controller.signal});
+        if (request.generation !== generation || request.controller.signal.aborted || !enabled()) return;
         if (response.status === 401) {
+          stopForAuth();
+          window.dispatchEvent(new Event('portal-auth-expired'));
           pageActive = false;
           window.location.replace('/login');
           return;
@@ -223,6 +232,7 @@
       }
     };
     details.addEventListener('toggle', resume);
+    window.addEventListener('portal-auth-expired', stopForAuth);
     document.addEventListener('visibilitychange', resume);
     normalize.addEventListener('change', draw);
     window.addEventListener('pagehide', () => { pageActive = false; pause(); });

@@ -9,6 +9,34 @@ constexpr int32_t signedPhase(uint32_t phase) {
   return phase > 100000 ? int32_t(phase) - 200000 : int32_t(phase);
 }
 
+// One authored scene handoff: the palette must not arrive before the quota.
+// Retarget from the last displayed sample, with bounded work and no allocation.
+class ProviderTransition {
+ public:
+  static constexpr uint32_t durationMs = 1020;
+  void begin(uint32_t phase, uint8_t tint) {
+    fromPhase_ = phase;
+    fromTint_ = tint;
+    elapsed_ = 0;
+  }
+  bool active() const { return elapsed_ < durationMs; }
+  void advance(uint32_t delta, uint32_t target, uint8_t tintTarget,
+               uint32_t &phase, uint8_t &tint) {
+    elapsed_ += delta < durationMs - elapsed_ ? delta : durationMs - elapsed_;
+    const float t = float(elapsed_) / durationMs;
+    // Match the incumbent scene's smoothstep, shared by position and palette.
+    const float mix = t * t * (3 - 2 * t);
+    const int32_t distance = signedPhase((target + 200000 - fromPhase_) % 200000);
+    const int32_t position = int32_t(fromPhase_) + int32_t(std::lround(distance * mix));
+    phase = uint32_t((position + 200000) % 200000);
+    tint = uint8_t(std::lround(fromTint_ + (int(tintTarget) - int(fromTint_)) * mix));
+    if (!active()) { phase = target; tint = tintTarget; }
+  }
+ private:
+  uint32_t fromPhase_ = 0, elapsed_ = durationMs;
+  uint8_t fromTint_ = 0;
+};
+
 // Rare quota resets use the authored sky rotation, not a new full scene entrance.
 class Motion {
  public:

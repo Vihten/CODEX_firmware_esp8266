@@ -8,7 +8,12 @@ namespace quota_provider {
 enum class Provider : uint8_t { Codex, Claude };
 inline const char *name(Provider provider) { return provider == Provider::Claude ? "claude" : "codex"; }
 constexpr uint32_t codexFreshMs = 15000, claudeFreshMs = 90000, rotationMs = 300000;
-struct Snapshot { int16_t remaining = -1; bool known = false, fresh = false; };
+struct Snapshot {
+  int16_t remaining = -1;
+  bool known = false, fresh = false;
+  uint32_t resetAt = 0;
+  uint32_t ageSeconds = UINT32_MAX;
+};
 struct Sample {
   uint32_t clientId = 0, seenAt = 0;
   int16_t remaining = -1;

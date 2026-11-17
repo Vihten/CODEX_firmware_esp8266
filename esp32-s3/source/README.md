@@ -29,7 +29,7 @@ quota becoming stale retains its scene for 15 seconds before entering this state
 fresh data must remain available for two seconds before returning to the quota
 scene. The crossfade takes 700 ms and can reverse without a brightness jump.
 The shader is fixed-memory, accounts for the physical 7 mm by 12 mm LED pitch,
-and uses the shared 30 FPS renderer and brightness. Meteors are suppressed while
+and uses the shared 27 FPS renderer and brightness. Meteors are suppressed while
 the fallback is visible. Startup/IP diagnostics, power sequencing, maintenance,
 memorial presentation and air-alert indicators retain their priority. Neither
 the fallback nor its transition overwrites the last verified quota value.
@@ -313,9 +313,9 @@ blends adjacent baked frames before output. Remaining-limit changes settle gradu
 between those same frames; stars, moon and cloud brightness use fractional time.
 This smooths existing animation, not a new free-drifting cloud simulation. Pyramid
 geometry and the original physical row spacing remain unchanged. Output is still
-30 FPS, not 60 FPS. No per-frame heap allocation or networking is added to rendering.
+27 FPS output with a 30 Hz authored effect clock. No per-frame heap allocation or networking is added to rendering.
 
-- Core 1: sole owner of scene state and LED output, 30 FPS, priority 4.
+- Core 1: sole owner of scene state and LED output, 27 FPS, priority 4.
 - Core 0: sole owner of agents/configuration, Wi-Fi, UDP telemetry, HTTP and OTA,
   priority 3. SDK HTTP task is also pinned to core 0.
 - A separate priority-2 task on core 0 fetches the HTTPS manifest and returns a
@@ -348,7 +348,7 @@ City Council, directly over certificate-verified HTTPS for the city itself.
 No Telegram login, bot token, personal API token,
 LAN agent, running PC, phone or user-operated relay is required. Successful
 polls are spaced 15 seconds apart; failures back off and HTTP 429 respects
-Retry-After. Networking runs on core 0, separate from the 30 FPS renderer.
+Retry-After. Networking runs on core 0, separate from the 27 FPS renderer.
 ESP-IDF cross-signed certificate bundle verification remains enabled.
 The full trusted CA bundle and fixed `t.me`
 hostname validation remain required; certificate verification is not bypassed.
@@ -422,7 +422,7 @@ collapsed, hidden or off-screen, and backs off on maintenance/errors. Capture
 leases expire after 1.5 seconds without requests; stale frames are not served.
 Cold HTTP requests yield for up to 60 ms for a new frame without holding any
 mutex. This prevents retry backoff from continually outlasting a capture lease.
-The physical matrix retains its 30 FPS target. The preview is not a camera and
+The physical matrix uses a 27 FPS transport target. The preview is not a camera and
 cannot report failed LEDs or electrical signal corruption after transmission.
 
 ## Build and Export
@@ -624,3 +624,39 @@ mapping, agent discovery and all eight-agent load levels. Run at least a one-hou
 free internal heap, largest block, frame deadline misses and LED errors. Test
 schedule transitions and a subsequent S3 OTA with automatic rollback available.
 Do not claim hardware stability until these checks pass on the actual S3 board.
+
+
+## Output power and portal hardening (2026-11-17)
+
+Every final output frame, including OTA and IP screens, is subject to an integer
+current estimate. The 8,000 mA supply budget reserves 800 mA headroom, 500 mA
+for the controller, 250 mA for four external 37-ohm LED branches, and 1 mA idle
+per matrix pixel. Dynamic RGB uses a conservative 20 mA per full-scale channel.
+For 1,000 pixels the dynamic matrix allowance is 5,450 mA. Current limiting
+scales only the driver copy, never compounds on staged pixels, and overrides
+visibility floors. This is a model; verify actual consumption with an ammeter.
+Gamma 2.0 for every visible frame is normalized to the configured brightness and stays continuous
+through black-hole/memorial blends. Night sky background recovers a visible
+post-brightness level without illuminating genuinely black artwork.
+
+An exhausted provider retains its identity as a two-pixel lower-edge mark:
+Codex at columns 0-1, Claude at columns 3-4. The main scene continues to prefer
+available positive quota. Provider tint and quota position share one transition.
+
+Overview exposes each provider's reset timestamp, data age, and stale state.
+Supplemental `LFR1,account,client,provider,quotaAccount,resetEpoch,ageSeconds`
+metadata never refreshes a quota sample or changes its eligibility. Legacy
+agents remain compatible and show unknown reset time until upgraded. Metadata
+must match the filtered balance's source; it cannot borrow a newer candidate's
+reset time while an upward adjustment is still being confirmed.
+
+Public assets are gzip-compressed when useful and use representation-specific
+ETags. Exact content revisions in URLs enable immutable caching; private pages
+and APIs remain uncached. Main pages apply CSP with a hash for the inline boot
+script and deny framing. Session expiry stops polling/preview/queued actions;
+failed saves release form synchronization unless the user has made a newer edit.
+The loader reveals at DOM-ready rather than waiting for the device image.
+
+See `main/network/README.md` and `portal/README.md` for private network modules
+and deterministic JavaScript assembly. Shared UI strings live in
+`portal/messages.uk.json`; the generator emits both JS and C++ constants.

@@ -55,9 +55,24 @@ intervals and flushes before a requested restart or OTA. A power loss can lose
 the uncommitted interval (normally up to five minutes; longer if persistence
 fails); cyclic replay restores it from the agent's durable daily history.
 
-The agents page contains independent lifetime and Kyiv Monday-to-Sunday weekly
-rankings. Lifetime means usage reconstructed from the available local session
-logs, not account billing or a guarantee of complete historical usage.
+The agents page shows a Kyiv Monday-to-today weekly ranking and a seven-day
+calendar. Both now derive from the same LFD1 daily ledger, per agent; missing
+records remain unknown, not measured zero. Coverage and pending agents are
+shown explicitly. Legacy cumulative reports remain in NVS and are exposed as
+reported_tokens / reported_protocol for diagnostics, not ranked as dated usage.
+The lifetime transport remains available for historical diagnostics; local logs
+are not account billing or a guarantee of complete historical usage.
+
+Agent 20261117160000 embeds its daily ledger in the existing V2 checkpoint, so
+weekly totals and returned daily rows share one durable commit. Migration keeps
+an exact .pre-dated-weekly.bak, lifetime counters, offsets and deduplication state.
+An unknown first cumulative baseline is no longer assigned to its first observed
+week. Invalid daily evidence blocks publication instead of emitting inconsistent
+weekly/calendar snapshots. Existing lifetime values are not silently reset.
+
+The portal keeps explicit matrix controls and quota cards, uses agent-colored
+activity meters and explicit Codex labels, and separates alert tests from saves.
+Build dates use PROJECT_BUILD_EPOCH, independently of the increasing OTA ID.
 
 Updated agents send LFT2 snapshots with weekly/lifetime totals and a persistent
 monotonic revision. A newer corrected snapshot may reduce an inflated historical

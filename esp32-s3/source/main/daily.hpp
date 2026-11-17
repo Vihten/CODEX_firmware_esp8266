@@ -22,6 +22,16 @@ struct Day {
   uint64_t tokens = 0;
   uint16_t agents = 0; // Presence mask: recorded zero differs from missing.
 };
+struct WeekEntry {
+  uint64_t identity = 0, tokens = 0;
+  uint8_t observedDays = 0;
+};
+struct WeekSummary {
+  uint32_t week = 0;
+  uint8_t elapsedDays = 0, observedDays = 0;
+  bool saving = false, saveFailed = false;
+  WeekEntry entries[kAgents] = {};
+};
 inline bool leap(uint32_t year) noexcept {
   return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
 }
@@ -148,6 +158,33 @@ class Store {
     const uint32_t end = ordinal(last);
     if (end < 7) { tokens = 0; observed_days = 0; return false; }
     return total(dateFromOrdinal(end - 6), last, tokens, observed_days);
+  }
+  // Same Monday-to-today ledger as the calendar, not an independent cumulative
+  // counter. Presence is retained: missing agents/dates never become zero usage.
+  bool calendarWeek(uint32_t today, WeekSummary& out) const noexcept {
+    out = WeekSummary{};
+    const uint32_t end = ordinal(today);
+    if (end < 7) return false;
+    const uint32_t begin = end - (end - 1) % 7; // 0001-01-01 was Monday.
+    out.week = dateFromOrdinal(begin);
+    out.elapsedDays = uint8_t(end - begin + 1);
+    uint64_t aggregate = 0;
+    for (uint32_t when = begin; when <= end; ++when) {
+      bool observed = false;
+      for (std::size_t i = 0; i < kAgents; ++i) {
+        const Record& record = records_[i][when % kDays];
+        if (!bound_[i] || record.ordinal != when) continue;
+        if (record.tokens > UINT64_MAX - aggregate) { out = WeekSummary{}; return false; }
+        aggregate += record.tokens;
+        auto& entry = out.entries[i];
+        entry.identity = identities_[i];
+        entry.tokens += record.tokens;
+        ++entry.observedDays;
+        observed = true;
+      }
+      if (observed) ++out.observedDays;
+    }
+    return true;
   }
   bool dirty(std::size_t client) const noexcept { return client < kAgents && dirty_[client]; }
   // Call ONLY after nvs_set_blob AND nvs_commit succeed, under the same external

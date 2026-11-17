@@ -87,7 +87,7 @@
         row.dataset.activity = String(activity);
         text('[data-agent-state]', online ? portalStrings.online : portalStrings.offline, row);
         text('[data-agent-activity]', percent(activity), row);
-        text('[data-agent-remaining]', online && agent.quota_source === true ? percent(agent.remaining) : missing, row);
+        text('[data-agent-remaining]', online && agent.quota_source === true && finite(agent.remaining) && agent.remaining >= 0 && agent.remaining <= 100 ? `Codex · ${percent(agent.remaining)}` : missing, row);
         if (agent && typeof agent.name === 'string') text('[data-agent-name]', agent.name, row);
         if (agent && typeof agent.custom_color === 'boolean')
           text('[data-agent-color-mode]', agent.custom_color ? 'Власний колір' : 'Автоматичний колір', row);
@@ -125,6 +125,7 @@
         });
         all('[data-agent-bar]', row).forEach(meter => { meter.value = activity; meter.textContent = percent(activity); });
         if (agent && typeof agent.color === 'string' && /^#[0-9a-f]{6}$/i.test(agent.color)) {
+          all('[data-agent-bar]', row).forEach(meter => { meter.style.setProperty('--agent-color', agent.color); });
           all('[data-agent-color] rect', row).forEach(swatch => { swatch.setAttribute('fill', agent.color); });
           all('form.agent-color', row).forEach(form => {
             const input = one('input[type=color]', form);

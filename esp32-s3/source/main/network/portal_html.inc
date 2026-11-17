@@ -128,6 +128,7 @@ void writeAgentControls(Html &html, const char *name, uint32_t id, uint32_t rgb,
       case 0: html.format("%u", online ? activity : 0); break;
       case 1: html.format("%u", online ? activity : 0); break;
       case 2: html.format("%u", online ? activity : 0); break;
+      case 3: html.format("%06lX", (unsigned long)(rgb & 0xFFFFFFU)); break;
     }
   });
   html.file("templates/agent/remaining-open.html");
@@ -342,6 +343,9 @@ void writeAgentSummary(Html &html, const View &view) {
 }
 void writeOverview(Html &html, const View &view) {
   writePortalStats(html, view);
+  html.text("<p class='muted' data-quota-rotation-status>Коли доступні обидва сервіси, матриця чергує Codex і Claude Code з інтервалом ");
+  html.format("%u", unsigned(view.control.quotaRotationMinutes));
+  html.text(" хв. Інтервал можна змінити в <a href='/settings#settings-appearance'>налаштуваннях вигляду й лімітів</a>.</p>");
   html.text("<div class='overview-toolbar' data-overview-toolbar data-device-controls><section class='matrix-quick-controls'><div class='section-head'><h2>Матриця</h2><span class='muted' data-live='matrix'>");
   html.text(portalMatrixState(view)); html.file("templates/overview/power-heading.html");
   html.file("templates/overview/power-form-open.html");
@@ -426,12 +430,15 @@ void writeSettings(Html &html, const View &view) {
       else html.text("Ручний тест не активний");
     }
   });
-  html.render("templates/settings/buzzer.html", [&](unsigned token) {
-    if (token == 0) html.attribute(!view.buzzerReady || view.restarting ||
-        view.control.maintenance != Maintenance::None ? "@disabled" : "");
-    else if (token == 1) html.format("%u", unsigned(view.buzzerVolume));
-    else if (token == 2) html.text(view.buzzerSaveFailed ? "Не вдалося зберегти. Повторюємо спробу." : view.buzzerDirty ? "Збереження…" : "");
-  });
+  html.text("<section class='section' aria-labelledby='buzzer-heading'><div class='section-head'><h2 id='buzzer-heading'>Звук</h2></div><form id='buzzer-volume-form' method='post' action='/buzzer-volume'><label for='buzzer-volume'>Гучність (0% — беззвучно) <output id='buzzer-volume-value' for='buzzer-volume'>");
+  html.format("%u%%", unsigned(view.buzzerVolume));
+  html.text("</output></label><input id='buzzer-volume' type='range' name='value' min='0' max='100' step='1' value='");
+  html.format("%u", unsigned(view.buzzerVolume));
+  html.text("'><button type='submit'>Застосувати</button></form><p class='muted' data-buzzer-save role='status'>");
+  html.text(view.buzzerSaveFailed ? "Не вдалося зберегти. Повторюємо спробу." : view.buzzerDirty ? "Збереження…" : "");
+  html.text("</p><form method='post' action='/buzzer-test'><button type='submit' class='secondary' data-buzzer-test ");
+  html.attribute(!view.buzzerReady || view.restarting || view.control.maintenance != Maintenance::None ? "@disabled" : "");
+  html.text(">Перевірити бузер</button></form></section>");
   html.render("templates/settings/memorial.html", [&](unsigned token) {
     if (token == 0) html.attribute(view.memorialEnabled ? "@checked" : "");
     else if (token == 1) html.text(view.control.memorialActive ? "Відтворюється" : "Не відтворюється");
@@ -466,11 +473,21 @@ void writeSettings(Html &html, const View &view) {
       case 0: html.format("%u", view.otaTotal ? unsigned(uint64_t(view.otaDone) * 100 / view.otaTotal) : 0); break;
     }
   });
-  html.render("templates/settings/firmware-version.html", [&](unsigned token) {
-    switch (token) {
-      case 0: html.format("%llu", (unsigned long long)PROJECT_FIRMWARE_VERSION); break;
-    }
-  });
+  // Prefer the actual build time; legacy fixtures only provide a version ID.
+  const uint64_t firmwareVersion = PROJECT_FIRMWARE_VERSION;
+#ifdef PROJECT_BUILD_EPOCH
+  const time_t firmwareTime = time_t(PROJECT_BUILD_EPOCH);
+#else
+  const time_t firmwareTime = time_t(firmwareVersion / 1000);
+#endif
+  tm firmwareUtc{};
+  html.format("<p>Дата прошивки: <time data-firmware-date data-firmware-version='%llu' data-build-epoch='%llu'>", (unsigned long long)firmwareVersion, (unsigned long long)firmwareTime);
+  if (gmtime_r(&firmwareTime, &firmwareUtc)) {
+    char date[32]; std::strftime(date, sizeof(date), "%d.%m.%Y", &firmwareUtc); html.text(date);
+  } else html.text("Невідома");
+  html.text("</time></p><details><summary>Докладніше про прошивку</summary><p class='muted'>Точний ID: <code>");
+  html.format("%llu", (unsigned long long)firmwareVersion);
+  html.text("</code></p></details>");
   html.file("templates/settings/ota-actions.html");
   html.text("</div></details>");
   html.text("<details class='settings-group' id='settings-system'><summary><h2>Система та діагностика</h2></summary><div class='settings-group-body'>");
@@ -517,12 +534,31 @@ void writeTokenCount(Html &html, uint64_t value) {
   }
 }
 void writeRanking(Html &html, const View &view, bool lifetime) {
-  const auto &store = lifetime ? view.lifetime : view.weekly;
+  daily::WeekSummary weekSummary;
+  const auto rankingClock = memorialClock();
+  const bool dailyReady = !lifetime && daily_runtime::weeklySummary(rankingClock.valid ? rankingClock.date : 0, weekSummary);
+  weekly::Store displayWeek;
+  displayWeek.week = weekSummary.week;
+  if (dailyReady) for (size_t i = 0; i < daily::kAgents; ++i) {
+    const auto &day = weekSummary.entries[i];
+    if (!day.identity || !day.observedDays) continue;
+    auto &entry = displayWeek.entries[i];
+    entry.clientId = uint32_t(day.identity); entry.tokens = day.tokens;
+    entry.rgb = 0xd400ff;
+    std::snprintf(entry.name, sizeof(entry.name), "%08lX", (unsigned long)entry.clientId);
+    for (const auto &reported : view.weekly.entries) if (reported.clientId == entry.clientId) {
+      entry.rgb = reported.rgb; std::snprintf(entry.name, sizeof(entry.name), "%s", reported.name); break;
+    }
+    for (const auto &agent : view.control.agents) if (agent.present && agent.clientId == entry.clientId) {
+      entry.rgb = agent.rgb; std::snprintf(entry.name, sizeof(entry.name), "%s", agent.name); break;
+    }
+  }
+  const auto &store = lifetime ? view.lifetime : displayWeek;
   html.file(lifetime ? "templates/lifetime/open.html" : "templates/weekly/open.html");
   if (lifetime) html.text("За доступними журналами агентів");
   else if (store.week) html.format("%02lu.%02lu.%04lu · понеділок–неділя, Київ", (unsigned long)(store.week % 100),
       (unsigned long)(store.week / 100 % 100), (unsigned long)(store.week / 10000));
-  else html.text("Очікування синхронізації часу");
+  else html.text("Очікування щоденних даних і синхронізації часу");
   html.file(lifetime ? "templates/lifetime/table.html" : "templates/weekly/table.html");
   const weekly::Entry *sorted[weekly::capacity] = {};
   size_t count = 0; double total = 0;
@@ -537,13 +573,18 @@ void writeRanking(Html &html, const View &view, bool lifetime) {
     html.escaped(entry.name);
     html.text("</td><td>"); writeTokenCount(html, entry.tokens);
     const unsigned tenths = total ? unsigned(1000.0 * double(entry.tokens) / total + 0.5) : 0;
-    html.format("</td><td>%u", tenths / 10);
-    if (tenths % 10) html.format(",%u", tenths % 10);
-    html.text("%</td></tr>");
+    html.text("</td><td>");
+    if (entry.tokens && !tenths) html.text("&lt;0,1%");
+    else {
+      html.format("%u", tenths / 10);
+      if (tenths % 10) html.format(",%u", tenths % 10);
+      html.text("%");
+    }
+    html.text("</td></tr>");
   }
   html.file(lifetime ? "templates/lifetime/close.html" : "templates/weekly/close.html");
   html.format("<p class='muted' data-%s-empty%s>%s</p></section>", lifetime ? "lifetime" : "weekly",
-      count ? " hidden" : "", lifetime ? "Ще немає даних із журналів агентів." : "Ще немає даних за цей тиждень.");
+      count ? " hidden" : "", lifetime ? "Ще немає даних із журналів агентів." : !dailyReady ? "Щоденні дані тимчасово недоступні. Оновіть сторінку." : "Ще немає щоденних даних за цей тиждень.");
 }
 void writeWeekly(Html &html, const View &view) { writeRanking(html, view, false); }
 void writeLifetime(Html &html, const View &) { html.file("templates/history/calendar.html"); }

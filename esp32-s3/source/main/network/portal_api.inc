@@ -163,6 +163,9 @@ esp_err_t portalStatus(httpd_req_t *request) {
   const auto number = [&](cJSON *object, const char *key, double value) { if (!cJSON_AddNumberToObject(object, key, value)) okay = false; };
   const auto string = [&](cJSON *object, const char *key, const char *value) { if (!cJSON_AddStringToObject(object, key, value)) okay = false; };
   const auto boolean = [&](cJSON *object, const char *key, bool value) { if (!cJSON_AddBoolToObject(object, key, value)) okay = false; };
+#ifdef PROJECT_BUILD_EPOCH
+  number(root, "build_epoch", double(PROJECT_BUILD_EPOCH));
+#endif
   number(root, "uptime_ms", uptimeMs()); number(root, "frames", view.render.frames);
   number(root, "heap", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   number(root, "rssi", view.rssi); number(root, "activity", view.control.activityPercent);
@@ -338,14 +341,40 @@ esp_err_t portalStatus(httpd_req_t *request) {
         uptimeMs() - update->polledAt < agent_update::freshMs);
     number(item, "management_state", update ? update->actionState : 0);
   }
+  // Weekly ranking and calendar share daily evidence. Keep old cumulative
+  // reports in NVS for diagnostics; never reinterpret them as verified day sums.
+  daily::WeekSummary weekSummary;
+  const auto rankingClock = memorialClock();
+  const bool dailyReady = daily_runtime::weeklySummary(rankingClock.valid ? rankingClock.date : 0, weekSummary);
+  weekly::Store displayWeek;
+  displayWeek.week = weekSummary.week;
+  if (dailyReady) for (size_t i = 0; i < daily::kAgents; ++i) {
+    const auto &day = weekSummary.entries[i];
+    if (!day.identity || !day.observedDays) continue;
+    auto &entry = displayWeek.entries[i];
+    entry.clientId = uint32_t(day.identity); entry.tokens = day.tokens;
+    entry.rgb = 0xd400ff;
+    std::snprintf(entry.name, sizeof(entry.name), "%08lX", (unsigned long)entry.clientId);
+    for (const auto &reported : view.weekly.entries) if (reported.clientId == entry.clientId) {
+      entry.rgb = reported.rgb; std::snprintf(entry.name, sizeof(entry.name), "%s", reported.name); break;
+    }
+    for (const auto &agent : view.control.agents) if (agent.present && agent.clientId == entry.clientId) {
+      entry.rgb = agent.rgb; std::snprintf(entry.name, sizeof(entry.name), "%s", agent.name); break;
+    }
+  }
   for (unsigned kind = 0; kind < 2; ++kind) {
-  const auto &store = kind ? view.lifetime : view.weekly;
+  const auto &store = kind ? view.lifetime : displayWeek;
   cJSON *ranking = cJSON_AddObjectToObject(root, kind ? "lifetime" : "weekly");
   if (!ranking) okay = false;
   else {
     if (!kind) number(ranking, "week", store.week);
-    boolean(ranking, "dirty", kind ? view.lifetimeDirty : view.weeklyDirty);
-    boolean(ranking, "save_failed", kind ? view.lifetimeSaveFailed : view.weeklySaveFailed);
+    if (!kind) {
+      string(ranking, "source", "daily"); boolean(ranking, "available", dailyReady);
+      number(ranking, "observed_days", weekSummary.observedDays);
+      number(ranking, "elapsed_days", weekSummary.elapsedDays);
+    }
+    boolean(ranking, "dirty", kind ? view.lifetimeDirty : weekSummary.saving);
+    boolean(ranking, "save_failed", kind ? view.lifetimeSaveFailed : weekSummary.saveFailed);
     cJSON *rows = cJSON_AddArrayToObject(ranking, "entries");
     if (!rows) okay = false;
     else for (const auto &entry : store.entries) {
@@ -357,6 +386,14 @@ esp_err_t portalStatus(httpd_req_t *request) {
       std::snprintf(color, sizeof(color), "#%06lX", (unsigned long)entry.rgb);
       string(item, "id", id); string(item, "name", entry.name); string(item, "color", color);
       number(item, "tokens", double(entry.tokens));
+      if (!kind) {
+        for (const auto &day : weekSummary.entries) if (day.identity == entry.clientId)
+          number(item, "observed_days", day.observedDays);
+        for (const auto &reported : view.weekly.entries) if (reported.clientId == entry.clientId) {
+          number(item, "reported_tokens", double(reported.tokens));
+          string(item, "reported_protocol", weekly::v2(reported) ? "LFT2" : "LFT1"); break;
+        }
+      }
     }
   }
   }

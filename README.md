@@ -1,12 +1,25 @@
 # CODEX Firmware: ESP32-S3 N16R8
 
 This repository now targets ESP32-S3-WROOM-1-N16R8 only: 16 MiB flash,
-8 MiB octal PSRAM, GPIO18 LED data and a 30 FPS target.
+8 MiB octal PSRAM, GPIO18 LED data, 27 FPS LED output and a 30 Hz effect clock.
 
 - `firmware.bin`: raw ESP32-S3 OTA application image.
 - `manifest.json`: matching S3 board, version, byte size and SHA-256.
 - [Standalone source and instructions](esp32-s3/README.md).
 - [Windows application and LAN agent](https://github.com/Vihten/CODEX_app).
+
+## Dated weekly accounting (2026-11-17)
+
+Firmware 1794990000000 derives the weekly ranking from the same daily ledger as
+the calendar. Missing evidence is marked incomplete; old cumulative reports stay
+available in authenticated diagnostics. The portal also adds clearer alert tests,
+agent-colored activity meters, explicit Codex labels and actual build dates.
+
+[Agent installer/update archive](esp32-s3/agent/bootstrap.zip), version
+20261117160000, preserves identity/settings and backs up accounting checkpoints.
+Its signed update package is also embedded in the firmware for the existing
+web-based agent update flow. Install the firmware, then update online agents from
+the Agents page. [Accounting and migration details](esp32-s3/agent/TOKEN_ACCOUNTING_V2.md).
 
 The former ESP8266 binary/compressed binary and root manifest have been replaced.
 Old versions remain in Git history, but are no longer the active release. Do not

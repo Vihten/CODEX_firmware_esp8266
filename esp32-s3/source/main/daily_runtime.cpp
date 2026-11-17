@@ -153,6 +153,19 @@ bool accept(const char *packet, uint32_t today, uint32_t deviceId, char (&ack)[6
   return true;
 }
 
+bool weeklySummary(uint32_t today, daily::WeekSummary &out) {
+  out = daily::WeekSummary{};
+  Lock lock;
+  if (!lock.held || !available || !store->calendarWeek(today, out)) return false;
+  uint64_t total = 0;
+  for (const auto &entry : out.entries) {
+    if (entry.tokens > 9007199254740991ULL - total) { out = daily::WeekSummary{}; return false; }
+    total += entry.tokens;
+  }
+  out.saving = saving || anyDirty(); out.saveFailed = saveFailed;
+  return true;
+}
+
 bool dirty() { Lock lock; return !lock.held || anyDirty(); }
 bool due(uint32_t now, bool flush) {
   Lock lock; return lock.held && anyDirty() && (flush || uint32_t(now - savedAt) >= 300000);

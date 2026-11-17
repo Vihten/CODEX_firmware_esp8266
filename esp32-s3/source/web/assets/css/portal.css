@@ -355,3 +355,13 @@ table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
   .connection-indicator[data-state=ok]{border-color:LinkText}
   .connection-indicator[data-state=error]{border-style:dashed}
 }
+
+[data-agent-bar]{accent-color:var(--agent-color,var(--accent))}
+[data-agent-bar]::-webkit-meter-optimum-value{background:var(--agent-color,var(--accent))}
+[data-agent-bar]::-moz-meter-bar{background:var(--agent-color,var(--accent))}
+
+[data-air-alert-state]{display:block;font-size:clamp(1.25rem,1.1rem + .6vw,1.5rem);font-weight:700;line-height:1.35;overflow-wrap:anywhere}
+form[action='/air-alert'] .actions>button{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere;text-wrap:pretty}
+[data-alert-test=yellow]:not(:disabled){color:var(--warning)}
+[data-alert-test=red]:not(:disabled),[data-alert-test=city]:not(:disabled){color:var(--danger)}
+@media(max-width:440px){form[action='/air-alert'] .actions>button{flex:1 1 100%;width:100%;text-align:left}}

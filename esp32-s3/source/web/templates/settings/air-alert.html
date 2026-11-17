@@ -1,25 +1,21 @@
-<section class='section' aria-labelledby='air-alert-heading'>
-  <div class='section-head'><h2 id='air-alert-heading'>Повітряна тривога</h2></div>
-  <p class='muted'>Вінниця · Джерело: <a href='https://t.me/s/vmroficial' target='_blank' rel='noopener noreferrer'>Вінницька міська рада</a> · Telegram @vmroficial</p>
-  <form id='air-alert-settings' method='post' action='/air-alert'>
-    <label class='checkbox-label'><input type='checkbox' name='enabled' value='1' {{0}}>Індикація тривоги у верхніх кутах</label>
-    <button type='submit' name='mode' value='save'>Зберегти</button>
-  </form>
-  <p class='muted' data-air-alert-note role='status'>{{3}}</p>
-  <p data-air-alert-state role='status'>{{1}}</p>
-  <p class='muted' data-air-alert-updated>{{6}}</p>
-  <form method='post' action='/air-alert'>
-    <div class='actions'>
-      <button type='submit' name='mode' value='yellow' data-air-alert-play {{4}}>Жовтий тест · 60 с</button>
-      <button type='submit' name='mode' value='red' data-air-alert-play {{4}}>Червоний тест · 60 с</button>
-      <button type='submit' name='mode' value='city' data-air-alert-play {{4}}>Блимання та звук · 60 с</button>
-      <button type='submit' name='mode' value='stop' class='secondary' data-air-alert-stop {{5}}>Зупинити тест</button>
-    </div>
-  </form>
-  <p class='muted' data-air-alert-manual>{{7}}</p>
-  <p class='muted'>Об’єкти над містом · <a href='https://t.me/s/kpszsu' target='_blank' rel='noopener noreferrer'>Повітряні сили ЗСУ</a>. Піктограми блимають до 5 хв від публікації повідомлення. Нове підтверджене повідомлення запускає короткі сигнали щосекунди протягом хвилини. Звук дотримується розкладу матриці та гучності бузера.</p>
-  <p class='muted' data-city-threat-state role='status'>{{8}}</p>
-  <p class='muted' data-city-threat-source role='status'>{{9}}</p>
-  <p class='muted'>Ручний тест не знижує рівень реальної червоної тривоги.</p>
-  <p class='muted'>Публічна стрічка Telegram може оновлюватися із затримкою. Допоміжна індикація не замінює офіційні сповіщення. Відсутність даних не означає відбій.</p>
+<section class='section' aria-labelledby='air-alert-heading'><div class='section-head'><h2 id='air-alert-heading'>Повітряна тривога · Вінниця</h2></div>
+<p role='status'><strong data-air-alert-state>{{1}}</strong></p>
+<p data-city-threat-state role='status'>{{8}}</p>
+<p class='muted' data-air-alert-updated>{{6}}</p>
+<form id='air-alert-settings' method='post' action='/air-alert'><label class='checkbox-label'><input type='checkbox' name='enabled' value='1' {{0}}>Індикація тривоги у верхніх кутах</label><button type='submit' name='mode' value='save'>Зберегти</button></form>
+<details>
+<summary>Докладніше</summary>
+<p class='muted' data-air-alert-note role='status'>{{3}}</p>
+<p class='muted'>Вінниця · Джерело: <a href='https://t.me/s/vmroficial' target='_blank' rel='noopener noreferrer'>Вінницька міська рада</a> · Telegram @vmroficial</p>
+<p class='muted'>Об’єкти над містом: <a href='https://t.me/s/kpszsu' target='_blank' rel='noopener noreferrer'>Повітряні сили ЗСУ</a>. Піктограми блимають до 5 хв від публікації повідомлення. Нове підтверджене повідомлення запускає короткі сигнали щосекунди протягом хвилини. Звук дотримується розкладу матриці та гучності бузера.</p>
+<p class='muted' data-city-threat-source role='status'>{{9}}</p>
+<p class='muted'>Ручний тест не знижує рівень реальної червоної тривоги.</p>
+<p class='muted'>Публічна стрічка Telegram може оновлюватися із затримкою. Допоміжна індикація не замінює офіційні сповіщення. Відсутність даних не означає відбій.</p>
+</details>
+<form method='post' action='/air-alert'><div class='actions'><button type='submit' name='mode' value='yellow' class='secondary' data-alert-test='yellow' data-air-alert-play {{4}}>Тест жовтої індикації · 60 с</button>
+<button type='submit' name='mode' value='red' class='secondary' data-alert-test='red' data-air-alert-play {{4}}>Тест червоної тривоги · 60 с</button>
+<button type='submit' name='mode' value='city' class='secondary' data-alert-test='city' data-air-alert-play {{4}}>Тест об’єктів над містом: блимання та звук · 60 с</button>
+<button type='submit' name='mode' value='stop' class='secondary' data-air-alert-stop {{5}}>Зупинити тест</button></div>
+</form>
+<p class='muted' data-air-alert-manual>{{7}}</p>
 </section>

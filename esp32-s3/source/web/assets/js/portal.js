@@ -411,8 +411,8 @@
     const updateRanking = (view, ranking, agents = []) => {
       const {root, rows: rankingRows, empty, records, kind} = view;
       if (!root || !rankingRows) return;
-      if (!ranking || !Array.isArray(ranking.entries)) {
-        text(`[data-${kind}-state]`, 'Рейтинг недоступний у цій версії контролера', root);
+      if (!ranking || !Array.isArray(ranking.entries) || (kind === 'weekly' && ranking.source === 'daily' && ranking.available !== true)) {
+        text(`[data-${kind}-state]`, kind === 'weekly' && ranking?.source === 'daily' ? 'Денні записи за цей тиждень недоступні · історія може бути неповною' : 'Рейтинг недоступний у цій версії контролера', root);
         text(`[data-${kind}-pending]`, '', root);
         if (empty) { empty.hidden = false; empty.textContent = 'Немає доступних даних рейтингу'; }
         if (rankingRows.children.length) rankingRows.replaceChildren();
@@ -442,7 +442,8 @@
           records.set(id, record);
         }
         const values = [String(index + 1), typeof row.name === 'string' ? row.name : row.id,
-          number(row.tokens), `${decimal.format(total ? Number((BigInt(row.tokens) * 1000n + total / 2n) / total) / 10 : 0)}%`];
+          number(row.tokens), row.tokens > 0 && BigInt(row.tokens) * 1000n < total ? '<0,1%' :
+          `${decimal.format(total ? Number((BigInt(row.tokens) * 1000n + total / 2n) / total) / 10 : 0)}%`];
         values.forEach((value, column) => {
           if (record.values[column] === value) return;
           const td = record.cells[column];
@@ -469,7 +470,13 @@
       const week = String(ranking.week);
       if (kind === 'weekly') text('[data-weekly-period]', /^\d{8}$/.test(week) ?
         `${week.slice(6, 8)}.${week.slice(4, 6)}.${week.slice(0, 4)} · понеділок–неділя, Київ` : 'Очікування синхронізації часу', root);
-      text(`[data-${kind}-state]`, ranking.save_failed ? 'Не вдалося зберегти статистику. Повторна спроба автоматично.' :
+      const daily = kind === 'weekly' && ranking.source === 'daily';
+      const coverage = daily && Number.isInteger(ranking.observed_days) && Number.isInteger(ranking.elapsed_days) &&
+        ranking.elapsed_days >= 1 && ranking.elapsed_days <= 7 && ranking.observed_days >= 0 && ranking.observed_days <= ranking.elapsed_days
+        ? `${ranking.observed_days} із ${ranking.elapsed_days} днів` : 'кількість днів невідома';
+      const dailyState = daily ? `Сума денних записів · ${coverage} · історія може бути неповною` : '';
+      text(`[data-${kind}-state]`, daily ? `${dailyState}${ranking.save_failed ? ' · Не вдалося зберегти статистику. Повторна спроба автоматично.' :
+        ranking.dirty ? ' · Є нові дані · збереження кожні 5 хвилин' : ''}` : ranking.save_failed ? 'Не вдалося зберегти статистику. Повторна спроба автоматично.' :
         ranking.dirty ? 'Є нові дані · збереження кожні 5 хвилин' : 'Збережено на контролері', root);
     };
     const duration = milliseconds => {
@@ -481,6 +488,9 @@
       return `${days ? `${days} д ` : ''}${hours} год ${minutes} хв`;
     };
     const quotaClock = new Intl.DateTimeFormat('uk-UA', {hour: '2-digit', minute: '2-digit'});
+    const firmwareDate = new Intl.DateTimeFormat('uk-UA', {dateStyle: 'medium', timeStyle: 'short'});
+    const firmwareDateNodes = all('[data-firmware-date]');
+    const rotationStatusNodes = all('[data-quota-rotation-status]');
     const otaProgress = one('#ota-progress');
     const appearanceForms = all('form[action="/sky-colors"]');
     const quotaGuidance = all('[data-quota-guidance]');
@@ -498,6 +508,14 @@
         fps = decimal.format((stamp.frames - baseline.frames) * 1000 / (stamp.uptime - baseline.uptime));
       }
       baseline = stamp;
+      // New firmware supplies actual build time in UTC seconds. Version IDs are
+      // manually advanced; interpret them as milliseconds only for legacy status.
+      const legacyVersion = typeof status.version === 'string' && /^\d{13}$/.test(status.version) ? Number(status.version) : NaN;
+      const buildMilliseconds = status.build_epoch === undefined ? legacyVersion :
+        Number.isSafeInteger(status.build_epoch) && status.build_epoch >= 1700000000 && status.build_epoch <= 8640000000000
+          ? status.build_epoch * 1000 : NaN;
+      setText(firmwareDateNodes, Number.isSafeInteger(buildMilliseconds) && buildMilliseconds >= 1700000000000 && buildMilliseconds <= 8640000000000000
+        ? firmwareDate.format(new Date(buildMilliseconds)) : missing);
       live('remaining', status.quota_known === true ?
         `${percent(status.remaining)}${status.quota_fresh === true ? '' : ` · ${portalStrings.remainingLastData}`}` : missing);
       live('quota-provider', status.quota_provider === 'claude' ? 'Claude Code · 5 год' : 'Codex');
@@ -505,6 +523,12 @@
         rotationInputs.forEach(input => {
           if (!dirtyForms.has(input.closest('form'))) input.value = String(status.quota_rotation_minutes);
         });
+      const rotationMinutes = Number.isInteger(status.quota_rotation_minutes) && status.quota_rotation_minutes >= 1 && status.quota_rotation_minutes <= 60
+        ? `${status.quota_rotation_minutes} хв` : 'заданий інтервал';
+      const providerName = status.quota_provider === 'claude' ? 'Claude Code' : status.quota_provider === 'codex' ? 'Codex' : null;
+      const rotationRule = `Codex і Claude Code перемикаються кожні ${rotationMinutes}, коли обидва мають доступний залишок. Якщо доступний лише один сервіс, використовується він.`;
+      setText(rotationStatusNodes, `${rotationRule} ${status.on === false ? 'Матрицю вимкнено.' :
+        status.quota_available !== true || !providerName ? 'Зараз немає доступних даних для неба.' : `Зараз небо показує ${providerName}.`}`);
       appearanceForms.forEach(form => {
         if (dirtyForms.has(form)) return;
         for (const provider of ['codex', 'claude']) {
@@ -771,7 +795,7 @@
         row.dataset.activity = String(activity);
         text('[data-agent-state]', online ? portalStrings.online : portalStrings.offline, row);
         text('[data-agent-activity]', percent(activity), row);
-        text('[data-agent-remaining]', online && agent.quota_source === true ? percent(agent.remaining) : missing, row);
+        text('[data-agent-remaining]', online && agent.quota_source === true && finite(agent.remaining) && agent.remaining >= 0 && agent.remaining <= 100 ? `Codex · ${percent(agent.remaining)}` : missing, row);
         if (agent && typeof agent.name === 'string') text('[data-agent-name]', agent.name, row);
         if (agent && typeof agent.custom_color === 'boolean')
           text('[data-agent-color-mode]', agent.custom_color ? 'Власний колір' : 'Автоматичний колір', row);
@@ -809,6 +833,7 @@
         });
         all('[data-agent-bar]', row).forEach(meter => { meter.value = activity; meter.textContent = percent(activity); });
         if (agent && typeof agent.color === 'string' && /^#[0-9a-f]{6}$/i.test(agent.color)) {
+          all('[data-agent-bar]', row).forEach(meter => { meter.style.setProperty('--agent-color', agent.color); });
           all('[data-agent-color] rect', row).forEach(swatch => { swatch.setAttribute('fill', agent.color); });
           all('form.agent-color', row).forEach(form => {
             const input = one('input[type=color]', form);

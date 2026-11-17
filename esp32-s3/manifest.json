@@ -8,8 +8,9 @@
   "size": 3297280,
   "ledDataPin": 18,
   "ledTransport": "rmt-dma",
-  "targetFps": 27,
+  "targetFps": 30,
+  "outputFps": 27,
   "maximumAgents": 12,
   "accountCredentialsIncluded": false,
-  "publishedAt": "2026-11-17T09:06:50.445725Z"
+  "publishedAt": "2026-11-17T09:18:52.401666Z"
 }

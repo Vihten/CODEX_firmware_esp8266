@@ -46,7 +46,47 @@ constexpr std::array<uint8_t, 256> makeInverseGamma2() {
 }
 inline constexpr auto inverseGamma2 = makeInverseGamma2();
 
-inline void colorize(uint8_t *rgb, uint8_t type, bool fixed, uint32_t color) {
+// Cache the minimum visible chromatic level once per color/brightness change.
+// Two PWM counts retain a dim secondary channel under ordinary current scaling.
+// Very small accent channels (< 1/8 peak) do not lift the whole sky.
+class HueFloor {
+ public:
+  uint8_t at(uint32_t color, uint8_t brightness) {
+    if (valid_ && color == color_ && brightness == brightness_) return peak_;
+    valid_ = true; color_ = color; brightness_ = brightness; peak_ = 0;
+    if (!brightness) return 0;
+    const unsigned red = (color >> 16) & 255;
+    const unsigned green = (color >> 8) & 255;
+    const unsigned blue = color & 255;
+    const unsigned maximum = red > green ? (red > blue ? red : blue)
+                                          : (green > blue ? green : blue);
+    if (!maximum) return 0;
+    const unsigned target = brightness < 2 ? 1 : 2;
+    for (unsigned peak = 1; peak <= 255; ++peak) {
+      bool visible = true;
+      for (unsigned channel = 0; channel < 3; ++channel) {
+        const unsigned component = (color >> (16 - channel * 8)) & 255;
+        if (!component || component * 8 < maximum) continue;
+        const unsigned ratio = (component * 255 + maximum / 2) / maximum;
+        const unsigned value = (peak * inverseGamma2[ratio] + 127) / 255;
+        const unsigned staged = brightness == 255 ? value : value * (brightness + 1) / 256;
+        const unsigned normalized = (staged * 255 + brightness / 2) / brightness;
+        const unsigned curved = (normalized * normalized + 127) / 255;
+        const unsigned output = (curved * brightness + 127) / 255;
+        if (output < target) visible = false;
+      }
+      if (visible) { peak_ = uint8_t(peak); break; }
+    }
+    return peak_;
+  }
+ private:
+  uint32_t color_ = 0;
+  uint8_t brightness_ = 0, peak_ = 0;
+  bool valid_ = false;
+};
+
+inline void colorize(uint8_t *rgb, uint8_t type, bool fixed, uint32_t color,
+                     uint8_t minimumPeak = 0) {
   const unsigned cool = rgb[1] > rgb[2] ? rgb[1] : rgb[2];
   unsigned base = 0, light = 0;
   if (!type && (!fixed || cool > rgb[0])) {
@@ -62,7 +102,10 @@ inline void colorize(uint8_t *rgb, uint8_t type, bool fixed, uint32_t color) {
   const unsigned maximum = red > green ? (red > blue ? red : blue)
                                         : (green > blue ? green : blue);
   // Keep the authored peak envelope, including headroom for neutral cores.
-  const unsigned authoredPeak = (light * 3 * maximum + 255) / 510;
+  unsigned authoredPeak = (light * 3 * maximum + 255) / 510;
+  // Only nonblack, nonfixed sky gets the hue floor. Objects and night stay intact.
+  if (!type && !fixed && light && maximum && authoredPeak < minimumPeak)
+    authoredPeak = minimumPeak;
   const unsigned peak = authoredPeak > 255 - base ? 255 - base : authoredPeak;
   for (unsigned channel = 0; channel < 3; ++channel) {
     const unsigned component = (color >> (16 - channel * 8)) & 255;
@@ -73,11 +116,12 @@ inline void colorize(uint8_t *rgb, uint8_t type, bool fixed, uint32_t color) {
 }
 
 inline void apply(uint8_t *rgb, uint8_t type, bool fixed, uint8_t amount,
-                  uint32_t codex, uint32_t claude, uint8_t daylight = 255) {
+                  uint32_t codex, uint32_t claude, uint8_t daylight = 255,
+                  uint8_t claudeMinimumPeak = 0) {
   uint8_t first[3] = {rgb[0], rgb[1], rgb[2]};
   uint8_t second[3] = {rgb[0], rgb[1], rgb[2]};
   if (codex != codexDefault) colorize(first, type, fixed, codex);
-  colorize(second, type, fixed, claude);
+  colorize(second, type, fixed, claude, claudeMinimumPeak);
   for (unsigned channel = 0; channel < 3; ++channel) {
     const unsigned dayColor = (unsigned(rgb[channel]) * (255 - daylight) +
                                unsigned(second[channel]) * daylight + 127) / 255;

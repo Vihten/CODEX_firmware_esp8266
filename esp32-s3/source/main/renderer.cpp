@@ -65,6 +65,7 @@ uint32_t quotaFrameMilli = 0, skySampleAt = 0;
 bool skySampleReady = false;
 uint8_t claudeTint = 0;
 sky_palette::Daylight skyDaylight;
+sky_palette::HueFloor claudeHueFloor;
 quota_provider::Provider skyProvider = quota_provider::Provider::Codex;
 external_light::Sequence lightSequence;
 bool matrixDark = true;
@@ -905,7 +906,8 @@ void modulateSky(uint8_t *rgb, uint8_t type, uint8_t x, uint8_t y) {
   for (unsigned channel = 0; channel < 3; ++channel) rgb[channel] = (uint16_t(rgb[channel]) * scale + 127) / 255;
   if (!pgm_read_byte(&PYRAMID_MASK[index]))
     sky_palette::apply(rgb, type, pgm_read_byte(&ENTRANCE_FIXED[index]), claudeTint,
-        control.codexSkyColor, control.claudeSkyColor, skyDaylight.at(sceneFrameMilli, x, y));
+        control.codexSkyColor, control.claudeSkyColor, skyDaylight.at(sceneFrameMilli, x, y),
+        claudeHueFloor.at(control.claudeSkyColor, control.brightness));
 }
 
 subpixel::Pixel meteorLayer[NUM_LEDS];

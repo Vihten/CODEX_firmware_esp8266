@@ -8,6 +8,22 @@ This repository now targets ESP32-S3-WROOM-1-N16R8 only: 16 MiB flash,
 - [Standalone source and instructions](esp32-s3/README.md).
 - [Windows application and LAN agent](https://github.com/Vihten/CODEX_app).
 
+## Latched exposure and low-light orange (2026-11-17)
+
+Firmware 1795030000000 removes automatic current-limit gain recovery. Recent
+peak attenuation stays latched until actual brightness changes, eliminating
+repeated global dim/bright pumping between animated peaks. A stronger demand
+still clamps immediately for supply safety; black frames do not clear the latch.
+This trades maximum brightness after a transient for stable exposure.
+Claude nonblack background uses a cached brightness-aware chromatic floor:
+significant color channels target two PWM counts before final current limiting.
+This keeps dim orange from turning red under ordinary attenuation; very low
+brightness, transitions or a limiter below half gain still impose quantization
+limits. Black night, fixed artwork and foreground silhouettes are preserved.
+The cache uses fixed memory and runs its bounded search only on setting changes.
+Native palette/output/render tests and the ESP32-S3 build passed. Physical
+appearance still requires verification after installation.
+
 ## Stable sky brightness and orange hue (2026-11-17)
 
 Firmware 1795020000000 compensates selected sky colors for output gamma so

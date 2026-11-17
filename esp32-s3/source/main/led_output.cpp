@@ -3,7 +3,6 @@
 #include <cstring>
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
-#include "esp_timer.h"
 
 static_assert(PROJECT_PIXELS > 0, "The strip must contain pixels");
 static_assert(uint64_t(PROJECT_PIXELS) == uint64_t(PROJECT_WIDTH) * PROJECT_HEIGHT,
@@ -175,8 +174,7 @@ bool LedOutput::show(bool synchronous) {
   // Commit temporal history only with a successfully submitted frame.
   auto nextEnvelope = envelope_;
   const uint32_t scale = nextEnvelope.update(
-      led_output_policy::scaleFor(channelSum, numPixels()),
-      static_cast<uint32_t>(esp_timer_get_time() / 1000));
+      led_output_policy::scaleFor(channelSum, numPixels()));
   const auto output = [this, scale, effectiveBrightness](uint8_t value) {
     return led_output_policy::scaled(
         led_output_policy::correct(value, gamma_, nonzeroFloor_, effectiveBrightness), scale);

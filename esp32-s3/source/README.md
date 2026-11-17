@@ -8,7 +8,9 @@ S3 as its primary target; ESP8266 releases remain only in Git history.
 
 Claude sunrise and sunset retain the asterisk through the final LED row;
 foreground masks protect the complete logo from cloud motion. Daylight coverage
-limits the selected Claude tint to the day side, leaving the night sky cool blue.
+limits the selected Claude tint to the day side. For both services, the night
+background is black; stars, moon and foreground effects remain visible. The
+post-brightness night-background lift has been removed.
 Coverage coefficients are cached without per-frame allocation. Export checks
 cover all 201 frames, including fractional horizon samples.
 

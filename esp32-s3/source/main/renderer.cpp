@@ -1306,36 +1306,6 @@ void drawExhaustedProviders() {
   mark(control.claudeQuota, 3, control.claudeSkyColor);
 }
 
-void preserveGammaNightBackground() {
-  if (!control.on || !control.brightness || !sceneVisible || !sceneTargetOn ||
-      sceneProgress < SCENE_DURATION_MS || status.memorialTransition ||
-      control.maintenance != Maintenance::None || blackHoleAmount()) return;
-  uint8_t *pixels = strip.getPixels();
-  if (!pixels) return;
-  // Use the driver's brightness-normalized gamma policy, not a fixed staged
-  // threshold. Find the smallest staged input that can survive as output 1.
-  unsigned threshold = 1;
-  while (threshold < control.brightness &&
-         !led_output_policy::correct(uint8_t(threshold), true, 0, control.brightness))
-    ++threshold;
-  for (unsigned y = 0; y < MATRIX_HEIGHT; ++y)
-    for (unsigned x = 0; x < MATRIX_WIDTH; ++x) {
-      const unsigned index = y * MATRIX_WIDTH + x;
-      if (skyDaylight.at(sceneFrameMilli, x, y) || effectMask[index] || pgm_read_byte(&ENTRANCE_FIXED[index]) ||
-          pgm_read_byte(&PYRAMID_MASK[index])) continue;
-      uint8_t *grb = pixels + physicalIndex(x, y) * 3;
-      const unsigned peak = max(grb[0], max(grb[1], grb[2]));
-      if (peak >= threshold) continue;
-      // entrancePixels retains prebrightness RGB. It distinguishes dim sky
-      // rounded to staged zero from genuinely black artwork/voids.
-      const uint8_t *rgb = entrancePixels + index * 3;
-      const unsigned sourcePeak = max(rgb[0], max(rgb[1], rgb[2]));
-      if (!sourcePeak) continue;
-      const uint8_t source[3] = {rgb[1], rgb[0], rgb[2]};
-      for (unsigned channel = 0; channel < 3; ++channel)
-        grb[channel] = uint8_t((unsigned(source[channel]) * threshold + sourcePeak / 2) / sourcePeak);
-    }
-}
 
 bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
                  uint16_t &frame, bool finishingMeteorFlight) {
@@ -1433,7 +1403,6 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
   drawSceneVisibility();
   #endif
 
-  preserveGammaNightBackground();
   drawBlackHole();
   drawExhaustedProviders();
   return true;

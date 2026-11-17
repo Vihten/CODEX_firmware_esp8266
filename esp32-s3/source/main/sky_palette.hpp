@@ -62,7 +62,8 @@ inline void apply(uint8_t *rgb, uint8_t type, bool fixed, uint8_t amount,
   for (unsigned channel = 0; channel < 3; ++channel) {
     const unsigned dayColor = (unsigned(rgb[channel]) * (255 - daylight) +
                                unsigned(second[channel]) * daylight + 127) / 255;
-    rgb[channel] = uint8_t((unsigned(first[channel]) * (255 - amount) + dayColor * amount + 127) / 255);
+    const unsigned mixed = (unsigned(first[channel]) * (255 - amount) + dayColor * amount + 127) / 255;
+    rgb[channel] = uint8_t(!type && !fixed ? (mixed * daylight + 127) / 255 : mixed);
   }
 }
 inline uint8_t nightBlue(uint8_t current, uint8_t minimum, uint8_t amount, uint32_t codex,

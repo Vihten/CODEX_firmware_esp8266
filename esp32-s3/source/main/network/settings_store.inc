@@ -215,6 +215,9 @@ bool saveAirAlertSettings() {
   return true;
 }
 bool backgroundTlsReady() {
+  // Finish in-flight TLS normally, but do not queue another CPU-heavy handshake
+  // while a password operation is admitted. Deferral never means alert clear.
+  if (web_auth::busy()) return false;
   constexpr unsigned caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
   return heap_caps_get_free_size(caps) >= 32768 && heap_caps_get_largest_free_block(caps) >= 16384;
 }

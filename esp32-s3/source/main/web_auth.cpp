@@ -225,7 +225,7 @@ bool readForm(httpd_req_t *request, Form &form) {
   while (used < request->content_len) {
     if (nowMs() - started > 10000) return false;
     const int count = httpd_req_recv(request, body.bytes + used, request->content_len - used);
-    if (count <= 0) return false;
+    if (nowMs() - started > 10000 || count <= 0) return false;
     used += size_t(count);
   }
   if (std::memchr(body.bytes, 0, used)) return false;
@@ -277,7 +277,19 @@ struct PasswordHmac {
     return hash(inner, bytes, size, digest) && hash(outer, digest, sizeof(digest), out);
   }
 };
+// PBKDF2 runs synchronously in the HTTP task, normally priority 5 on CPU0.
+// A one-tick sleep alone cannot guarantee IDLE0 time when other network tasks
+// consume that tick. Share idle priority for this bounded CPU-only scope, then
+// restore the caller before session locks, flash admission or HTTP responses.
+struct KdfSchedulingScope {
+  const UBaseType_t original = uxTaskPriorityGet(nullptr);
+  KdfSchedulingScope() { if (original > tskIDLE_PRIORITY) vTaskPrioritySet(nullptr, tskIDLE_PRIORITY); }
+  ~KdfSchedulingScope() { if (original > tskIDLE_PRIORITY) vTaskPrioritySet(nullptr, original); }
+  KdfSchedulingScope(const KdfSchedulingScope &) = delete;
+  KdfSchedulingScope &operator=(const KdfSchedulingScope &) = delete;
+};
 bool derive(const char *password, const uint8_t (&salt)[16], uint8_t (&out)[32]) {
+  KdfSchedulingScope scheduling;
   // RFC 8018, one SHA-256 output block. Reuse HMAC pad states instead of
   // hashing both pads again on every iteration. Local software SHA avoids
   // acquiring/toggling the shared SHA/AES hardware engine for each final block.
@@ -291,8 +303,8 @@ bool derive(const char *password, const uint8_t (&salt)[16], uint8_t (&out)[32])
     okay = hmac.compute(current, sizeof(current), current);
     if (!okay) break;
     for (size_t i = 0; i < sizeof(out); ++i) out[i] ^= current[i];
-    // Block periodically so idle0 can service its watchdog, without running
-    // the entire KDF at idle priority. Never sleep once per KDF iteration.
+    // Retain periodic blocking in addition to idle-priority time slicing.
+    // Never mask a watchdog or sleep once per KDF iteration.
     if ((iteration & 7U) == 0 && nowMs() - yielded >= 4) {
       vTaskDelay(1); yielded = nowMs();
     }
@@ -453,6 +465,11 @@ esp_err_t mutate(httpd_req_t *request) {
   const bool matched = setup || verify(login ? form.password : form.current, snapshot, cryptoOkay);
   lastCheckDuration.store(uint32_t(std::max<int64_t>(0, nowMs() - checkStarted)));
   lastHttpStackFree.store(uint32_t(uxTaskGetStackHighWaterMark(nullptr)));
+  if (lastCheckDuration.load() >= 3000) {
+    diagnostic_log::Snapshot slow{};
+    slow.elapsed_ms = lastCheckDuration.load(); slow.detail = int32_t(lastHttpStackFree.load());
+    diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Http, 0x0304, slow);
+  }
   if (!matched) {
     { Lock lock; if (lock.held && cryptoOkay) { failedAttempt(); retrySeconds = unsigned((nextAttempt - nowMs() + 999) / 1000); } }
     erase(&snapshot, sizeof(snapshot));

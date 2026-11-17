@@ -246,7 +246,12 @@ The 100,000-round derivation reuses SHA-256 HMAC pad states through a local
 software SHA-256 adapter, avoiding per-block access to the shared SHA/AES engine.
 The adapter uses the builtin private SHA API in the pinned ESP-IDF 6 / Mbed TLS 4
 toolchain; do not update that dependency without rebuilding and verifying vectors.
-Elapsed-time checks every eight rounds yield after about 4 ms of CPU work.
+During derivation only, the HTTP task temporarily shares idle priority with
+CPU0's idle task. The caller's original priority is restored before any session
+lock or response, including on crypto failure. No auth/filesystem mutex is held
+in this CPU-only scope. Existing elapsed-time checks every eight rounds still
+block for one tick after about 4 ms. Newly queued background TLS work is deferred
+while an auth operation is admitted; in-flight work and telemetry continue.
 The output
 and credential layout remain compatible with previously saved passwords;
 iteration count, session expiry and failed-attempt limits are unchanged.
@@ -259,6 +264,9 @@ and unsupported charsets are rejected before password verification.
 Password checks and persistence admission exclude each other atomically. The
 protected `/health` endpoint includes `auth_check_ms` and `auth_http_stack_free`
 to measure real-device latency and HTTP-task stack headroom without credentials.
+Checks taking at least three seconds add warning 0x0304 with elapsed milliseconds
+and stack headroom only. The request-body deadline is checked after each receive,
+including a final chunk arriving late; late bodies never start the KDF.
 These changes do not establish the cause of any prior hardware reset; capture
 the reset reason and UART panic log if resets recur.
 The separate credential record is saved by the network task only after the

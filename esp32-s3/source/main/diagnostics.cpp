@@ -91,6 +91,7 @@ const char* message(uint16_t code) noexcept {
     case 0x0301: return "Authentication throttled";
     case 0x0302: return "Authentication form invalid";
     case 0x0303: return "Authentication crypto failed";
+    case 0x0304: return "Password verification slow; detail is HTTP stack free bytes";
     case 0x0500: return "Wi-Fi station recovery started";
     case 0x0501: return "Wi-Fi station recovery failed";
     case 0x0502: return "Automatic recovery restart queued";

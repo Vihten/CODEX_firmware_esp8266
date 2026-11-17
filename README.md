@@ -8,6 +8,19 @@ This repository now targets ESP32-S3-WROOM-1-N16R8 only: 16 MiB flash,
 - [Standalone source and instructions](esp32-s3/README.md).
 - [Windows application and LAN agent](https://github.com/Vihten/CODEX_app).
 
+## Login scheduling and watchdog safety (2026-11-17)
+
+Firmware 1795010000000 runs password derivation at temporary idle priority,
+restoring HTTP priority on every return before session locks and response work.
+It keeps PBKDF2-HMAC-SHA256 at 100,000 rounds and periodic blocking checkpoints.
+New background TLS jobs defer while authentication is admitted; existing jobs
+are allowed to finish and alert state is not cleared by this deferral.
+Slow verification records warning 0x0304 with duration and HTTP stack headroom.
+The request-body deadline also rejects a final form fragment received too late.
+No credential migration, watchdog disabling or timeout increase is required.
+Native tests verify scheduling policy and credential compatibility; real-device
+repeated-login stability must be checked after installation.
+
 ## Exhausted quota night slots (2026-11-17)
 
 Firmware 1795000000000 removes both lower-edge exhausted-quota pixel pairs.

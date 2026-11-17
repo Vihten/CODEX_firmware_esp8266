@@ -4,6 +4,14 @@ This is a separate ESP-IDF firmware target for ESP32-S3-WROOM-1-N16R8:
 16 MiB quad flash and 8 MiB octal PSRAM. The firmware repository now publishes
 S3 as its primary target; ESP8266 releases remain only in Git history.
 
+## Claude sky correction (2026-11-17)
+
+Claude sunrise and sunset retain the asterisk through the final LED row;
+foreground masks protect the complete logo from cloud motion. Daylight coverage
+limits the selected Claude tint to the day side, leaving the night sky cool blue.
+Coverage coefficients are cached without per-frame allocation. Export checks
+cover all 201 frames, including fractional horizon samples.
+
 ## Fault recovery and memory
 
 The boot-only cJSON allocator uses PSRAM without falling back to the internal

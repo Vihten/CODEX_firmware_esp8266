@@ -64,6 +64,7 @@ uint32_t sceneFrameMilli = 0;
 uint32_t quotaFrameMilli = 0, skySampleAt = 0;
 bool skySampleReady = false;
 uint8_t claudeTint = 0;
+sky_palette::Daylight skyDaylight;
 quota_provider::Provider skyProvider = quota_provider::Provider::Codex;
 external_light::Sequence lightSequence;
 bool matrixDark = true;
@@ -144,7 +145,7 @@ void preserveNightSkyPixel(uint8_t *rgb, uint16_t index, uint8_t effectType, uin
   if (!brightness || effectType || pgm_read_byte(&ENTRANCE_FIXED[index]) ||
       rgb[2] < 2 || rgb[2] > 4 || rgb[1] >= rgb[2] || rgb[0] > rgb[1]) return;
   const uint8_t minimumBlue = 5;
-  rgb[2] = sky_palette::nightBlue(rgb[2], minimumBlue, claudeTint, control.codexSkyColor);
+  rgb[2] = sky_palette::nightBlue(rgb[2], minimumBlue, claudeTint, control.codexSkyColor, skyDaylight.at(sceneFrameMilli, index % MATRIX_WIDTH, index / MATRIX_WIDTH));
 }
 float entranceClosingFrom = 0, entranceClosingTo = 0;
 uint32_t entranceClosingAt = 0;
@@ -904,7 +905,7 @@ void modulateSky(uint8_t *rgb, uint8_t type, uint8_t x, uint8_t y) {
   for (unsigned channel = 0; channel < 3; ++channel) rgb[channel] = (uint16_t(rgb[channel]) * scale + 127) / 255;
   if (!pgm_read_byte(&PYRAMID_MASK[index]))
     sky_palette::apply(rgb, type, pgm_read_byte(&ENTRANCE_FIXED[index]), claudeTint,
-        control.codexSkyColor, control.claudeSkyColor);
+        control.codexSkyColor, control.claudeSkyColor, skyDaylight.at(sceneFrameMilli, x, y));
 }
 
 subpixel::Pixel meteorLayer[NUM_LEDS];
@@ -1308,8 +1309,7 @@ void drawExhaustedProviders() {
 void preserveGammaNightBackground() {
   if (!control.on || !control.brightness || !sceneVisible || !sceneTargetOn ||
       sceneProgress < SCENE_DURATION_MS || status.memorialTransition ||
-      control.maintenance != Maintenance::None || blackHoleAmount() ||
-      sceneFrameMilli < 75000 || sceneFrameMilli > 125000) return;
+      control.maintenance != Maintenance::None || blackHoleAmount()) return;
   uint8_t *pixels = strip.getPixels();
   if (!pixels) return;
   // Use the driver's brightness-normalized gamma policy, not a fixed staged
@@ -1321,7 +1321,7 @@ void preserveGammaNightBackground() {
   for (unsigned y = 0; y < MATRIX_HEIGHT; ++y)
     for (unsigned x = 0; x < MATRIX_WIDTH; ++x) {
       const unsigned index = y * MATRIX_WIDTH + x;
-      if (effectMask[index] || pgm_read_byte(&ENTRANCE_FIXED[index]) ||
+      if (skyDaylight.at(sceneFrameMilli, x, y) || effectMask[index] || pgm_read_byte(&ENTRANCE_FIXED[index]) ||
           pgm_read_byte(&PYRAMID_MASK[index])) continue;
       uint8_t *grb = pixels + physicalIndex(x, y) * 3;
       const unsigned peak = max(grb[0], max(grb[1], grb[2]));

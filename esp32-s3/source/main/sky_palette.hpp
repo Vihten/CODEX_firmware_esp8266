@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <array>
 #include <cmath>
 #include "quota_provider.hpp"
 
@@ -31,6 +32,20 @@ class Daylight {
   float nx_ = 0.0f, ny_ = 0.0f;
 };
 
+// sqrt(ratio) precompensates the output driver's per-channel gamma 2.
+// Compile-time, 256 bytes; no runtime sqrt, mutable cache or allocation.
+constexpr std::array<uint8_t, 256> makeInverseGamma2() {
+  std::array<uint8_t, 256> result{};
+  for (unsigned i = 0; i < result.size(); ++i) {
+    unsigned root = 0;
+    while (root < 255 && (root + 1) * (root + 1) <= i * 255) ++root;
+    if (root < 255 && i * 255 - root * root > root) ++root;
+    result[i] = uint8_t(root);
+  }
+  return result;
+}
+inline constexpr auto inverseGamma2 = makeInverseGamma2();
+
 inline void colorize(uint8_t *rgb, uint8_t type, bool fixed, uint32_t color) {
   const unsigned cool = rgb[1] > rgb[2] ? rgb[1] : rgb[2];
   unsigned base = 0, light = 0;
@@ -41,24 +56,28 @@ inline void colorize(uint8_t *rgb, uint8_t type, bool fixed, uint32_t color) {
     if (rgb[2] < base) base = rgb[2];
     light = cool - rgb[0];
   } else return;
+  const unsigned red = (color >> 16) & 255;
+  const unsigned green = (color >> 8) & 255;
+  const unsigned blue = color & 255;
+  const unsigned maximum = red > green ? (red > blue ? red : blue)
+                                        : (green > blue ? green : blue);
+  // Keep the authored peak envelope, including headroom for neutral cores.
+  const unsigned authoredPeak = (light * 3 * maximum + 255) / 510;
+  const unsigned peak = authoredPeak > 255 - base ? 255 - base : authoredPeak;
   for (unsigned channel = 0; channel < 3; ++channel) {
     const unsigned component = (color >> (16 - channel * 8)) & 255;
-    const unsigned value = base + (light * 3 * component + 255) / 510;
+    const unsigned ratio = maximum ? (component * 255 + maximum / 2) / maximum : 0;
+    const unsigned value = base + (peak * inverseGamma2[ratio] + 127) / 255;
     rgb[channel] = uint8_t(value > 255 ? 255 : value);
   }
 }
 
 inline void apply(uint8_t *rgb, uint8_t type, bool fixed, uint8_t amount,
                   uint32_t codex, uint32_t claude, uint8_t daylight = 255) {
-  if (codex == codexDefault && claude == claudeDefault && daylight == 255) {
-    quota_provider::tint(rgb, type, fixed, amount);
-    return;
-  }
   uint8_t first[3] = {rgb[0], rgb[1], rgb[2]};
   uint8_t second[3] = {rgb[0], rgb[1], rgb[2]};
   if (codex != codexDefault) colorize(first, type, fixed, codex);
-  if (claude == claudeDefault) quota_provider::tint(second, type, fixed, 255);
-  else colorize(second, type, fixed, claude);
+  colorize(second, type, fixed, claude);
   for (unsigned channel = 0; channel < 3; ++channel) {
     const unsigned dayColor = (unsigned(rgb[channel]) * (255 - daylight) +
                                unsigned(second[channel]) * daylight + 127) / 255;

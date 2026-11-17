@@ -49,6 +49,48 @@ constexpr uint32_t scaleFor(uint64_t correctedChannelSum, uint32_t pixels) {
       : static_cast<uint32_t>(available * kUnity / demand);
 }
 
+// Hold exceeds the authored 5 s / 7 s object and 6.9 s cloud-sheen cycles.
+// Recovery is linear: two seconds of active updates for the full Q16 range.
+class Envelope {
+ public:
+  static constexpr uint32_t kHoldMs = 8000;
+  static constexpr uint32_t kRecoveryMs = 2000;
+  static constexpr uint32_t kMaxRecoveryStepMs = 250;
+
+  void reset() { *this = Envelope{}; }
+
+  uint32_t update(uint32_t required, uint32_t now) {
+    if (required > kUnity) required = kUnity;
+    const uint32_t elapsed = initialized_ ? uint32_t(now - previousMs_) : 0;
+    previousMs_ = now;
+    initialized_ = true;
+    // Safety attack is immediate, even after a long pause or timer wrap.
+    // Equal peaks renew the hold so periodic loads cannot pump the base scene.
+    if (required <= scale_) {
+      scale_ = required;
+      holdMs_ = kHoldMs;
+      remainder_ = 0;
+      return scale_;
+    }
+    const uint32_t held = elapsed < holdMs_ ? elapsed : holdMs_;
+    holdMs_ -= held;
+    uint32_t recovery = elapsed - held;
+    if (recovery > kMaxRecoveryStepMs) recovery = kMaxRecoveryStepMs;
+    const uint32_t numerator = recovery * kUnity + remainder_;
+    const uint32_t next = scale_ + numerator / kRecoveryMs;
+    scale_ = next < required ? next : required;
+    remainder_ = scale_ == required ? 0 : numerator % kRecoveryMs;
+    return scale_;
+  }
+
+ private:
+  uint32_t scale_ = kUnity;
+  uint32_t previousMs_ = 0;
+  uint32_t holdMs_ = 0;
+  uint32_t remainder_ = 0;
+  bool initialized_ = false;
+};
+
 constexpr uint8_t scaled(uint8_t value, uint32_t scale) {
   return static_cast<uint8_t>(uint64_t(value) * scale / kUnity);
 }
@@ -122,6 +164,7 @@ private:
   uint8_t brightness_ = 0; // Adafruit encoding: 0 means full brightness.
   bool gamma_ = false;
   uint8_t nonzeroFloor_ = 0;
+  led_output_policy::Envelope envelope_;
   uint32_t outputScaleQ16_ = led_output_policy::kUnity;
   uint32_t estimatedMatrixCurrentMa_ = 0;
   uint32_t estimatedSupplyCurrentMa_ = 0;

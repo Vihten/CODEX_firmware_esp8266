@@ -8,6 +8,18 @@ This repository now targets ESP32-S3-WROOM-1-N16R8 only: 16 MiB flash,
 - [Standalone source and instructions](esp32-s3/README.md).
 - [Windows application and LAN agent](https://github.com/Vihten/CODEX_app).
 
+## Stable sky brightness and orange hue (2026-11-17)
+
+Firmware 1795020000000 compensates selected sky colors for output gamma so
+orange retains its green component instead of shifting toward red. Black night
+and neutral cloud details remain unchanged. The current limiter still clamps
+unsafe demand immediately, holds recent peaks for eight seconds, and restores
+brightness smoothly to avoid pumping as animated effects change frame load.
+The envelope uses fixed memory and resets on actual brightness changes.
+Current figures remain conservative estimates, not measured supply current.
+Native output/palette/render regressions and the ESP32-S3 build passed;
+visual stability on the physical matrix still needs post-install verification.
+
 ## Login scheduling and watchdog safety (2026-11-17)
 
 Firmware 1795010000000 runs password derivation at temporary idle priority,

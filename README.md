@@ -8,6 +8,13 @@ This repository now targets ESP32-S3-WROOM-1-N16R8 only: 16 MiB flash,
 - [Standalone source and instructions](esp32-s3/README.md).
 - [Windows application and LAN agent](https://github.com/Vihten/CODEX_app).
 
+## Restored Claude upper cloud (2026-11-17)
+
+Firmware 1795040000000 restores the upper Claude cloud at its original position,
+including sway and shimmer effect masks. Logo foreground protection, Codex
+artwork, stable exposure and orange hue handling remain in place. Artwork,
+logo-bank and generated-mask regressions, analysis and ESP32-S3 build passed.
+
 ## Latched exposure and low-light orange (2026-11-17)
 
 Firmware 1795030000000 removes automatic current-limit gain recovery. Recent

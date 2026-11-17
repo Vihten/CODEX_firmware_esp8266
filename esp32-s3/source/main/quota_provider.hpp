@@ -33,10 +33,11 @@ struct State {
   }
 };
 struct Rotation {
-  static constexpr uint32_t claudeGraceMs = 120000;
+  static constexpr uint32_t claudeGraceMs = 120000, exhaustedMs = 60000;
+  uint8_t snapshotMode = 255;
   Provider active = Provider::Codex;
   uint32_t since = 0, claudeFreshAt = 0, interval = rotationMs;
-  // The snapshot overload passes rotation eligibility to the boolean overload.
+  // Snapshot rotation also assigns a short duration to exhausted services.
   bool started = false, bothFresh = false;
   bool seenFresh = false;
   // Fresh known balances include zero. Only Claude's known positive balance
@@ -58,15 +59,54 @@ struct Rotation {
     const bool claudeAvailable = available(Provider::Claude, claude, now);
     const bool codexPositive = codexAvailable && codex.remaining > 0;
     const bool claudePositive = claudeAvailable && claude.remaining > 0;
-    if (codexPositive || claudePositive)
-      return update(codexPositive, claudePositive, now, intervalMs);
-    // Zero remains valid data, but two exhausted providers do not rotate.
-    if (codexAvailable != claudeAvailable)
+    if (!intervalMs) intervalMs = rotationMs;
+    // A fresh exhausted service is still valid data. Give it one minute of
+    // night, then return to the positive service for the configured interval.
+    // Modes encode eligibility and zero/positive state, never polling timestamps.
+    const uint8_t mode = uint8_t((codexAvailable ? (codexPositive ? 2 : 1) : 0) |
+        ((claudeAvailable ? (claudePositive ? 2 : 1) : 0) << 2));
+    if (!started) {
+      if (codexPositive != claudePositive) active = claudePositive ? Provider::Claude : Provider::Codex;
+      else if (codexAvailable != claudeAvailable) active = claudeAvailable ? Provider::Claude : Provider::Codex;
+    }
+    const unsigned shift = active == Provider::Codex ? 0U : 2U;
+    const unsigned otherShift = shift ^ 2U;
+    const bool preservePositiveSlot = started &&
+        ((snapshotMode >> shift) & 3U) == 2U && ((mode >> shift) & 3U) == 2U &&
+        ((snapshotMode >> otherShift) & 3U) <= 1U && ((mode >> otherShift) & 3U) <= 1U;
+    // A zero provider can expire between polls. Do not restart the positive
+    // interval on each zero/missing toggle, or its recurring night is starved.
+    if (!started || (snapshotMode != mode && !preservePositiveSlot) || interval != intervalMs) since = now;
+    // If the exhausted service returns after its scheduled turn was missed,
+    // start a complete one-minute slot now, not the tail of an imaginary slot.
+    if (preservePositiveSlot && interval == intervalMs &&
+        ((snapshotMode >> otherShift) & 3U) == 0U && ((mode >> otherShift) & 3U) == 1U &&
+        uint32_t(now - since) >= intervalMs) since = now - intervalMs;
+    started = true; snapshotMode = mode; interval = intervalMs;
+    bothFresh = codexAvailable && claudeAvailable;
+    if (codexAvailable != claudeAvailable) {
       active = claudeAvailable ? Provider::Claude : Provider::Codex;
-    // Neither available: retain identity only; available() reports no data.
-    return update(false, false, now, intervalMs);
+      return active;
+    }
+    // Unknown data uses the existing no-data fallback. Both exhausted services
+    // already show night, so retain identity rather than rotating identical skies.
+    if (!codexAvailable || (!codexPositive && !claudePositive)) return active;
+    const uint32_t codexDuration = codexPositive ? interval : exhaustedMs;
+    const uint32_t claudeDuration = claudePositive ? interval : exhaustedMs;
+    const uint32_t activeDuration = active == Provider::Codex ? codexDuration : claudeDuration;
+    const uint64_t cycle = uint64_t(codexDuration) + claudeDuration;
+    const uint32_t elapsed = uint32_t(now - since);
+    // Bounded catch-up, including millis wrap and long pauses; never spin once
+    // per missed turn and never allocate in the network owner.
+    since += uint32_t(uint64_t(elapsed) / cycle * cycle);
+    if (uint64_t(elapsed) % cycle >= activeDuration) {
+      since += activeDuration;
+      active = active == Provider::Codex ? Provider::Claude : Provider::Codex;
+    }
+    return active;
   }
   Provider update(bool codexFresh, bool claudeFresh, uint32_t now, uint32_t intervalMs = rotationMs) {
+    snapshotMode = 255;
     if (!intervalMs) intervalMs = rotationMs;
     if (interval != intervalMs) { interval = intervalMs; since = now; }
     if (!started) { started = true; since = now; }

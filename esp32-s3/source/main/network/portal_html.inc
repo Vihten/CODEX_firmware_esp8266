@@ -343,9 +343,9 @@ void writeAgentSummary(Html &html, const View &view) {
 }
 void writeOverview(Html &html, const View &view) {
   writePortalStats(html, view);
-  html.text("<p class='muted' data-quota-rotation-status>Коли доступні обидва сервіси, матриця чергує Codex і Claude Code з інтервалом ");
+  html.text("<p class='muted' data-quota-rotation-status>Чергування сервісів: доступний залишок — ");
   html.format("%u", unsigned(view.control.quotaRotationMinutes));
-  html.text(" хв. Інтервал можна змінити в <a href='/settings#settings-appearance'>налаштуваннях вигляду й лімітів</a>.</p>");
+  html.text(" хв; 0% — 60 с нічного неба. Показуються лише сервіси з придатними даними. <a href='/settings#settings-appearance'>Налаштування вигляду й лімітів</a>.</p>");
   html.text("<div class='overview-toolbar' data-overview-toolbar data-device-controls><section class='matrix-quick-controls'><div class='section-head'><h2>Матриця</h2><span class='muted' data-live='matrix'>");
   html.text(portalMatrixState(view)); html.file("templates/overview/power-heading.html");
   html.file("templates/overview/power-form-open.html");

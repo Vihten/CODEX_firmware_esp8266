@@ -114,11 +114,11 @@
           if (!dirtyForms.has(input.closest('form'))) input.value = String(status.quota_rotation_minutes);
         });
       const rotationMinutes = Number.isInteger(status.quota_rotation_minutes) && status.quota_rotation_minutes >= 1 && status.quota_rotation_minutes <= 60
-        ? `${status.quota_rotation_minutes} хв` : 'заданий інтервал';
+        ? `${status.quota_rotation_minutes} хв` : 'інтервал із налаштувань';
       const providerName = status.quota_provider === 'claude' ? 'Claude Code' : status.quota_provider === 'codex' ? 'Codex' : null;
-      const rotationRule = `Codex і Claude Code перемикаються кожні ${rotationMinutes}, коли обидва мають доступний залишок. Якщо доступний лише один сервіс, використовується він.`;
+      const rotationRule = `Чергування сервісів: доступний залишок — ${rotationMinutes}; 0% — 60 с нічного неба. Показуються лише сервіси з придатними даними.`;
       setText(rotationStatusNodes, `${rotationRule} ${status.on === false ? 'Матрицю вимкнено.' :
-        status.quota_available !== true || !providerName ? 'Зараз немає доступних даних для неба.' : `Зараз небо показує ${providerName}.`}`);
+        status.quota_available === true && providerName ? `Зараз небо показує ${providerName}.` : ''}`);
       appearanceForms.forEach(form => {
         if (dirtyForms.has(form)) return;
         for (const provider of ['codex', 'claude']) {

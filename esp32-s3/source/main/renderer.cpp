@@ -1291,22 +1291,6 @@ void drawAirAlertIndicator(bool alternateScreen, bool procedural = false) {
     }
 }
 
-void drawExhaustedProviders() {
-  if (!control.on || !control.connected || !control.accountLinked ||
-      control.maintenance != Maintenance::None || status.memorialTransition ||
-      sceneProgress < SCENE_DURATION_MS || blackHoleAmount()) return;
-  // Independent two-pixel marks on the bottom edge; never select an exhausted
-  // provider as the main scene or interfere with the alert's upper corners.
-  const auto mark = [](const quota_provider::Snapshot &snapshot, unsigned x, uint32_t color) {
-    if (!snapshot.known || !snapshot.fresh || snapshot.remaining != 0) return;
-    for (unsigned dx = 0; dx < 2 && x + dx < MATRIX_WIDTH; ++dx)
-      strip.setPixelColor(physicalIndex(x + dx, MATRIX_HEIGHT - 1), color);
-  };
-  mark(control.codexQuota, 0, control.codexSkyColor);
-  mark(control.claudeQuota, 3, control.claudeSkyColor);
-}
-
-
 bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
                  uint16_t &frame, bool finishingMeteorFlight) {
 #if EVENT_MODE
@@ -1404,7 +1388,6 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
   #endif
 
   drawBlackHole();
-  drawExhaustedProviders();
   return true;
 }
 

@@ -661,12 +661,17 @@ For 1,000 pixels the dynamic matrix allowance is 5,450 mA. Current limiting
 scales only the driver copy, never compounds on staged pixels, and overrides
 visibility floors. This is a model; verify actual consumption with an ammeter.
 Gamma 2.0 for every visible frame is normalized to the configured brightness and stays continuous
-through black-hole/memorial blends. Night sky background recovers a visible
-post-brightness level without illuminating genuinely black artwork.
+through black-hole/memorial blends. Night background is black for both services;
+no post-brightness background lift is applied.
 
-An exhausted provider retains its identity as a two-pixel lower-edge mark:
-Codex at columns 0-1, Claude at columns 3-4. The main scene continues to prefer
-available positive quota. Provider tint and quota position share one transition.
+Exhausted-provider lower-edge marks have been removed. When one fresh known
+quota is zero and the other is positive, rotation repeatedly shows the zero
+provider as night for 60 seconds and the positive provider for the configured
+interval. Two positive providers use the configured interval each; two zero
+providers keep night without unnecessary identity switching. Unknown/stale zero
+is never treated as fresh exhaustion. Provider tint and quota position continue
+to share the existing interruptible transition. Rotation uses fixed memory and
+bounded elapsed-time catch-up, including millis wrap.
 
 Overview exposes each provider's reset timestamp, data age, and stale state.
 Supplemental `LFR1,account,client,provider,quotaAccount,resetEpoch,ageSeconds`

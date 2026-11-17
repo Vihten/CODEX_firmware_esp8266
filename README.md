@@ -8,6 +8,15 @@ This repository now targets ESP32-S3-WROOM-1-N16R8 only: 16 MiB flash,
 - [Standalone source and instructions](esp32-s3/README.md).
 - [Windows application and LAN agent](https://github.com/Vihten/CODEX_app).
 
+## Exhausted quota night slots (2026-11-17)
+
+Firmware 1795000000000 removes both lower-edge exhausted-quota pixel pairs.
+A known fresh zero quota returns as a 60-second night slot; its positive peer
+uses the configured rotation interval. Slots recur. Both zero quotas retain
+night; unavailable zero data is not displayed as fresh. Short polling gaps do
+not restart the positive slot, and an overdue returning zero starts a full slot.
+The existing smooth provider transition is retained.
+
 ## Dated weekly accounting (2026-11-17)
 
 Firmware 1794990000000 derives the weekly ranking from the same daily ledger as

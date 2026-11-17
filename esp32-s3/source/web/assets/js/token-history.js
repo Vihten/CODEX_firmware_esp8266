@@ -3,6 +3,7 @@
   'use strict';
   const DAY = 86400000;
   const number = new Intl.NumberFormat('uk-UA');
+  const compactNumber = new Intl.NumberFormat('uk-UA', {notation: 'compact', maximumFractionDigits: 1});
   const percent = new Intl.NumberFormat('uk-UA', {maximumFractionDigits: 1});
   const dateLabel = new Intl.DateTimeFormat('uk-UA', {day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC'});
   const compactDate = new Intl.DateTimeFormat('uk-UA', {weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC'});
@@ -62,6 +63,9 @@
       return node;
     };
     const status = find('status'), grid = find('grid'), details = find('details');
+    grid.classList.add('token-history-chart');
+    grid.setAttribute('role', 'group');
+    grid.setAttribute('aria-label', 'Токени за сім днів');
     const buttons = new Map(), refreshButton = find('refresh');
     let model = null, selected = null, hovered = null, pinned = false;
     let active = null, lastAttempt = -Infinity, denied = false, signature = '', disposed = false, pollTimer = null;
@@ -118,8 +122,11 @@
         hide(); hovered = null; grid.replaceChildren(); buttons.clear();
         for (const day of entries) {
           const wrap = el('div', undefined, 'token-history-day');
-          const button = el('button', undefined, 'token-history-cell');
+          const button = el('button', undefined, 'token-history-bar');
           button.type = 'button'; button.dataset.date = day.id;
+          const fill = el('span', undefined, 'token-history-bar-fill');
+          fill.setAttribute('aria-hidden', 'true');
+          button.append(fill);
           button.addEventListener('pointerenter', () => { hovered = day.id; inspect(day.id); });
           // Keep the tooltip reachable when the pointer moves onto its content.
           button.addEventListener('pointerleave', () => { hovered = null; });
@@ -140,14 +147,21 @@
           });
           const label = el('span', compactDate.format(day.date), 'token-history-date');
           label.setAttribute('aria-hidden', 'true');
-          wrap.append(button, label); grid.append(wrap); buttons.set(day.id, button);
+          const value = el('span', '', 'token-history-value');
+          value.setAttribute('aria-hidden', 'true');
+          wrap.append(value, button, label); grid.append(wrap); buttons.set(day.id, button);
         }
         signature = nextSignature;
         if (focusedId) buttons.get(buttons.has(focusedId) ? focusedId : key(model.today)).focus();
       }
       for (const day of entries) {
         const button = buttons.get(day.id);
-        button.dataset.level = String(level(day.value, max)); button.dataset.unknown = String(day.tokens === null);
+        button.dataset.level = String(level(day.tokens, max));
+        const height = day.tokens === null || !max ? 0 : day.tokens / max * 100;
+        button.style.setProperty('--history-bar-percent', String(height));
+        button.parentNode.querySelector('.token-history-value').textContent = day.future ? '—' :
+          day.tokens === null ? 'Немає даних' : compactNumber.format(day.tokens);
+        button.dataset.unknown = String(day.tokens === null);
         button.dataset.future = String(day.future); button.dataset.today = String(day.id === key(model.today));
         const amount = day.future ? 'Ще не настав' : day.tokens === null ? 'Немає даних' : `${number.format(day.tokens)} токенів`;
         button.setAttribute('aria-label', `${dateLabel.format(day.date)}: ${amount}; використання ліміту: немає денних даних`);
@@ -180,7 +194,7 @@
         if (request.signal.aborted || disposed) return;
         if (!next.available) { clear(); status.textContent = 'Історія поки недоступна. Дані не підмінюються нулями.'; return; }
         model = next; render();
-        status.textContent = next.save_failed ? 'Не вдалося зберегти історію на контролері. Показано поточні дані; після перезапуску вони можуть бути втрачені.' : next.saving ? 'Історія зберігається на контролері…' : model.days.size ? 'Поточний тиждень · усі агенти. Пунктиром позначено дні без даних.' : 'Ще немає записаних днів. Невідомі значення не означають нуль токенів.';
+        status.textContent = next.save_failed ? 'Не вдалося зберегти історію на контролері. Показано поточні дані; після перезапуску вони можуть бути втрачені.' : model.days.size ? '' : 'Ще немає записаних днів. Невідомі значення не означають нуль токенів.';
       } catch (error) {
         if (!denied && !disposed && !doc.hidden) status.textContent = model ? 'Не вдалося оновити історію. Показано останні отримані дані; повторна спроба — через 30 секунд.' : 'Не вдалося завантажити історію. Повторна спроба — через 30 секунд.';
       } finally {

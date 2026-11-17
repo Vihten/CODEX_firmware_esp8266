@@ -1,7 +1,7 @@
-# Token activity calendar
+# Weekly token activity chart
 
 The Agents page keeps the weekly agent ranking and shows exactly seven token
-activity squares for the current Monday–Sunday calendar week, using the
+activity bars for the current Monday–Sunday calendar week, using the
 controller's Kyiv date. The heading shows the full week range and the summary
 adds only known daily totals. There is no year grid, aggregation-mode switch,
 or weekly details table. The underlying history still retains 366 dates.
@@ -10,6 +10,10 @@ Unknown days are distinct from a reported zero; future days stay unknown.
 Older weekly/lifetime totals are never distributed across invented daily buckets.
 The blue-to-white scale is relative daily token activity within the visible week,
 not account quota consumption.
+
+Bar height and color share the visible week's maximum. Compact labels fit on
+phones; tooltips retain exact totals. Normal background checkpointing does not
+show a persistent loading message; actual save failures remain visible.
 
 Hover, keyboard focus, or click opens the day's tooltip with its date, token
 total, and account quota availability. Pointer leave hides an unpinned tooltip

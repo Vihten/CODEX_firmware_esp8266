@@ -8,6 +8,30 @@ This repository now targets ESP32-S3-WROOM-1-N16R8 only: 16 MiB flash,
 - [Standalone source and instructions](esp32-s3/README.md).
 - [Windows application and LAN agent](https://github.com/Vihten/CODEX_app).
 
+## Clearer portal and quota reset telemetry (2026-11-17)
+
+Firmware 1795050000000 widens the desktop portal and aligns visible matrix
+controls. Agent connections, ranking and history have icon navigation with
+progressive JS sections and native anchor fallback. Color controls are collapsed;
+Overview lists every online agent by descending activity. The weekly chart fills
+its available width with seven accessible bars, exact-count tooltips and compact
+labels. Missing daily quota percentages remain unknown, never inferred from tokens.
+Unknown reset times are omitted; fresh samples read "updated just now" in the
+Ukrainian UI. Rotation guidance is brief. Internal checkpoint chatter is hidden;
+actual save failures remain visible. Brightness includes the power-limit note.
+
+Signed agent 20261117180000 sends observed five-hour reset metadata for verified
+marketing accounts through the existing LFR1 protocol. It retains the previous
+publisher key and update/identity/accounting contracts. Update firmware first,
+then online agents using the Agents page. The bootstrap archive is also updated.
+The reset label explicitly names the five-hour window: Codex's historical
+minimum-across-windows remaining value has not been redefined.
+
+Validation: 99 native network contracts, 78 portal behaviors, history/generator,
+web-bundle, alert/lighting regressions, agent reset/app-server checks, and ESP32-S3
+build. Local browser QA at phone and 1440px desktop widths showed no horizontal
+overflow. This release has not been installed on the physical controller by Codex.
+
 ## Restored Claude upper cloud (2026-11-17)
 
 Firmware 1795040000000 restores the upper Claude cloud at its original position,

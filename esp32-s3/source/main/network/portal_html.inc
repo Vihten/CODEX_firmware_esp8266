@@ -242,14 +242,16 @@ void writePortalStats(Html &html, const View &view) {
           if (quota.resetAt && epoch >= 1700000000) {
             if (uint64_t(epoch) < quota.resetAt) {
               const uint32_t minutes = (quota.resetAt - uint32_t(epoch) + 59) / 60;
-              if (minutes >= 60) html.format("Скидання через %lu год %lu хв", (unsigned long)(minutes / 60), (unsigned long)(minutes % 60));
-              else html.format("Скидання через %lu хв", (unsigned long)minutes);
+              if (minutes >= 60) html.format("Скидання 5-годинного ліміту через %lu год %lu хв", (unsigned long)(minutes / 60), (unsigned long)(minutes % 60));
+              else html.format("Скидання 5-годинного ліміту через %lu хв", (unsigned long)minutes);
             } else html.text("Очікуємо оновлення ліміту");
-          } else html.text(portal_strings::resetUnknown);
+          }
           if (quota.ageSeconds != UINT32_MAX) {
-            if (quota.ageSeconds < 60) html.format(" · дані %lu с тому", (unsigned long)quota.ageSeconds);
-            else if (quota.ageSeconds < 3600) html.format(" · дані %lu хв тому", (unsigned long)(quota.ageSeconds / 60));
-            else html.format(" · дані %lu год тому", (unsigned long)(quota.ageSeconds / 3600));
+            if (quota.resetAt && epoch >= 1700000000) html.text(" · ");
+            if (quota.ageSeconds < 5) html.text("Оновлено щойно");
+            else if (quota.ageSeconds < 60) html.format("Оновлено %lu с тому", (unsigned long)quota.ageSeconds);
+            else if (quota.ageSeconds < 3600) html.format("Оновлено %lu хв тому", (unsigned long)(quota.ageSeconds / 60));
+            else html.format("Оновлено %lu год тому", (unsigned long)(quota.ageSeconds / 3600));
           }
           if (!quota.fresh) { html.text(" · "); html.text(portal_strings::stale); }
           break;
@@ -328,12 +330,14 @@ void writeAgentSummaryRow(Html &html, const AgentInput &agent) {
 void writeAgentSummary(Html &html, const View &view) {
   html.file("templates/summary/section-open.html");
   html.file("templates/summary/list-open.html");
+  const AgentInput *ordered[kAgentCapacity] = {};
   unsigned known = 0;
-  for (const bool online : {true, false}) for (const auto &agent : view.control.agents) {
-    if (agent.present != online || (!agent.present && !agent.name[0])) continue;
-    ++known;
-    writeAgentSummaryRow(html, agent);
-  }
+  for (const auto &agent : view.control.agents)
+    if (agent.present) ordered[known++] = &agent;
+  std::sort(ordered, ordered + known, [](const AgentInput *a, const AgentInput *b) {
+    return a->activity != b->activity ? a->activity > b->activity : a->clientId < b->clientId;
+  });
+  for (unsigned i = 0; i < known; ++i) writeAgentSummaryRow(html, *ordered[i]);
   if (!known) html.file("templates/summary/empty.html");
   html.file("templates/agents/list-close.html");
   html.file("templates/summary/template-open.html");
@@ -343,9 +347,9 @@ void writeAgentSummary(Html &html, const View &view) {
 }
 void writeOverview(Html &html, const View &view) {
   writePortalStats(html, view);
-  html.text("<p class='muted' data-quota-rotation-status>Чергування сервісів: доступний залишок — ");
+  html.text("<p class='muted rotation-summary'><span data-quota-rotation-status>Небо чергує сервіси кожні ");
   html.format("%u", unsigned(view.control.quotaRotationMinutes));
-  html.text(" хв; 0% — 60 с нічного неба. Показуються лише сервіси з придатними даними. <a href='/settings#settings-appearance'>Налаштування вигляду й лімітів</a>.</p>");
+  html.text(" хв</span><a class='info-link' href='/settings#settings-appearance' aria-label='Налаштувати чергування сервісів' title='Налаштувати чергування сервісів'><svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' aria-hidden='true'><circle cx='12' cy='12' r='9'/><path d='M12 11v6M12 7v1'/></svg></a></p>");
   html.text("<div class='overview-toolbar' data-overview-toolbar data-device-controls><section class='matrix-quick-controls'><div class='section-head'><h2>Матриця</h2><span class='muted' data-live='matrix'>");
   html.text(portalMatrixState(view)); html.file("templates/overview/power-heading.html");
   html.file("templates/overview/power-form-open.html");
@@ -370,7 +374,7 @@ void writeOverview(Html &html, const View &view) {
     }
   });
   html.file("templates/overview/brightness-actions.html");
-  html.text("<div class='actions overview-advanced-actions'><a class='button secondary' href='#schedule-panel' data-device-settings='schedule' aria-haspopup='dialog'>Розклад…</a><a class='button secondary' href='#external-light-panel' data-device-settings='lighting' aria-haspopup='dialog'>Підсвітка…</a></div></div>");
+  html.text("<div class='actions overview-advanced-actions'><a class='button secondary' href='#schedule-panel' data-device-settings='schedule' aria-haspopup='dialog'>Розклад…</a><a class='button secondary' href='#external-light-panel' data-device-settings='lighting' aria-haspopup='dialog'>Підсвітка…</a></div></section></div>");
   html.text("<div data-device-advanced id='schedule-panel'>"); writeSchedule(html, view); html.text("</div>");
   html.text("<div data-device-advanced>");
   html.render("templates/overview/external-light.html", [&](unsigned token) {
@@ -625,7 +629,7 @@ esp_err_t page(httpd_req_t *request) {
   if (view.restarting) html.file("templates/shell/restart-notice.html");
   if (!view.render.assetsReady || view.render.ledError) html.file("templates/shell/matrix-error-notice.html");
   if (agentsPage) {
-    html.text("<nav class='agent-page-nav' aria-label='Розділи агентів'><a href='#agent-connections'>Підключення</a><a href='#agent-rankings'>Рейтинг</a><a href='#agent-history'>Історія</a></nav>");
+    html.text("<nav class='agent-page-nav' aria-label='Розділи агентів'><a href='#agent-connections'><svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' aria-hidden='true'><rect x='3' y='4' width='18' height='12' rx='2'/><path d='M8 21h8m-4-5v5'/></svg>Підключення</a><a href='#agent-rankings'><svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' aria-hidden='true'><path d='M4 21V11h5v10m1 0V3h5v18m1 0V7h5v14'/></svg>Рейтинг</a><a href='#agent-history'><svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' aria-hidden='true'><rect x='3' y='5' width='18' height='16' rx='2'/><path d='M16 3v4M8 3v4M3 11h18'/></svg>Історія</a></nav>");
     html.text("<section id='agent-connections' class='section'>"); writeAgents(html, view); html.text("</section>");
     html.text("<div id='agent-rankings'>"); writeWeekly(html, view); html.text("</div>");
     html.text("<div id='agent-history'>"); writeLifetime(html, view); html.text("</div>");

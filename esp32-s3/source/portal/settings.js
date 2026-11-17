@@ -1,3 +1,28 @@
+    // Native anchors remain the no-JS fallback. With JS, show one agent section
+    // at a time so managing a PC never requires scrolling past token history.
+    const agentNavigation = one('.agent-page-nav');
+    if (agentNavigation) {
+      const entries = all('a[href^="#agent-"]', agentNavigation).map(link => ({
+        link, panel: one(link.getAttribute('href')),
+      })).filter(entry => entry.panel);
+      const selectSection = hash => {
+        const selected = entries.find(entry => entry.link.getAttribute('href') === hash) || entries[0];
+        entries.forEach(entry => {
+          entry.panel.hidden = entry !== selected;
+          if (entry === selected) entry.link.setAttribute('aria-current', 'page');
+          else entry.link.removeAttribute('aria-current');
+        });
+      };
+      entries.forEach(({link}) => link.addEventListener('click', event => {
+        if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        const hash = link.getAttribute('href');
+        window.history?.replaceState(null, '', hash);
+        selectSection(hash);
+      }));
+      window.addEventListener('hashchange', () => selectSection(window.location.hash));
+      selectSection(window.location.hash);
+    }
     const settingsDialog = one('#device-settings-dialog');
     if (settingsDialog) {
       const content = one('[data-device-settings-body]', settingsDialog);

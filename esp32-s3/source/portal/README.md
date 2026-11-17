@@ -9,7 +9,7 @@ that generated script.
 | --- | --- |
 | `context.js` | Shared state, DOM/format helpers, authentication shutdown |
 | `commands.js` | Dirty forms, acknowledgements, command transport and submission |
-| `settings.js` | Device-settings dialog and original-form movement |
+| `settings.js` | Agent section navigation, device-settings dialog and original-form movement |
 | `stats.js` | Rankings, quota metadata and controller-status rendering |
 | `agents.js` | Agent roster reconciliation, sorting, filtering and rendering |
 | `controls.js` | Input, change, click and reset interactions |
@@ -54,7 +54,9 @@ include `"portal_strings.hpp"`; consumer and fixture includes are separate work.
 Metadata is empty when quota is unknown (or remaining is outside 0..100).
 Known quotas retain reset, age and stale metadata, including known 0%.
 The matching C++ renderer should return before metadata when `!quota.known`;
-otherwise use `resetPrefix` plus `%H:%M`, or `resetUnknown`. Format age as
+otherwise use `resetPrefix` plus `%H:%M` in Kyiv time when known; omit an unknown
+reset instead of displaying a placeholder. Reset metadata explicitly describes
+the five-hour window. Ages below five seconds read "Оновлено щойно". Format other ages as
 `agePrefix` + floored seconds/minutes/hours + the matching unit + `ageSuffix`,
 or `ageUnknown`. Append `stale` only when the known quota is stale. Separate
 parts with ` · `. This keeps C++ first paint and JS polling wording consistent.

@@ -1,12 +1,16 @@
     const updateRanking = (view, ranking, agents = []) => {
-      const {root, rows: rankingRows, empty, records, kind} = view;
+      const {root, rows: rankingRows, empty, records, kind, notes} = view;
       if (!root || !rankingRows) return;
       if (!ranking || !Array.isArray(ranking.entries) || (kind === 'weekly' && ranking.source === 'daily' && ranking.available !== true)) {
-        text(`[data-${kind}-state]`, kind === 'weekly' && ranking?.source === 'daily' ? 'Денні записи за цей тиждень недоступні · історія може бути неповною' : 'Рейтинг недоступний у цій версії контролера', root);
+        text(`[data-${kind}-state]`, kind === 'weekly' && ranking?.source === 'daily' ? 'Ще немає статистики за цей тиждень' : 'Статистика поки недоступна', root);
         text(`[data-${kind}-pending]`, '', root);
         if (empty) { empty.hidden = false; empty.textContent = 'Немає доступних даних рейтингу'; }
         if (rankingRows.children.length) rankingRows.replaceChildren();
         records.clear();
+        notes.forEach(node => {
+          if (!node.classList.contains('ranking-note')) node.classList.add('ranking-note');
+          node.hidden = !node.textContent;
+        });
         return;
       }
       const seen = new Set();
@@ -49,25 +53,26 @@
         rankingRows.replaceChildren(...rows);
       if (empty) {
         empty.hidden = entries.length > 0;
-        const label = kind === 'lifetime' ? 'Немає доступної статистики за журналами агентів' : 'За цей тиждень ще немає статистики токенів';
+        const label = kind === 'lifetime' ? 'Ще немає статистики токенів' : 'За цей тиждень ще немає статистики токенів';
         if (empty.textContent !== label) empty.textContent = label;
       }
       const known = new Set(entries.map(row => row.id.toUpperCase()));
       const pending = Array.isArray(agents) ? agents.filter(agent => agent && agent.online &&
         typeof agent.id === 'string' && !known.has(agent.id.toUpperCase())).slice(0, 12) : [];
-      text(`[data-${kind}-pending]`, pending.length ? `Очікується статистика токенів: ${pending.map(agent =>
+      text(`[data-${kind}-pending]`, pending.length ? `Ще немає статистики: ${pending.map(agent =>
         typeof agent.name === 'string' ? agent.name : agent.id).join(', ')}` : '', root);
       const week = String(ranking.week);
       if (kind === 'weekly') text('[data-weekly-period]', /^\d{8}$/.test(week) ?
         `${week.slice(6, 8)}.${week.slice(4, 6)}.${week.slice(0, 4)} · понеділок–неділя, Київ` : 'Очікування синхронізації часу', root);
-      const daily = kind === 'weekly' && ranking.source === 'daily';
-      const coverage = daily && Number.isInteger(ranking.observed_days) && Number.isInteger(ranking.elapsed_days) &&
-        ranking.elapsed_days >= 1 && ranking.elapsed_days <= 7 && ranking.observed_days >= 0 && ranking.observed_days <= ranking.elapsed_days
-        ? `${ranking.observed_days} із ${ranking.elapsed_days} днів` : 'кількість днів невідома';
-      const dailyState = daily ? `Сума денних записів · ${coverage} · історія може бути неповною` : '';
-      text(`[data-${kind}-state]`, daily ? `${dailyState}${ranking.save_failed ? ' · Не вдалося зберегти статистику. Повторна спроба автоматично.' :
-        ranking.dirty ? ' · Є нові дані · збереження кожні 5 хвилин' : ''}` : ranking.save_failed ? 'Не вдалося зберегти статистику. Повторна спроба автоматично.' :
-        ranking.dirty ? 'Є нові дані · збереження кожні 5 хвилин' : 'Збережено на контролері', root);
+      const incomplete = kind === 'weekly' && ranking.source === 'daily' &&
+        (!Number.isInteger(ranking.observed_days) || !Number.isInteger(ranking.elapsed_days) ||
+         ranking.observed_days < ranking.elapsed_days);
+      text(`[data-${kind}-state]`, ranking.save_failed === true ? 'Не вдалося зберегти статистику. Показано поточні дані.' : incomplete ? 'Статистика за тиждень поки неповна' : '', root);
+      notes.forEach(node => {
+        if (!node.classList.contains('ranking-note')) node.classList.add('ranking-note');
+        node.hidden = !node.textContent;
+      });
+
     };
     const duration = milliseconds => {
       if (!finite(milliseconds) || milliseconds < 0) return missing;
@@ -77,13 +82,15 @@
       const minutes = Math.floor(seconds / 60) % 60;
       return `${days ? `${days} д ` : ''}${hours} год ${minutes} хв`;
     };
-    const quotaClock = new Intl.DateTimeFormat('uk-UA', {hour: '2-digit', minute: '2-digit'});
+    const quotaClock = new Intl.DateTimeFormat('uk-UA', {hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Kyiv'});
     const firmwareDate = new Intl.DateTimeFormat('uk-UA', {dateStyle: 'medium', timeStyle: 'short'});
     const firmwareDateNodes = all('[data-firmware-date]');
     const rotationStatusNodes = all('[data-quota-rotation-status]');
     const otaProgress = one('#ota-progress');
     const appearanceForms = all('form[action="/sky-colors"]');
     const quotaGuidance = all('[data-quota-guidance]');
+    const quotaResetRows = new Map(['codex', 'claude'].map(provider =>
+      [provider, all(`[data-quota-reset-row="${provider}"]`)]));
     const quotaCards = new Map(all('[data-quota-card]').map(card => [card.dataset.quotaCard, {
       card, meter: one('[data-quota-meter]', card), current: one('[data-quota-current]', card),
       meta: one(`[data-live="${card.dataset.quotaCard}-quota-meta"]`, card), empty: one('[data-quota-empty]', card),
@@ -114,11 +121,9 @@
           if (!dirtyForms.has(input.closest('form'))) input.value = String(status.quota_rotation_minutes);
         });
       const rotationMinutes = Number.isInteger(status.quota_rotation_minutes) && status.quota_rotation_minutes >= 1 && status.quota_rotation_minutes <= 60
-        ? `${status.quota_rotation_minutes} хв` : 'інтервал із налаштувань';
-      const providerName = status.quota_provider === 'claude' ? 'Claude Code' : status.quota_provider === 'codex' ? 'Codex' : null;
-      const rotationRule = `Чергування сервісів: доступний залишок — ${rotationMinutes}; 0% — 60 с нічного неба. Показуються лише сервіси з придатними даними.`;
-      setText(rotationStatusNodes, `${rotationRule} ${status.on === false ? 'Матрицю вимкнено.' :
-        status.quota_available === true && providerName ? `Зараз небо показує ${providerName}.` : ''}`);
+        ? status.quota_rotation_minutes : null;
+      setText(rotationStatusNodes, rotationMinutes === null ? 'Інтервал чергування ще невідомий' :
+        `Небо чергує сервіси кожні ${rotationMinutes} хв`);
       appearanceForms.forEach(form => {
         if (dirtyForms.has(form)) return;
         for (const provider of ['codex', 'claude']) {
@@ -165,17 +170,22 @@
         const quota = status.quotas?.[provider];
         if (quota?.known !== true || !finite(quota.remaining) || quota.remaining < 0 || quota.remaining > 100) {
           live(`${provider}-quota-meta`, '');
+          live(`${provider}-quota-reset`, '');
+          quotaResetRows.get(provider).forEach(node => { node.hidden = true; });
           continue;
         }
         const validReset = finite(quota?.reset_at) && quota.reset_at > 0 && quota.reset_at <= 8640000000000;
-        let reset = validReset ? `${portalStrings.resetPrefix}${quotaClock.format(new Date(quota.reset_at * 1000))}` : portalStrings.resetUnknown;
+        let reset = validReset ? `${portalStrings.resetPrefix}${quotaClock.format(new Date(quota.reset_at * 1000))}` : '';
         if (validReset && quotaCards.has(provider) && finite(status.time_epoch) && status.time_epoch >= 1700000000 && status.time_epoch <= 8640000000000) {
           const remaining = Math.ceil(quota.reset_at - status.time_epoch);
           reset += remaining > 0 ? ` · через ${compactSeconds(remaining)}` : ' · очікуємо скидання';
         }
         const age = finite(quota?.age_seconds) && quota.age_seconds >= 0
-          ? `${portalStrings.agePrefix}${compactSeconds(quota.age_seconds)}${portalStrings.ageSuffix}` : portalStrings.ageUnknown;
-        live(`${provider}-quota-meta`, `${reset} · ${age}${quota?.stale === true ? ` · ${portalStrings.stale}` : ''}`);
+          ? quota.age_seconds < 5 ? 'Оновлено щойно' : `${portalStrings.agePrefix}${compactSeconds(quota.age_seconds)}${portalStrings.ageSuffix}` : portalStrings.ageUnknown;
+        const resetRows = quotaResetRows.get(provider);
+        resetRows.forEach(node => { node.hidden = !validReset; });
+        live(`${provider}-quota-reset`, reset);
+        live(`${provider}-quota-meta`, `${resetRows.length ? '' : reset ? `${reset} · ` : ''}${age}${quota?.stale === true ? ` · ${portalStrings.stale}` : ''}`);
       }
       const progress = otaProgress;
       if (progress) {

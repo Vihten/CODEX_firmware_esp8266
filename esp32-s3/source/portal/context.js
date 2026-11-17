@@ -27,7 +27,8 @@
     const rankings = ['weekly', 'lifetime'].map(kind => {
       const root = one(`#${kind}-ranking`);
       return {kind, root, rows: root && one(`[data-${kind}-rows]`, root),
-        empty: root && one(`[data-${kind}-empty]`, root), records: new Map()};
+        empty: root && one(`[data-${kind}-empty]`, root),
+        notes: root ? all(`[data-${kind}-state],[data-${kind}-pending]`, root) : [], records: new Map()};
     });
     const numeric = new Intl.NumberFormat('uk-UA');
     const decimal = new Intl.NumberFormat('uk-UA', {maximumFractionDigits: 1});

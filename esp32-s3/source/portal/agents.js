@@ -20,7 +20,13 @@
         const rows = all(agentSelector, root);
         const online = row => row.dataset.online === undefined
           ? !!one('.agent-status.online', row) : row.dataset.online === 'true';
-        const ordered = [...rows].sort((a, b) => Number(online(b)) - Number(online(a)));
+        const compact = !!root.closest('.agent-summary-compact');
+        const activity = row => {
+          const value = Number(row.dataset.activity ?? one('[data-agent-bar]', row)?.value ?? 0);
+          return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+        };
+        const ordered = [...rows].sort((a, b) => Number(online(b)) - Number(online(a)) ||
+          (compact ? activity(b) - activity(a) : 0));
         ordered.forEach((row, index) => {
           if (rows[index] === row) return;
           // moveBefore preserves focus and open controls where supported.
@@ -29,7 +35,10 @@
           rows.splice(rows.indexOf(row), 1);
           rows.splice(index, 0, row);
         });
-        if (root.closest('.agent-summary-compact')) ordered.forEach((row, index) => { row.hidden = index >= 3; });
+        if (compact) {
+          ordered.forEach(row => { row.hidden = !online(row); });
+          all('[data-agents-empty]', root).forEach(node => { node.hidden = ordered.some(online); });
+        }
       });
       if (focused && focused.isConnected && !focused.disabled && document.activeElement !== focused) {
         focused.focus({preventScroll: true});

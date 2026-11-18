@@ -8,6 +8,13 @@ namespace sky_palette {
 constexpr uint32_t codexDefault = 0x5089cc;
 constexpr uint32_t claudeDefault = 0xff8039;
 
+// Upper half of the authored 50 x 20 rim: the ellipse starts darkening at
+// radius .96 around (24.5, 20), using horizontal/vertical radii of 28 and 23.
+inline bool upperSkyRim(unsigned x, unsigned y) {
+  constexpr uint8_t lastLeft[] = {13, 10, 8, 7, 5, 4, 3, 2, 1, 1};
+  return y < sizeof(lastLeft) && (x <= lastLeft[y] || x >= 49U - lastLeft[y]);
+}
+
 // Renderer-owned cache: exactly two trig evaluations when the phase changes,
 // then only arithmetic for the fixed 50 x 20 generator coordinates.
 class Daylight {
@@ -109,7 +116,7 @@ class PaletteCache {
 };
 
 inline void colorize(uint8_t *rgb, uint8_t type, bool fixed, const Palette &palette,
-                     uint8_t minimumPeak = 0) {
+                     uint8_t minimumPeak = 0, bool preserveSkyRim = false) {
   const unsigned cool = rgb[1] > rgb[2] ? rgb[1] : rgb[2];
   unsigned base = 0, light = 0;
   if (!type && (!fixed || cool > rgb[0])) {
@@ -123,7 +130,12 @@ inline void colorize(uint8_t *rgb, uint8_t type, bool fixed, const Palette &pale
   // Keep the authored peak envelope, including headroom for neutral cores.
   unsigned authoredPeak = (light * 3 * maximum + 255) / 510;
   // Only nonblack, nonfixed sky gets the hue floor. Objects and night stay intact.
-  if (!type && !fixed && light && maximum && authoredPeak < minimumPeak)
+  if (!type && preserveSkyRim) {
+    // Hue compensation normally lifts dark daytime sky. At the rim use the
+    // authored peak instead so the warm palette retains the clipped silhouette.
+    const unsigned sourcePeak = rgb[0] > cool ? rgb[0] : cool;
+    authoredPeak = (sourcePeak * maximum + 127) / 255;
+  } else if (!type && !fixed && light && maximum && authoredPeak < minimumPeak)
     authoredPeak = minimumPeak;
   const unsigned peak = authoredPeak > 255 - base ? 255 - base : authoredPeak;
   for (unsigned channel = 0; channel < 3; ++channel) {
@@ -138,7 +150,7 @@ inline void colorize(uint8_t *rgb, uint8_t type, bool fixed, uint32_t color,
 
 inline void apply(uint8_t *rgb, uint8_t type, bool fixed, uint8_t amount,
                   const Palette *codex, const Palette &claude, uint8_t daylight = 255,
-                  uint8_t claudeMinimumPeak = 0) {
+                  uint8_t claudeMinimumPeak = 0, bool preserveSkyRim = false) {
   const bool sky = !type && !fixed;
   if (sky && !daylight) { rgb[0] = rgb[1] = rgb[2] = 0; return; }
   if (!amount) {
@@ -148,13 +160,13 @@ inline void apply(uint8_t *rgb, uint8_t type, bool fixed, uint8_t amount,
     return;
   }
   if (amount == 255 && daylight == 255) {
-    colorize(rgb, type, fixed, claude, claudeMinimumPeak);
+    colorize(rgb, type, fixed, claude, claudeMinimumPeak, preserveSkyRim);
     return;
   }
   uint8_t first[3] = {rgb[0], rgb[1], rgb[2]};
   uint8_t second[3] = {rgb[0], rgb[1], rgb[2]};
   if (codex && amount != 255) colorize(first, type, fixed, *codex);
-  colorize(second, type, fixed, claude, claudeMinimumPeak);
+  colorize(second, type, fixed, claude, claudeMinimumPeak, preserveSkyRim);
   for (unsigned channel = 0; channel < 3; ++channel) {
     const unsigned dayColor = (unsigned(rgb[channel]) * (255 - daylight) +
                                unsigned(second[channel]) * daylight + 127) / 255;

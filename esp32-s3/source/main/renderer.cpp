@@ -914,7 +914,7 @@ void modulateSky(uint8_t *rgb, uint8_t type, uint8_t x, uint8_t y) {
     sky_palette::apply(rgb, type, pgm_read_byte(&ENTRANCE_FIXED[index]), claudeTint,
         control.codexSkyColor == sky_palette::codexDefault ? nullptr : &codexPalette.at(control.codexSkyColor),
         claudePalette.at(control.claudeSkyColor), skyDaylight.at(sceneFrameMilli, x, y),
-        claudeHueFloor.at(control.claudeSkyColor, control.brightness));
+        claudeHueFloor.at(control.claudeSkyColor, control.brightness), sky_palette::upperSkyRim(x, y));
 }
 
 subpixel::Pixel meteorLayer[NUM_LEDS];

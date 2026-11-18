@@ -14,14 +14,35 @@
         });
       };
       entries.forEach(({link}) => link.addEventListener('click', event => {
-        if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-        event.preventDefault();
+        if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
         const hash = link.getAttribute('href');
-        window.history?.replaceState(null, '', hash);
+        if (!window.history?.pushState) { selectSection(hash); return; }
+        event.preventDefault();
+        if (link.getAttribute('aria-current') === 'page' && !location.hash) return;
+        if (location.hash !== hash) window.history.pushState(null, '', hash);
         selectSection(hash);
       }));
-      window.addEventListener('hashchange', () => selectSection(window.location.hash));
-      selectSection(window.location.hash);
+      const syncSection = () => selectSection(location.hash);
+      window.addEventListener('popstate', syncSection);
+      window.addEventListener('hashchange', syncSection);
+      syncSection();
+    }
+    if (location.pathname === '/settings') {
+      const openSettingsFragment = () => {
+        if (!location.hash) return;
+        let id;
+        try { id = decodeURIComponent(location.hash.slice(1)); }
+        catch (_) { return; }
+        const target = document.getElementById(id);
+        if (!target?.closest('.settings-groups')) return;
+        let opened = false;
+        for (let details = target.closest('details'); details; details = details.parentElement?.closest('details')) {
+          if (!details.open) { details.open = true; opened = true; }
+        }
+        if (opened) target.scrollIntoView({block: 'start'});
+      };
+      window.addEventListener('hashchange', openSettingsFragment);
+      openSettingsFragment();
     }
     const settingsDialog = one('#device-settings-dialog');
     if (settingsDialog) {

@@ -32,7 +32,7 @@ bool initializePreview() {
 }
 
 void capturePreview(const uint8_t *grb, uint8_t brightness, uint32_t sequence,
-                    uint32_t now, PreviewMapping mapping) {
+                    uint32_t now, PreviewMapping mapping, PreviewChannel channel) {
   if (!mutex || !grb || !mapping || !requested.load(std::memory_order_acquire) ||
       uint32_t(now - requestedAt.load(std::memory_order_relaxed)) > 1500) return;
   if (xSemaphoreTake(mutex, 0) != pdTRUE) return;
@@ -45,9 +45,9 @@ void capturePreview(const uint8_t *grb, uint8_t brightness, uint32_t sequence,
     for (unsigned x = 0; x < PROJECT_WIDTH; ++x) {
       const size_t source = size_t(mapping(uint8_t(x), uint8_t(y))) * 3;
       const size_t destination = kPreviewHeaderBytes + (y * PROJECT_WIDTH + x) * 3;
-      packet[destination] = grb[source + 1];
-      packet[destination + 1] = grb[source];
-      packet[destination + 2] = grb[source + 2];
+      packet[destination] = channel ? channel(grb[source + 1]) : grb[source + 1];
+      packet[destination + 1] = channel ? channel(grb[source]) : grb[source];
+      packet[destination + 2] = channel ? channel(grb[source + 2]) : grb[source + 2];
     }
   }
   capturedAt = now; valid = true;

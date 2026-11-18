@@ -1399,6 +1399,8 @@ void publishStatus() {
   status.activeMeteors = 0;
   for (const auto &meteor : meteors) if (meteor.active) ++status.activeMeteors;
   status.stackFreeBytes = uxTaskGetStackHighWaterMark(nullptr);
+  status.outputLimitPercent = strip.getOutputLimitPercent();
+  status.estimatedSupplyMa = strip.getEstimatedSupplyCurrentMa();
   xQueueOverwrite(renderStatusQueue, &status);
 }
 
@@ -1422,7 +1424,8 @@ bool showFrame(bool dark = false) {
   if (completed) {
     ++status.frames;
     if (control.maintenance == Maintenance::None)
-      capturePreview(strip.getPixels(), strip.getBrightness(), status.frames, millis(), physicalIndex);
+      capturePreview(strip.getPixels(), strip.getBrightness(), status.frames, millis(), physicalIndex,
+          [](uint8_t value) { return strip.submittedChannel(value); });
   }
   return completed;
 }

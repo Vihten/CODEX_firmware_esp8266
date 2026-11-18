@@ -9,6 +9,8 @@
       if (active) { active.reason = 'pause'; active.controller.abort(); }
       baseline = null;
       setLightOutputs(null);
+      clearCityThreat();
+      live('output-limit', '');
       if (!authenticated()) connection('Сеанс завершено. Увійдіть знову.', 'error');
       else connection(document.hidden || !pageActive ? 'Оновлення призупинено' : 'Автооновлення вимкнено');
     };
@@ -50,9 +52,11 @@
           baseline = null;
           setLightOutputs(null);
           live('fps', missing);
+          live('output-limit', '');
           text('[data-weekly-state],[data-lifetime-state]', 'Не вдалося оновити рейтинг. Спробуйте ще раз.');
           text('[data-air-alert-state]', 'Немає актуальних даних');
           text('[data-air-alert-updated]', 'Зв’язок із контролером втрачено');
+          clearCityThreat();
           connection(request.reason === 'timeout' ? 'Контролер не відповів вчасно' : 'Не вдалося оновити дані', 'error');
         }
       } finally {

@@ -12,6 +12,7 @@ bool authorize(httpd_req_t *request);
 bool pendingSave();
 // Network task only, inside the renderer's quiescent flash maintenance guard.
 bool persist();
+// Includes admitted work until its async HTTP request has been completed.
 bool busy();
 // Close admission before OTA/restart, then wait for !busy() and !pendingSave().
 void setMaintenance(bool enabled);

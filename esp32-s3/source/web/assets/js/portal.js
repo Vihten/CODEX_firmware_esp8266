@@ -79,6 +79,10 @@
       if (node.textContent !== next) node.textContent = next;
     });
     const text = (selector, value, root = document) => setText(all(selector, root), value);
+    const clearCityThreat = () => {
+      text('[data-city-threat-state]', 'Немає актуальних даних');
+      text('[data-city-threat-source]', '');
+    };
     const live = (key, value) => setText(liveNodes.get(key) || [], value);
     const connection = (label, state = '') => (liveNodes.get('connection') || []).forEach(node => {
       if (window.portalAuthExpired === true) label = '';
@@ -120,6 +124,8 @@
       awaitingState.clear();
       baseline = null;
       setLightOutputs(null);
+      clearCityThreat();
+      live('output-limit', '');
       connection('Сеанс завершено. Увійдіть знову.', 'error');
       const dialog = one('#device-settings-dialog');
       const modalWasOpen = dialog?.open === true;
@@ -193,6 +199,7 @@
     const tracksState = record => ['/brightness', '/buzzer-volume', '/power', '/external-light',
       '/quota-rotation', '/sky-colors', '/agent-rename', '/agent-color'].includes(record.path) ||
       (['/memorial', '/air-alert'].includes(record.path) && record.data.get('mode') === 'save');
+    const confirmationTimeout = 15000;
     const acceptedMessage = record => {
       switch (record.path) {
         case '/buzzer-test': return 'Запит перевірки надіслано.';
@@ -204,26 +211,39 @@
         default: return 'Команду прийнято в чергу.';
       }
     };
+    const clearConfirmation = form => {
+      const pending = awaitingState.get(form);
+      if (!pending) return;
+      clearTimeout(pending.deadline);
+      commandTimers.delete(pending.deadline);
+      awaitingState.delete(form);
+    };
+    const releaseSubmittedDraft = (form, record) => {
+      if (record.revision !== (formRevisions.get(form) || 0) || record.snapshot !== formSnapshot(form)) return false;
+      dirtyForms.delete(form);
+      const row = form.closest('[data-agent]');
+      if (row) agentStates.delete(row);
+      return true;
+    };
     const reconcileSubmissions = (status, sequence) => {
-      for (const [form, record] of awaitingState) {
-        if (!form.isConnected || record.revision !== (formRevisions.get(form) || 0) ||
-            record.snapshot !== formSnapshot(form)) { awaitingState.delete(form); continue; }
+      for (const [form, {record, poll}] of awaitingState) {
+        if (!form.isConnected) { clearConfirmation(form); continue; }
+        if (sequence < poll) continue;
         const failed = ({'/external-light': status.external_light?.save_failed,
           '/memorial': status.memorial?.save_failed, '/air-alert': status.air_alert?.save_failed,
           '/buzzer-volume': status.buzzer_save_failed})[record.path] === true;
-        if (sequence < record.poll || (!failed && !reflected(record, status))) continue;
-        dirtyForms.delete(form);
-        awaitingState.delete(form);
-        formFeedback(form, failed ? 'Не вдалося зберегти. Показано стан контролера.' : 'Стан контролера оновлено.');
-        const row = form.closest('[data-agent]');
-        if (row) agentStates.delete(row);
+        if (!failed && !reflected(record, status)) continue;
+        clearConfirmation(form);
+        const released = releaseSubmittedDraft(form, record);
+        formFeedback(form, !failed ? 'Стан контролера оновлено.' : released ?
+          'Не вдалося зберегти. Показано стан контролера.' : 'Не вдалося зберегти надіслані зміни. Нові правки залишилися у формі.');
       }
     };
     const sendCommand = async (form, record) => {
       if (!authenticated()) { formFeedback(form, 'Сеанс завершено.', true); return; }
       const {data, submitter, url} = record;
       const epoch = authEpoch;
-      awaitingState.delete(form);
+      clearConfirmation(form);
       submitting.add(form);
       currentIntents.set(form, record);
       form.setAttribute('aria-busy', 'true');
@@ -261,8 +281,15 @@
         }
         accepted = true;
         if (tracksState(record)) {
-          record.poll = pollSequence + 1;
-          awaitingState.set(form, record);
+          const deadline = setTimeout(() => {
+            clearConfirmation(form);
+            if (!form.isConnected || !authenticated()) return;
+            const released = releaseSubmittedDraft(form, record);
+            formFeedback(form, 'Контролер не підтвердив зміни вчасно. Перевірте стан перед повтором.');
+            if (released) refreshCommandStatus();
+          }, confirmationTimeout);
+          commandTimers.add(deadline);
+          awaitingState.set(form, {record, poll: pollSequence + 1, deadline});
           formFeedback(form, 'Команду прийнято в чергу. Очікуємо стан контролера.');
         } else formFeedback(form, acceptedMessage(record));
         refreshCommandStatus();
@@ -278,11 +305,7 @@
       } finally {
         clearTimeout(timeout);
         commandControllers.delete(controller);
-        if (!accepted && record.revision === (formRevisions.get(form) || 0) && record.snapshot === formSnapshot(form)) {
-          dirtyForms.delete(form);
-          const row = form.closest('[data-agent]');
-          if (row) agentStates.delete(row);
-        }
+        if (!accepted) releaseSubmittedDraft(form, record);
         submitting.delete(form);
         currentIntents.delete(form);
         form.removeAttribute('aria-busy');
@@ -337,7 +360,7 @@
       if (queuedIntents.get(form)?.signature === signature) return;
       if (form.matches('form[data-confirm]') && !window.confirm(form.dataset.confirm)) return;
       markDirty(form);
-      awaitingState.delete(form);
+      clearConfirmation(form);
       const record = {data, submitter, url, signature, path: url.pathname,
         revision: formRevisions.get(form), snapshot: formSnapshot(form)};
       if (submitting.has(form)) {
@@ -362,14 +385,35 @@
         });
       };
       entries.forEach(({link}) => link.addEventListener('click', event => {
-        if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-        event.preventDefault();
+        if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
         const hash = link.getAttribute('href');
-        window.history?.replaceState(null, '', hash);
+        if (!window.history?.pushState) { selectSection(hash); return; }
+        event.preventDefault();
+        if (link.getAttribute('aria-current') === 'page' && !location.hash) return;
+        if (location.hash !== hash) window.history.pushState(null, '', hash);
         selectSection(hash);
       }));
-      window.addEventListener('hashchange', () => selectSection(window.location.hash));
-      selectSection(window.location.hash);
+      const syncSection = () => selectSection(location.hash);
+      window.addEventListener('popstate', syncSection);
+      window.addEventListener('hashchange', syncSection);
+      syncSection();
+    }
+    if (location.pathname === '/settings') {
+      const openSettingsFragment = () => {
+        if (!location.hash) return;
+        let id;
+        try { id = decodeURIComponent(location.hash.slice(1)); }
+        catch (_) { return; }
+        const target = document.getElementById(id);
+        if (!target?.closest('.settings-groups')) return;
+        let opened = false;
+        for (let details = target.closest('details'); details; details = details.parentElement?.closest('details')) {
+          if (!details.open) { details.open = true; opened = true; }
+        }
+        if (opened) target.scrollIntoView({block: 'start'});
+      };
+      window.addEventListener('hashchange', openSettingsFragment);
+      openSettingsFragment();
     }
     const settingsDialog = one('#device-settings-dialog');
     if (settingsDialog) {
@@ -600,6 +644,9 @@
       live('rssi', finite(status.rssi) ? `${status.rssi} дБм` : missing);
       live('ota', typeof status.ota_label === 'string' ? status.ota_label : typeof status.ota === 'string' ? status.ota : missing);
       live('matrix', typeof status.matrix === 'string' ? status.matrix : missing);
+      const outputLimit = status.output_limit_percent;
+      live('output-limit', Number.isInteger(outputLimit) && outputLimit >= 0 && outputLimit < 100
+        ? `Обмеження живлення активне · ${outputLimit}% від заданого рівня` : '');
       live('clock', controllerClock(status.time_epoch));
       live('updated', clock.format(new Date()));
       for (const provider of ['codex', 'claude']) {
@@ -736,6 +783,7 @@
       } else if (airAlertForm) {
         text('[data-air-alert-state]', 'Немає актуальних даних');
         text('[data-air-alert-updated]', 'Очікування коректних даних контролера');
+        clearCityThreat();
         all('[data-air-alert-play],[data-air-alert-stop]').forEach(button => { button.disabled = true; });
       }
       updateAgents(status.agents);
@@ -953,7 +1001,6 @@
       const form = event.target;
       setTimeout(() => {
         markDirty(form);
-        awaitingState.delete(form);
         const row = form instanceof Element && form.closest('[data-agent]');
         if (row) agentStates.delete(row);
         const range = one('#brightness', form);
@@ -975,6 +1022,8 @@
       if (active) { active.reason = 'pause'; active.controller.abort(); }
       baseline = null;
       setLightOutputs(null);
+      clearCityThreat();
+      live('output-limit', '');
       if (!authenticated()) connection('Сеанс завершено. Увійдіть знову.', 'error');
       else connection(document.hidden || !pageActive ? 'Оновлення призупинено' : 'Автооновлення вимкнено');
     };
@@ -1016,9 +1065,11 @@
           baseline = null;
           setLightOutputs(null);
           live('fps', missing);
+          live('output-limit', '');
           text('[data-weekly-state],[data-lifetime-state]', 'Не вдалося оновити рейтинг. Спробуйте ще раз.');
           text('[data-air-alert-state]', 'Немає актуальних даних');
           text('[data-air-alert-updated]', 'Зв’язок із контролером втрачено');
+          clearCityThreat();
           connection(request.reason === 'timeout' ? 'Контролер не відповів вчасно' : 'Не вдалося оновити дані', 'error');
         }
       } finally {

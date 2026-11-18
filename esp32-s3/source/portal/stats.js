@@ -164,6 +164,9 @@
       live('rssi', finite(status.rssi) ? `${status.rssi} дБм` : missing);
       live('ota', typeof status.ota_label === 'string' ? status.ota_label : typeof status.ota === 'string' ? status.ota : missing);
       live('matrix', typeof status.matrix === 'string' ? status.matrix : missing);
+      const outputLimit = status.output_limit_percent;
+      live('output-limit', Number.isInteger(outputLimit) && outputLimit >= 0 && outputLimit < 100
+        ? `Обмеження живлення активне · ${outputLimit}% від заданого рівня` : '');
       live('clock', controllerClock(status.time_epoch));
       live('updated', clock.format(new Date()));
       for (const provider of ['codex', 'claude']) {
@@ -300,6 +303,7 @@
       } else if (airAlertForm) {
         text('[data-air-alert-state]', 'Немає актуальних даних');
         text('[data-air-alert-updated]', 'Очікування коректних даних контролера');
+        clearCityThreat();
         all('[data-air-alert-play],[data-air-alert-stop]').forEach(button => { button.disabled = true; });
       }
       updateAgents(status.agents);

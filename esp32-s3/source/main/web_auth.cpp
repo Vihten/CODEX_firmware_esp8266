@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "lwip/sockets.h"
 #include "nvs.h"
 #include "psa/crypto.h"
 
@@ -40,6 +41,11 @@ int64_t nextAttempt = 0;
 uint32_t generation = 0;
 std::atomic<uint32_t> revision{0};
 std::atomic<uint32_t> lastCheckDuration{0}, lastHttpStackFree{0};
+constexpr size_t kPasswordWorkerStackBytes = 8192;
+StaticTask_t passwordWorkerStorage;
+StackType_t passwordWorkerStack[kPasswordWorkerStackBytes / sizeof(StackType_t)];
+TaskHandle_t passwordWorker = nullptr;
+std::atomic<bool> routesReady{false};
 int64_t nowMs() { return esp_timer_get_time() / 1000; }
 void erase(void *data, size_t size) {
   volatile uint8_t *bytes = static_cast<volatile uint8_t *>(data);
@@ -216,7 +222,7 @@ bool formContentType(const char *type) {
   }
   return matches(value, end, "utf-8");
 }
-bool readForm(httpd_req_t *request, Form &form) {
+bool readForm(httpd_req_t *request, Form &form, bool &bodyRead) {
   char type[96];
   if (!header(request, "Content-Type", type) || !formContentType(type)) return false;
   struct Body { char bytes[2049] = {}; ~Body() { erase(bytes, sizeof(bytes)); } } body;
@@ -225,8 +231,10 @@ bool readForm(httpd_req_t *request, Form &form) {
   while (used < request->content_len) {
     if (nowMs() - started > 10000) return false;
     const int count = httpd_req_recv(request, body.bytes + used, request->content_len - used);
-    if (nowMs() - started > 10000 || count <= 0) return false;
+    if (count <= 0) return false;
     used += size_t(count);
+    bodyRead = used == request->content_len;
+    if (nowMs() - started > 10000) return false;
   }
   if (std::memchr(body.bytes, 0, used)) return false;
   for (char *p = body.bytes; *p;) {
@@ -277,10 +285,8 @@ struct PasswordHmac {
     return hash(inner, bytes, size, digest) && hash(outer, digest, sizeof(digest), out);
   }
 };
-// PBKDF2 runs synchronously in the HTTP task, normally priority 5 on CPU0.
-// A one-tick sleep alone cannot guarantee IDLE0 time when other network tasks
-// consume that tick. Share idle priority for this bounded CPU-only scope, then
-// restore the caller before session locks, flash admission or HTTP responses.
+// Give IDLE0 time during the CPU-only KDF, including when other network tasks
+// use its periodic sleep ticks. Restore the worker priority before locks or I/O.
 struct KdfSchedulingScope {
   const UBaseType_t original = uxTaskPriorityGet(nullptr);
   KdfSchedulingScope() { if (original > tskIDLE_PRIORITY) vTaskPrioritySet(nullptr, tskIDLE_PRIORITY); }
@@ -317,14 +323,14 @@ bool verify(const char *password, const Credential &record, bool &cryptoOkay) {
   uint8_t output[32]; cryptoOkay = derive(password, record.salt, output);
   const bool match = cryptoOkay && equal(output, record.digest, sizeof(output)); erase(output, sizeof(output)); return match;
 }
+void finishOperation() {
+  // Admission must survive a transient lock timeout until all work is done.
+  if (xSemaphoreTake(mutex, portMAX_DELAY) == pdTRUE) { --active; xSemaphoreGive(mutex); }
+}
 struct Operation {
   bool admitted = false;
   Operation() { Lock lock; if (lock.held && initialized && healthy && !maintenance && !saving && active == 0) { ++active; admitted = true; } }
-  ~Operation() {
-    if (!admitted) return;
-    // Admission count must never be lost on a transient lock timeout.
-    if (xSemaphoreTake(mutex, portMAX_DELAY) == pdTRUE) { --active; xSemaphoreGive(mutex); }
-  }
+  ~Operation() { if (admitted) finishOperation(); }
 };
 void failedAttempt() {
   failures = std::min(failures + 1, 6U);
@@ -426,12 +432,33 @@ esp_err_t state(httpd_req_t *request) {
       okay ? "true" : "false", setup ? "true" : "false", waiting ? "true" : "false", authenticated ? "true" : "false");
   return httpd_resp_send(request, body, HTTPD_RESP_USE_STRLEN);
 }
+// One slot covers queueing and execution. Only the admitted HTTP handler may
+// fill it, and the worker releases admission after erasing it and completing HTTPD ownership.
+struct PasswordJob {
+  httpd_req_t *request = nullptr;
+  Credential snapshot;
+  uint32_t version = 0;
+  char password[129] = {}, next[129] = {}, token[65] = {};
+  bool login = false, setup = false;
+};
+PasswordJob passwordJob;
+
+esp_err_t authErrorBeforeBody(httpd_req_t *request, const char *status, const char *message, unsigned retry = 0) {
+  const esp_err_t result = authError(request, status, message, retry);
+  // HTTPD would otherwise drain an unread body after the handler returns.
+  return request->content_len ? ESP_FAIL : result;
+}
 esp_err_t mutate(httpd_req_t *request) {
-  if (!sameOrigin(request)) return authError(request, "403 Forbidden", "Запит має надходити зі сторінки цього контролера.");
+  if (!sameOrigin(request)) return authErrorBeforeBody(request, "403 Forbidden", "Запит має надходити зі сторінки цього контролера.");
+  if (!routesReady.load()) return authErrorBeforeBody(request, "503 Service Unavailable", "Контролер зайнятий або доступ заблоковано. Спробуйте пізніше.", 1);
   Operation operation;
-  if (!operation.admitted) return authError(request, "503 Service Unavailable", "Контролер зайнятий або доступ заблоковано. Спробуйте пізніше.", 1);
+  if (!operation.admitted) return authErrorBeforeBody(request, "503 Service Unavailable", "Контролер зайнятий або доступ заблоковано. Спробуйте пізніше.", 1);
   Form form;
-  if (!readForm(request, form)) return authError(request, "400 Bad Request", "Некоректна форма. Оновіть сторінку входу та повторіть спробу.");
+  bool bodyRead = false;
+  if (!readForm(request, form, bodyRead)) {
+    const esp_err_t result = authError(request, "400 Bad Request", "Некоректна форма. Оновіть сторінку входу та повторіть спробу.");
+    return bodyRead || !request->content_len ? result : ESP_FAIL;
+  }
   char token[65] = {};
   const bool hasCookie = cookie(request, token);
   const bool login = pathIs(request, "/login"), setup = pathIs(request, "/auth/setup"), logout = pathIs(request, "/auth/logout");
@@ -460,33 +487,57 @@ esp_err_t mutate(httpd_req_t *request) {
   const bool valid = passwordValid(password) && (login || (passwordValid(form.current) || setup)) &&
       (login || !std::strcmp(form.next, form.confirm));
   if (!valid) return authError(request, "400 Bad Request", "Пароль має містити щонайменше 10 символів і не більше 128 байтів. Новий пароль і підтвердження мають збігатися.");
+
+  httpd_req_t *async = nullptr;
+  if (httpd_req_async_handler_begin(request, &async) != ESP_OK) {
+    erase(&snapshot, sizeof(snapshot)); erase(token, sizeof(token));
+    return authError(request, "503 Service Unavailable", "Перевірка пароля недоступна. Спробуйте пізніше.", 1);
+  }
+  passwordJob.request = async;
+  passwordJob.snapshot = snapshot;
+  passwordJob.version = version;
+  std::memcpy(passwordJob.password, login ? form.password : form.current, sizeof(passwordJob.password));
+  if (!login) std::memcpy(passwordJob.next, form.next, sizeof(passwordJob.next));
+  if (!login && !setup) std::memcpy(passwordJob.token, token, sizeof(passwordJob.token));
+  passwordJob.login = login;
+  passwordJob.setup = setup;
+  erase(&snapshot, sizeof(snapshot)); erase(token, sizeof(token));
+  lastHttpStackFree.store(uint32_t(uxTaskGetStackHighWaterMark(nullptr)));
+  operation.admitted = false;  // Worker now owns admission and the async request.
+  // A direct notification only wakes the permanent worker. The slot is reserved by active.
+  xTaskNotifyGive(passwordWorker);
+  return ESP_OK;
+}
+
+esp_err_t finishPasswordJob(const PasswordJob &job) {
+  auto *request = job.request;
+  const bool login = job.login, setup = job.setup;
   bool cryptoOkay = true;
   const int64_t checkStarted = nowMs();
-  const bool matched = setup || verify(login ? form.password : form.current, snapshot, cryptoOkay);
+  const bool matched = setup || verify(job.password, job.snapshot, cryptoOkay);
   lastCheckDuration.store(uint32_t(std::max<int64_t>(0, nowMs() - checkStarted)));
-  lastHttpStackFree.store(uint32_t(uxTaskGetStackHighWaterMark(nullptr)));
   if (lastCheckDuration.load() >= 3000) {
     diagnostic_log::Snapshot slow{};
     slow.elapsed_ms = lastCheckDuration.load(); slow.detail = int32_t(lastHttpStackFree.load());
     diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Http, 0x0304, slow);
   }
   if (!matched) {
+    unsigned retrySeconds = 0;
     { Lock lock; if (lock.held && cryptoOkay) { failedAttempt(); retrySeconds = unsigned((nextAttempt - nowMs() + 999) / 1000); } }
-    erase(&snapshot, sizeof(snapshot));
     return authError(request, cryptoOkay ? "401 Unauthorized" : "503 Service Unavailable", cryptoOkay ? "Неправильний пароль. Спробуйте ще раз." : "Перевірка пароля недоступна. Спробуйте пізніше.", retrySeconds);
   }
   Credential replacement;
   if (!login) {
     esp_fill_random(replacement.salt, sizeof(replacement.salt));
-    if (!derive(form.next, replacement.salt, replacement.digest)) return authError(request, "503 Service Unavailable", "Не вдалося підготувати пароль. Спробуйте пізніше.");
+    if (!derive(job.next, replacement.salt, replacement.digest)) return authError(request, "503 Service Unavailable", "Не вдалося підготувати пароль. Спробуйте пізніше.");
     replacement.checksum = checksum(replacement);
   }
   bool accepted = false;
   char sessionCookie[160] = {};
   {
     Lock lock;
-    if (lock.held && !maintenance && !saving && (!pending || login) && healthy && generation == version &&
-        (setup ? !configured : configured) && (login || setup || (hasCookie && findSession(token) >= 0))) {
+    if (lock.held && !maintenance && !saving && (!pending || login) && healthy && generation == job.version &&
+        (setup ? !configured : configured) && (login || setup || findSession(job.token) >= 0)) {
       if (login) {
         unsigned slot = 0;
         for (unsigned i = 0; i < 4; ++i) {
@@ -501,7 +552,7 @@ esp_err_t mutate(httpd_req_t *request) {
       failures = 0; accepted = true;
     }
   }
-  erase(&snapshot, sizeof(snapshot)); erase(&replacement, sizeof(replacement)); erase(token, sizeof(token));
+  erase(&replacement, sizeof(replacement));
   if (!accepted) return authError(request, "409 Conflict", "Стан контролера змінився. Оновіть сторінку входу та повторіть дію.");
   if (login) httpd_resp_set_hdr(request, "Set-Cookie", sessionCookie);
   // IDF retains header pointers until the response is sent.
@@ -512,6 +563,20 @@ esp_err_t mutate(httpd_req_t *request) {
   } else result = redirect(request, login ? "/" : "/login?pending=1");
   erase(sessionCookie, sizeof(sessionCookie));
   return result;
+}
+void passwordWorkerTask(void *) {
+  for (;;) {
+    if (!ulTaskNotifyTake(pdTRUE, portMAX_DELAY)) continue;
+    httpd_req_t *request = passwordJob.request;
+    if (finishPasswordJob(passwordJob) != ESP_OK) {
+      // HTTPD owns close(). Signal EOF while this request still owns the socket.
+      const int socket = httpd_req_to_sockfd(request);
+      if (socket >= 0) (void)lwip_shutdown(socket, SHUT_RDWR);
+    }
+    erase(&passwordJob, sizeof(passwordJob));
+    (void)httpd_req_async_handler_complete(request);
+    finishOperation();
+  }
 }
 }  // namespace
 
@@ -533,6 +598,9 @@ void initialize() {
   credential = record; configured = healthy = true; erase(&record, sizeof(record));
 }
 bool registerRoutes(httpd_handle_t server) {
+  // A registration failure can stop this server immediately. Keep mutations
+  // sealed until all routes are installed, including after an OTA HTTP restart.
+  routesReady.store(false);
   struct Route { const char *uri; httpd_method_t method; esp_err_t (*handler)(httpd_req_t *); };
   const Route routes[] = {{"/login", HTTP_GET, loginPage}, {"/login", HTTP_POST, mutate},
       {"/auth/setup", HTTP_POST, mutate}, {"/auth/logout", HTTP_POST, mutate},
@@ -542,6 +610,12 @@ bool registerRoutes(httpd_handle_t server) {
     httpd_uri_t route{}; route.uri = entry.uri; route.method = entry.method; route.handler = entry.handler;
     if (httpd_register_uri_handler(server, &route) != ESP_OK) return false;
   }
+  if (!passwordWorker) {
+    passwordWorker = xTaskCreateStaticPinnedToCore(passwordWorkerTask, "web-auth", kPasswordWorkerStackBytes,
+        nullptr, tskIDLE_PRIORITY + 2, passwordWorkerStack, &passwordWorkerStorage, 0);
+    if (!passwordWorker) return false;
+  }
+  routesReady.store(true);
   return true;
 }
 bool captureAuthenticatedSession(httpd_req_t *request, char token[65]) {

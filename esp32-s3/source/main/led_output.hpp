@@ -110,6 +110,14 @@ public:
   // Last successfully submitted frame (async need not have completed). Estimates
   // include rounded-up PWM current and idle; zero before the first submission.
   // Same renderer-task ownership as other accessors; no cross-task synchronization.
+  // Transform a staging byte exactly as the last successful submission did.
+  uint8_t submittedChannel(uint8_t value) const {
+    return led_output_policy::scaled(led_output_policy::correct(
+        value, gamma_, nonzeroFloor_, getBrightness()), outputScaleQ16_);
+  }
+  uint8_t getOutputLimitPercent() const {
+    return uint8_t(outputScaleQ16_ * 100U / led_output_policy::kUnity);
+  }
   uint32_t getOutputScaleQ16() const { return outputScaleQ16_; } // 65536 = unity
   uint32_t getEstimatedMatrixCurrentMa() const { return estimatedMatrixCurrentMa_; }
   uint32_t getEstimatedSupplyCurrentMa() const { return estimatedSupplyCurrentMa_; }

@@ -6,7 +6,7 @@
   const compactNumber = new Intl.NumberFormat('uk-UA', {notation: 'compact', maximumFractionDigits: 1});
   const percent = new Intl.NumberFormat('uk-UA', {maximumFractionDigits: 1});
   const dateLabel = new Intl.DateTimeFormat('uk-UA', {day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC'});
-  const compactDate = new Intl.DateTimeFormat('uk-UA', {weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC'});
+  const compactDate = new Intl.DateTimeFormat('uk-UA', {weekday: 'short', day: 'numeric', month: 'numeric', timeZone: 'UTC'});
   function parseDate(value) {
     const text = String(value);
     if (!/^\d{8}$/.test(text)) return null;
@@ -160,7 +160,7 @@
         const height = day.tokens === null || !max ? 0 : day.tokens / max * 100;
         button.style.setProperty('--history-bar-percent', String(height));
         button.parentNode.querySelector('.token-history-value').textContent = day.future ? '—' :
-          day.tokens === null ? 'Немає даних' : compactNumber.format(day.tokens);
+          day.tokens === null ? 'Н/Д' : compactNumber.format(day.tokens).replaceAll('\u00a0', ' ');
         button.dataset.unknown = String(day.tokens === null);
         button.dataset.future = String(day.future); button.dataset.today = String(day.id === key(model.today));
         const amount = day.future ? 'Ще не настав' : day.tokens === null ? 'Немає даних' : `${number.format(day.tokens)} токенів`;

@@ -96,6 +96,8 @@ network_progress::Heartbeat snapshotNetworkProgress() {
 constexpr char kFirmwareUrl[] = "https://api.github.com/repos/Vihten/CODEX_firmware_esp8266/contents/esp32-s3/firmware.bin?ref=main";
 constexpr uint32_t kAgentTimeout = 7000, kMaintenanceTimeout = 10000;
 constexpr uint32_t kOtaInterval = 15 * 60 * 1000;
+constexpr uint32_t kOtaCycleMs = 180000, kManifestBudgetMs = 30000;
+constexpr uint32_t kOtaVisualAckMs = 1000, kOtaRecoveryMs = 2000, kBootConfirmationMs = 60000;
 constexpr uint32_t kAirPollIntervalMs = 15000;
 std::atomic<uint32_t> lastClockSyncAt{0};
 std::atomic<bool> clockSyncSeen{false};
@@ -128,11 +130,15 @@ struct ManifestJob {
   char url[256] = {};
   uint64_t currentVersion = PROJECT_FIRMWARE_VERSION;
   uint32_t partitionSize = 0;
+  uint32_t deadline = 0;
 };
 struct ManifestResult {
   Manifest manifest;
   bool newer = false;
   bool upToDate = false;
+  esp_err_t reason = ESP_FAIL;
+  unsigned retries = 0;
+  uint32_t elapsed = 0;
   char status[96] = {};
 };
 struct WifiEvent {
@@ -227,7 +233,8 @@ struct Model {
   uint32_t restartAt = 0, otaAt = 0, stationAt = 0, stationRetryAt = 0, discoveryAt = 0;
   uint32_t legacyAt = 0, maintenanceTimeouts = 0, udpPackets = 0, disconnects = 0, loops = 0;
   uint32_t otaDone = 0, otaTotal = 0, requestedRgb[kAgentCapacity] = {};
-  esp_ota_handle_t otaAbortHandle = 0;
+  uint32_t otaDeadline = 0, otaRecoveryAt = 0, releaseAt = 0;
+  uint32_t confirmationDeadline = 0, httpRetryAt = 0;
   bool otaVisualTimedOut = false, otaBootSelected = false;
   uint32_t wifiSampleAt = 0, wifiEventsDropped = 0, wifiReconciledLosses = 0;
   uint8_t wifiNegativeSamples = 0;
@@ -340,15 +347,47 @@ esp_err_t error(httpd_req_t *request, const char *status, const char *text) {
 
 #include "network/ota.inc"
 
+void startHttpServer(bool retry) {
+  model.httpReady = initializeHttp();
+  if (model.httpReady) {
+    if (retry) {
+      diagnostics::event(diagnostics::Level::Info, diagnostics::Module::Http, diagnostics::Code::RequestRecovered);
+      ESP_LOGI(kTag, "HTTP server restored");
+    }
+    return;
+  }
+  model.httpRetryAt = uptimeMs() + 5000;
+  diagnostic_log::Snapshot failure; failure.reason = 503; failure.detail = 1;
+  diagnostics::event(diagnostics::Level::Error, diagnostics::Module::Http, diagnostics::Code::RequestFailed, failure);
+  if (!retry) message("HTTP server initialization failed.");
+  ESP_LOGE(kTag, "HTTP server initialization failed; retry scheduled");
+}
+
+void serviceHttpRetry() {
+  if (!model.httpReady && !model.http && model.control.maintenance == Maintenance::None &&
+      !model.releasePending && !web_auth::busy() && due(uptimeMs(), model.httpRetryAt))
+    startHttpServer(true);
+}
+
 void networkTask(void *) {
   markNetworkProgress(network_progress::Stage::Starting);
+  model.confirmationDeadline = uptimeMs() + kBootConfirmationMs;
+  esp_ota_img_states_t state;
+  const esp_err_t stateResult = esp_ota_get_state_partition(esp_ota_get_running_partition(), &state);
+  model.confirmationPending = stateResult == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY;
+  if (model.confirmationPending) otaMessage("Waiting for OTA boot confirmation");
+  else if (stateResult != ESP_OK && stateResult != ESP_ERR_NOT_FOUND && stateResult != ESP_ERR_NOT_SUPPORTED)
+    ESP_LOGE(kTag, "Could not read running OTA state: %s", esp_err_to_name(stateResult));
   viewMutex = xSemaphoreCreateMutexStatic(&viewMutexStorage);
   wifiEvents = xQueueCreateStatic(16, sizeof(WifiEvent), wifiEventBytes, &wifiEventStorage);
   telemetryQueue = xQueueCreateStatic(4, sizeof(TelemetryRequest), telemetryBytes, &telemetryStorage);
   telemetryReplies = xQueueCreateStatic(4, sizeof(TelemetryReply), telemetryReplyBytes, &telemetryReplyStorage);
   manifestJobs = xQueueCreateStatic(1, sizeof(ManifestJob), manifestJobBytes, &manifestJobStorage);
   manifestResults = xQueueCreateStatic(1, sizeof(ManifestResult), manifestResultBytes, &manifestResultStorage);
-  if (!viewMutex || !wifiEvents || !telemetryQueue || !telemetryReplies || !manifestJobs || !manifestResults) { ESP_LOGE(kTag, "Cannot initialize network IPC"); vTaskDelete(nullptr); return; }
+  if (!viewMutex || !wifiEvents || !telemetryQueue || !telemetryReplies || !manifestJobs || !manifestResults) {
+    if (model.confirmationPending) rejectPendingBoot("OTA boot failed: network IPC unavailable", ESP_ERR_NO_MEM);
+    ESP_LOGE(kTag, "Cannot initialize network IPC"); vTaskDelete(nullptr); return;
+  }
   // Complete all boot-time storage and PHY initialization before permitting RMT output.
   loadSettings();
   daily_runtime::initialize(model.nvsReady);
@@ -364,6 +403,8 @@ void networkTask(void *) {
   loadAirAlertSettings();
   loadTelegramAlertState();
   const bool webReady = initializeWebFiles();
+  if (!webReady && model.confirmationPending)
+    rejectPendingBoot("OTA boot failed: web tree could not be installed", ESP_FAIL);
   if (!webReady) { message("Web filesystem initialization failed."); ESP_LOGE(kTag, "Web filesystem unavailable"); }
   diagnostics::Metadata diagnosticBoot;
   if (webReady && diagnostics::getMetadata(diagnosticBoot) &&
@@ -379,20 +420,11 @@ void networkTask(void *) {
   }
   initializeUdp();
   model.airWorkerReady = air_alert::startPolling();
-  esp_ota_img_states_t state;
-  model.confirmationPending = esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY;
-  if (!webReady && model.confirmationPending) {
-    ESP_LOGE(kTag, "Rejecting OTA image: web tree could not be installed");
-    esp_ota_mark_app_invalid_rollback_and_reboot();
-  }
+  if (model.confirmationPending && due(uptimeMs(), model.confirmationDeadline))
+    rejectPendingBoot("OTA boot confirmation timed out during startup", ESP_ERR_TIMEOUT);
   model.otaAt = uptimeMs() + 30000;
   updateControl(); serviceExternalLight(); publishView();
-  model.httpReady = initializeHttp();
-  if (!model.httpReady) {
-    diagnostic_log::Snapshot failure; failure.reason = 503; failure.detail = 1;
-    diagnostics::event(diagnostics::Level::Error, diagnostics::Module::Http, diagnostics::Code::RequestFailed, failure);
-    message("HTTP server initialization failed."); ESP_LOGE(kTag, "HTTP server initialization failed");
-  }
+  startHttpServer(false);
   if (xTaskCreatePinnedToCore(diagnosticMonitorTask, "diagnostics", 4096, nullptr, 1, nullptr, 0) != pdPASS) {
     diagnostics::event(diagnostics::Level::Error, diagnostics::Module::System, uint16_t(0x0100));
     ESP_LOGW(kTag, "Diagnostic monitor unavailable");
@@ -400,7 +432,6 @@ void networkTask(void *) {
   model.manifestWorkerReady = xTaskCreatePinnedToCore(manifestTask, "manifest", 16384, nullptr, 2, nullptr, 0) == pdPASS;
   TickType_t wake = xTaskGetTickCount();
   bool renderReported = false;
-  uint32_t httpRetryAt = uptimeMs() + 5000;
   for (;;) {
     markNetworkProgress(network_progress::Stage::RenderStatus);
     ++model.loops;
@@ -440,11 +471,7 @@ void networkTask(void *) {
     publishView();
     markNetworkProgress(network_progress::Stage::Maintenance);
     serviceMaintenance();
-    if (!model.httpReady && !model.http && model.control.maintenance == Maintenance::None &&
-        !model.releasePending && !web_auth::busy() && due(uptimeMs(), httpRetryAt)) {
-      model.httpReady = initializeHttp();
-      httpRetryAt = uptimeMs() + 5000;
-    }
+    serviceHttpRetry();
     // A blocking flash transfer must not leave thousands of overdue polling ticks.
     if (xTaskGetTickCount() - wake > pdMS_TO_TICKS(100)) wake = xTaskGetTickCount();
     completeNetworkProgress();

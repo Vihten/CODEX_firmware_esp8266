@@ -193,8 +193,14 @@ subsequent flash operation the writer revokes that permission and waits for
 an exact one-shot sequence and maintenance epoch acknowledged only after
 synchronous RMT completion. Flash erase/validation may briefly hold the last
 frame. The parked renderer never reads artwork or PSRAM for these frames.
-Missing ACKs keep maintenance sealed and defer cleanup until the renderer
-proves completion; elapsed time alone is not DMA-safety evidence.
+After a missing ACK, the updater releases its in-memory handle and keeps
+maintenance sealed. A late ACK permits release. If the renderer still cannot
+stop after two seconds, the controller restarts without further OTA flash writes.
+The OTA cycle has a 180-second budget from the manifest request, and a transient
+HTTPS connection or header failure gets one retry within that budget. The HTTP
+server pauses for firmware installation and restarts after renderer release.
+An updated boot has 60 seconds to confirm service health and successful settings
+persistence. If confirmation fails, a restart lets the bootloader roll back.
 The new indicator is available for updates performed by this firmware, not
 while an older installed version is still downloading it.
 
@@ -246,12 +252,12 @@ The 100,000-round derivation reuses SHA-256 HMAC pad states through a local
 software SHA-256 adapter, avoiding per-block access to the shared SHA/AES engine.
 The adapter uses the builtin private SHA API in the pinned ESP-IDF 6 / Mbed TLS 4
 toolchain; do not update that dependency without rebuilding and verifying vectors.
-During derivation only, the HTTP task temporarily shares idle priority with
-CPU0's idle task. The caller's original priority is restored before any session
-lock or response, including on crypto failure. No auth/filesystem mutex is held
-in this CPU-only scope. Existing elapsed-time checks every eight rounds still
-block for one tick after about 4 ms. Newly queued background TLS work is deferred
-while an auth operation is admitted; in-flight work and telemetry continue.
+One dedicated Core 0 worker handles password operations with an 8 KiB static
+stack. The HTTP handler hands off an asynchronous request after validation and
+returns to serve other requests. One operation can be in flight at a time.
+During derivation only, the worker shares priority with Core 0's idle task.
+The worker restores its normal priority before taking locks or sending a response.
+New background TLS work is deferred while a password operation is admitted.
 The output
 and credential layout remain compatible with previously saved passwords;
 iteration count, session expiry and failed-attempt limits are unchanged.

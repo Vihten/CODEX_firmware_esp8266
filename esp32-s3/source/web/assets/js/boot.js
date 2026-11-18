@@ -1,1 +1,13 @@
-(()=>{'use strict';const root=document.documentElement;let revealed=false,deadline;const reveal=()=>{if(revealed)return;revealed=true;clearTimeout(deadline);delete root.dataset.pageLoading;};root.dataset.pageLoading='true';deadline=setTimeout(reveal,8000);const settle=()=>{if(typeof window.requestAnimationFrame==='function')window.requestAnimationFrame(()=>window.requestAnimationFrame(reveal));else reveal();};document.addEventListener('DOMContentLoaded',settle,{once:true});window.addEventListener('pageshow',event=>{if(event.persisted)reveal();});if(document.readyState!=='loading')settle();})();
+(() => {
+  'use strict';
+  if (document.readyState !== 'loading') return;
+  const root = document.documentElement;
+  root.dataset.pageLoading = 'true';
+  const finish = () => {
+    clearTimeout(deadline);
+    delete root.dataset.pageLoading;
+  };
+  const deadline = setTimeout(finish, 8000);
+  document.addEventListener('DOMContentLoaded', finish, {once: true});
+  window.addEventListener('pageshow', event => { if (event.persisted) finish(); });
+})();

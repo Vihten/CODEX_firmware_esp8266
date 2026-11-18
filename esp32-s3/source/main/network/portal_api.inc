@@ -170,6 +170,8 @@ esp_err_t portalStatus(httpd_req_t *request) {
   number(root, "heap", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   number(root, "rssi", view.rssi); number(root, "activity", view.control.activityPercent);
   number(root, "agents_count", portalAgentCount(view)); number(root, "brightness", view.control.brightness);
+  number(root, "output_limit_percent", view.render.sceneVisible && !view.render.ledError ? view.render.outputLimitPercent : 100);
+  number(root, "estimated_supply_ma", view.render.estimatedSupplyMa);
   cJSON *light = cJSON_AddObjectToObject(root, "external_light");
   if (!light) okay = false;
   else {

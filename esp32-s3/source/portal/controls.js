@@ -57,7 +57,6 @@
       const form = event.target;
       setTimeout(() => {
         markDirty(form);
-        awaitingState.delete(form);
         const row = form instanceof Element && form.closest('[data-agent]');
         if (row) agentStates.delete(row);
         const range = one('#brightness', form);

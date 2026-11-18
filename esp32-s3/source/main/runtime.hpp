@@ -70,6 +70,8 @@ struct RenderStatus {
   uint32_t maintenanceEpoch = 0;
   uint32_t sceneProgress = 0;
   uint32_t stackFreeBytes = 0;
+  uint8_t outputLimitPercent = 100;
+  uint32_t estimatedSupplyMa = 0;
   int32_t ledError = 0;
   uint8_t activeMeteors = 0;
   bool assetsReady = false;

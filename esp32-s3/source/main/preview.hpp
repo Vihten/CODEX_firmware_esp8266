@@ -9,10 +9,12 @@ constexpr size_t kPreviewFrameBytes = kPreviewHeaderBytes + size_t(PROJECT_PIXEL
 static_assert(kPreviewFrameBytes <= 4096, "Preview exceeds the bounded HTTP task buffer");
 using PreviewMapping = uint16_t (*)(uint8_t, uint8_t);
 
+using PreviewChannel = uint8_t (*)(uint8_t);
+
 bool initializePreview();
 // Renderer supplies a successfully transmitted frame, including confirmed black
 // retained during standby. Never waits.
 void capturePreview(const uint8_t *grb, uint8_t brightness, uint32_t sequence,
-                    uint32_t now, PreviewMapping mapping);
+                    uint32_t now, PreviewMapping mapping, PreviewChannel channel = nullptr);
 // Copies under a short lock, then releases it before any network transmission.
 bool copyPreview(uint8_t *output, size_t capacity, uint32_t now);

@@ -74,6 +74,10 @@
       if (node.textContent !== next) node.textContent = next;
     });
     const text = (selector, value, root = document) => setText(all(selector, root), value);
+    const clearCityThreat = () => {
+      text('[data-city-threat-state]', 'Немає актуальних даних');
+      text('[data-city-threat-source]', '');
+    };
     const live = (key, value) => setText(liveNodes.get(key) || [], value);
     const connection = (label, state = '') => (liveNodes.get('connection') || []).forEach(node => {
       if (window.portalAuthExpired === true) label = '';
@@ -115,6 +119,8 @@
       awaitingState.clear();
       baseline = null;
       setLightOutputs(null);
+      clearCityThreat();
+      live('output-limit', '');
       connection('Сеанс завершено. Увійдіть знову.', 'error');
       const dialog = one('#device-settings-dialog');
       const modalWasOpen = dialog?.open === true;

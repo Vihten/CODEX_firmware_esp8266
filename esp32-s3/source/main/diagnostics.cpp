@@ -11,6 +11,7 @@
 #include "esp_heap_caps.h"
 #include "esp_random.h"
 #include "esp_system.h"
+#include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -36,6 +37,51 @@ static_assert(sizeof(Retained) == 40, "RTC summary must stay small and padding-f
 static_assert(std::is_trivially_default_constructible<Retained>::value,
               "RTC memory must not have a startup constructor");
 RTC_NOINIT_ATTR volatile Retained retained[2];
+constexpr uint32_t kWatchdogMagic = 0x57445431;
+constexpr uint16_t kWatchdogRestart = 0x0108;
+struct RetainedWatchdog {
+  uint32_t magic, length, checksum;
+  char text[diagnostic_log::kTextBytes];
+};
+RTC_NOINIT_ATTR volatile RetainedWatchdog retainedWatchdog;
+char bootWatchdogText[diagnostic_log::kTextBytes]{};
+
+// Only the watchdog ISR writes this record. The SDK calls it under its own
+// lock, before UART logging and panic. No heap, locks or flash writes here.
+struct WatchdogWriter {
+  uint32_t length = 0, checksum = 2166136261u;
+  bool skipCaption = true;
+  void append(const char* text) noexcept {
+    if (!text) return;
+    while (length + 1 < diagnostic_log::kTextBytes && *text) {
+      const unsigned char byte = static_cast<unsigned char>(*text++);
+      const unsigned char safe = byte >= 32 && byte <= 126 ? byte : ' ';
+      retainedWatchdog.text[length++] = char(safe);
+      checksum = (checksum ^ safe) * 16777619u;
+    }
+  }
+};
+void watchdogChunk(void* opaque, const char* text) noexcept {
+  auto& writer = *static_cast<WatchdogWriter*>(opaque);
+  if (writer.skipCaption) { writer.skipCaption = false; return; }
+  writer.append(text);
+}
+
+void restoreWatchdog(uint32_t reset) noexcept {
+  const uint32_t magic = retainedWatchdog.magic;
+  retainedWatchdog.magic = 0;
+  if (reset != ESP_RST_TASK_WDT || magic != kWatchdogMagic) return;
+  const uint32_t length = retainedWatchdog.length;
+  if (!length || length >= sizeof(bootWatchdogText)) return;
+  uint32_t checksum = 2166136261u;
+  for (uint32_t i = 0; i < length; ++i) {
+    const auto byte = static_cast<unsigned char>(retainedWatchdog.text[i]);
+    if (byte < 32 || byte > 126) { bootWatchdogText[0] = '\0'; return; }
+    bootWatchdogText[i] = char(byte);
+    checksum = (checksum ^ byte) * 16777619u;
+  }
+  bootWatchdogText[checksum == retainedWatchdog.checksum ? length : 0] = '\0';
+}
 uint32_t generation = 0;
 unsigned retainedSlot = 0;
 uint64_t firmwareVersion = 0;
@@ -110,6 +156,21 @@ const char* message(uint16_t code) noexcept {
 }
 } // namespace
 
+extern "C" void codex_capture_task_watchdog(void) {
+  retainedWatchdog.magic = 0;
+  WatchdogWriter writer;
+  writer.append("Task watchdog overdue:");
+  int cores = 0;
+  if (esp_task_wdt_print_triggered_tasks(watchdogChunk, &writer, &cores) != ESP_OK || !cores) return;
+  writer.append("; running CPU0=");
+  writer.append(pcTaskGetName(xTaskGetCurrentTaskHandleForCore(0)));
+  writer.append(" CPU1=");
+  writer.append(pcTaskGetName(xTaskGetCurrentTaskHandleForCore(1)));
+  retainedWatchdog.length = writer.length;
+  retainedWatchdog.checksum = writer.checksum;
+  retainedWatchdog.magic = kWatchdogMagic;
+}
+
 bool initialize(uint64_t fwVersion, uint32_t resetReason) noexcept {
   if (xPortInIsrContext()) return false;
   uint32_t expected = 0;
@@ -119,6 +180,7 @@ bool initialize(uint64_t fwVersion, uint32_t resetReason) noexcept {
   boot.firmware_version = fwVersion;
   boot.reset_cause = resetReason == UINT32_MAX ? static_cast<uint32_t>(esp_reset_reason()) : resetReason;
   boot.boot_id = esp_random();
+  restoreWatchdog(boot.reset_cause);
   for (unsigned slot = 0; slot < 2; ++slot) {
     Retained saved{};
     const volatile auto* source = reinterpret_cast<const volatile unsigned char*>(&retained[slot]);
@@ -149,6 +211,11 @@ bool initialize(uint64_t fwVersion, uint32_t resetReason) noexcept {
   initialContext.summary = initial;
   setContext(initialContext);
   checkpoint(initial);
+  if (entries && boot.reset_cause == ESP_RST_TASK_WDT) {
+    diagnostic_log::Snapshot snapshot{};
+    snapshot.reason = ESP_RST_TASK_WDT;
+    event(Level::Error, Module::System, kWatchdogRestart, snapshot);
+  }
   return entries != nullptr;
 }
 
@@ -171,7 +238,9 @@ bool event(Level level, Module module, uint16_t code,
   if (!take()) { drop(); return false; }
   const char* text = message(code);
   char memoryText[diagnostic_log::kTextBytes];
-  if (code == static_cast<uint16_t>(Code::RequestFailed) && context.detail >= 100) {
+  if (code == kWatchdogRestart) {
+    text = bootWatchdogText[0] ? bootWatchdogText : "Task watchdog restart; overdue task list not captured";
+  } else if (code == static_cast<uint16_t>(Code::RequestFailed) && context.detail >= 100) {
     std::snprintf(memoryText, sizeof(memoryText), "HTTP %ld route=%s cause=%s",
         (long)context.reason, http_failure::name(static_cast<http_failure::Route>(uint32_t(context.detail) >> 16)),
         http_failure::name(static_cast<http_failure::Cause>(uint32_t(context.detail) & 0xffff)));

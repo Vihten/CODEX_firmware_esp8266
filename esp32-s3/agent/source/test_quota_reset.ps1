@@ -42,6 +42,10 @@ $q.FetchedAt=$savedFetchedAt
 Assert ($null -eq (New-QuotaResetPacket '53197668' '12345678' 'claude' $q $now)) 'Missing Claude reset omitted'
 $q.ResetAt=$now.AddHours(1)
 Assert ((New-QuotaResetPacket '53197668' '12345678' 'claude' $q $now.AddSeconds(7)) -ceq "LFR1,53197668,12345678,claude,$marketing,1800003600,7") 'Claude actual ResetAt'
+$unused=ConvertTo-ClaudeQuota @{five_hour=@{utilization=0;resets_at=$null}} $now
+Assert ($null -ne $unused -and $unused.Remaining -eq 100 -and $null -eq $unused.ResetAt) 'Unused Claude quota has no invented reset'
+$unusedObservation=@{Fingerprint=$marketing;Remaining=$unused.Remaining;ResetAt=$unused.ResetAt;FetchedAt=$now}
+Assert ($null -eq (New-QuotaResetPacket '53197668' '12345678' 'claude' $unusedObservation $now)) 'Unused null-reset quota omits LFR1'
 # Authenticated app-server response mocks: no sessions, database or production credentials.
 $AccountFingerprint=$marketing
 $script:limitServer=[Diagnostics.Process]::GetCurrentProcess()

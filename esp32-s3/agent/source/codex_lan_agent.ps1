@@ -714,6 +714,12 @@ function ConvertTo-ClaudeQuota($Usage, [DateTimeOffset]$Now = [DateTimeOffset]::
     if (-not [double]::TryParse([string]$window.utilization,
         [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$used) -or
         [double]::IsNaN($used) -or [double]::IsInfinity($used) -or $used -lt 0 -or $used -gt 100) { return $null }
+    # An unused five-hour window explicitly reports 0 usage with no reset yet.
+    # This is known 100% availability, not a malformed or unknown balance.
+    # Keep the reset unknown; observation freshness below supplies its short TTL.
+    if ($null -eq $window.resets_at -and $used -eq 0) {
+        return [pscustomobject]@{ Remaining = 100; ResetAt = $null }
+    }
     $reset = [DateTimeOffset]::MinValue
     if ($window.resets_at -is [DateTimeOffset]) { $reset = $window.resets_at }
     elseif ($window.resets_at -is [DateTime] -and $window.resets_at.Kind -ne [DateTimeKind]::Unspecified) {
@@ -1180,9 +1186,18 @@ function Read-ClaudeQuota($VerifiedProfile = $null) {
     }
 }
 
+function Test-ClaudeQuotaFresh($Quota, [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow) {
+    if ($null -eq $Quota -or $Quota.Fingerprint -cne (Get-AccountFingerprint 'marketing@tiras.ua') -or
+        $Quota.Remaining -lt 0 -or $Quota.Remaining -gt 100 -or
+        $Quota.FetchedAt -isnot [DateTimeOffset] -or $Quota.FetchedAt -gt $Now -or
+        ($Now - $Quota.FetchedAt).TotalSeconds -ge 90) { return $false }
+    if ($null -eq $Quota.ResetAt) { return $Quota.Remaining -eq 100 }
+    return $Quota.ResetAt -is [DateTimeOffset] -and $Quota.ResetAt -gt $Now
+}
+
 function New-ClaudeQuotaPoller {
     @{ Worker = $null; Pending = $null; Stopping = $null; Started = [DateTimeOffset]::MinValue
-        NextPoll = [DateTimeOffset]::MinValue; Failures = 0; Quota = $null; VerifiedProfile = $null; PollSeconds = 120
+        NextPoll = [DateTimeOffset]::MinValue; Failures = 0; Quota = $null; VerifiedProfile = $null; PollSeconds = 60
         LastFailure = ''; HttpStatus = 0; LastStatus = ''; LastSource = ''; RetrySeconds = 0
         Configured = (Test-Path -LiteralPath (Join-Path $env:USERPROFILE '.claude.json')) }
 }
@@ -1240,9 +1255,7 @@ function Update-ClaudeQuotaPoller($State, [DateTimeOffset]$Now = [DateTimeOffset
             Stop-ClaudeQuotaWorker $State
             # Only this independent worker supplies cache metadata, never external state/files.
             $State.VerifiedProfile = Copy-ClaudeVerifiedProfile $result.VerifiedProfile $Now
-            if ($null -ne $result -and $result.Kind -eq 'QuotaSuccess' -and $result.Fingerprint -ceq (Get-AccountFingerprint 'marketing@tiras.ua') -and
-                $result.Remaining -ge 0 -and $result.Remaining -le 100 -and
-                $result.FetchedAt -le $Now -and ($Now - $result.FetchedAt).TotalSeconds -lt 90 -and $result.ResetAt -gt $Now) {
+            if ($null -ne $result -and $result.Kind -eq 'QuotaSuccess' -and (Test-ClaudeQuotaFresh $result $Now)) {
                 $State.Quota = $result; $State.Configured = $true; $State.Failures = 0
                 $source = 'cli'; if ($result.Source -ceq 'desktop') { $source = 'desktop' }
                 if (-not $State.LastSource -or $State.LastFailure -or $State.LastSource -cne $source) {
@@ -1261,8 +1274,7 @@ function Update-ClaudeQuotaPoller($State, [DateTimeOffset]$Now = [DateTimeOffset
             Set-ClaudePollFailure $State (New-ClaudeQuotaFailure 'network') $Now
         }
     }
-    if ($null -ne $State.Quota -and (($Now - $State.Quota.FetchedAt).TotalSeconds -ge 90 -or
-        $State.Quota.FetchedAt -gt $Now -or $State.Quota.ResetAt -le $Now)) { $State.Quota = $null }
+    if ($null -ne $State.Quota -and -not (Test-ClaudeQuotaFresh $State.Quota $Now)) { $State.Quota = $null }
     if ($null -eq $State.Worker -and $Now -ge $State.NextPoll) {
         $State.Worker = [PowerShell]::Create()
         try {
@@ -1288,12 +1300,11 @@ function New-ClaudeQuotaPacket($State, [string]$Account, [string]$Client,
     if ($Account -cnotmatch '\A[0-9A-Fa-f]{8}\z' -or $Client -cnotmatch '\A[0-9A-Fa-f]{8}\z') { throw 'Invalid Claude packet identity.' }
     $remaining = -1; $fingerprint = '00000000'; $validForMs = 0
     $quota = $State.Quota
-    if ($null -ne $quota -and $quota.Fingerprint -ceq (Get-AccountFingerprint 'marketing@tiras.ua') -and
-        $quota.Remaining -ge 0 -and $quota.Remaining -le 100 -and $quota.FetchedAt -le $Now -and
-        ($Now - $quota.FetchedAt).TotalSeconds -lt 90 -and $quota.ResetAt -gt $Now) {
+    if (Test-ClaudeQuotaFresh $quota $Now) {
         $remaining = $quota.Remaining; $fingerprint = $quota.Fingerprint
-        $validForMs = [int][Math]::Floor([Math]::Min(90000 - ($Now - $quota.FetchedAt).TotalMilliseconds,
-            ($quota.ResetAt - $Now).TotalMilliseconds))
+        $validFor = 90000 - ($Now - $quota.FetchedAt).TotalMilliseconds
+        if ($null -ne $quota.ResetAt) { $validFor = [Math]::Min($validFor, ($quota.ResetAt - $Now).TotalMilliseconds) }
+        $validForMs = [int][Math]::Floor($validFor)
         if ($validForMs -le 0) { $remaining = -1; $fingerprint = '00000000'; $validForMs = 0 }
     }
     "LFC1,$Account,$Client,$remaining,$fingerprint,$validForMs"

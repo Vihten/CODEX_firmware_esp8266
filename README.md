@@ -8,6 +8,23 @@ This repository now targets ESP32-S3-WROOM-1-N16R8 only: 16 MiB flash,
 - [Standalone source and instructions](esp32-s3/README.md).
 - [Windows application and LAN agent](https://github.com/Vihten/CODEX_app).
 
+## Claude unused-window availability (2026-11-18)
+
+Agent 20261118100000 accepts the authenticated API's explicit zero utilization
+with a null five-hour reset as 100% available. It does not invent a reset time;
+missing or malformed utilization, and nonzero use without a valid reset, remain
+unknown. Freshness is bounded by the 90-second observation TTL, including an
+unknown reset. Successful polling now runs every 60 seconds, inside that TTL,
+so normal polling no longer creates a 30-second stale gap. Failure backoff and
+rate-limit handling remain unchanged. Supplemental reset metadata is omitted
+when no real reset exists.
+
+Firmware 1795060000000 embeds the new compatible signed update. Native agent
+parser/poller/identity/transport regressions and ESP32-S3 build passed. The local
+agent was updated with backup and graceful worker restart; controller telemetry
+confirmed fresh Claude quota and a real reset after use began. Controller OTA
+was not performed. Existing identity, token state and autostart were preserved.
+
 ## Clearer portal and quota reset telemetry (2026-11-17)
 
 Firmware 1795050000000 widens the desktop portal and aligns visible matrix

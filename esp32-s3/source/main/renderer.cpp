@@ -66,6 +66,7 @@ bool skySampleReady = false;
 uint8_t claudeTint = 0;
 sky_palette::Daylight skyDaylight;
 sky_palette::HueFloor claudeHueFloor;
+sky_palette::PaletteCache codexPalette, claudePalette;
 quota_provider::Provider skyProvider = quota_provider::Provider::Codex;
 external_light::Sequence lightSequence;
 bool matrixDark = true;
@@ -827,13 +828,21 @@ int16_t smoothSkyWave(uint16_t period, uint16_t phase) {
   return (int32_t(sineAt(index)) * (256 - fraction) + int32_t(sineAt(uint8_t(index + 1))) * fraction) / 256;
 }
 
+uint8_t readSkyMask(uint16_t frame, unsigned index) {
+  const uint32_t offset = uint32_t(frame) * EFFECT_BYTES + index;
+  if (!claudeTint || !assets.claudeAnimation || !assets.claudeEffects) return assets.effects[offset];
+  const uint8_t claude = assets.claudeEffects[offset];
+  if (claudeTint == 255) return claude;
+  const uint16_t fraction = (unsigned(claudeTint) * 1000 + 127) / 255;
+  return subpixel::mask(assets.effects[offset], claude, fraction);
+}
+
 cloud_motion::Pixel readSkyPixel(uint16_t frame, unsigned index) {
   const uint32_t maskOffset = uint32_t(frame) * EFFECT_BYTES + index;
   const uint32_t colorOffset = maskOffset * 3;
   const uint8_t *rgb = assets.animation + colorOffset;
-  const uint8_t type = assets.effects[maskOffset];
   if (!claudeTint || !assets.claudeAnimation || !assets.claudeEffects)
-    return {rgb[0], rgb[1], rgb[2], type, false};
+    return {rgb[0], rgb[1], rgb[2], assets.effects[maskOffset], false};
   const uint8_t *claude = assets.claudeAnimation + colorOffset;
   if (claudeTint == 255)
     return {claude[0], claude[1], claude[2], assets.claudeEffects[maskOffset], false};
@@ -841,10 +850,8 @@ cloud_motion::Pixel readSkyPixel(uint16_t frame, unsigned index) {
     return (unsigned(original) * (255 - claudeTint) +
             unsigned(replacement) * claudeTint + 127) / 255;
   };
-  const uint16_t fraction = (unsigned(claudeTint) * 1000 + 127) / 255;
   return {blend(rgb[0], claude[0]), blend(rgb[1], claude[1]),
-          blend(rgb[2], claude[2]),
-          subpixel::mask(type, assets.claudeEffects[maskOffset], fraction), false};
+          blend(rgb[2], claude[2]), readSkyMask(frame, index), false};
 }
 
 void swayCloudPixel(uint8_t *rgb, uint8_t &type, uint8_t x, uint8_t y,
@@ -859,7 +866,7 @@ void swayCloudPixel(uint8_t *rgb, uint8_t &type, uint8_t x, uint8_t y,
     return readSkyPixel(frame, py * MATRIX_WIDTH + px);
   };
   const auto mask = [frame](int px, int py) {
-    return readSkyPixel(frame, py * MATRIX_WIDTH + px).type;
+    return readSkyMask(frame, py * MATRIX_WIDTH + px);
   };
   const auto pixel = cloud_motion::sample(x, y, MATRIX_WIDTH, MATRIX_HEIGHT,
       offsetQ8, color, mask);
@@ -886,12 +893,13 @@ void modulateSky(uint8_t *rgb, uint8_t type, uint8_t x, uint8_t y) {
   } else if (type == 3) {
     scale = 218 + 37 * smoothSkyWave(210, x * 5 + y * 3) / 127;
   } else if (type >= 64) {
-    scale = 166 + 62 * smoothSkyWave(114, type - 64) / 127 +
+    const int wave = smoothSkyWave(114, type - 64);
+    scale = 166 + 62 * wave / 127 +
         26 * smoothSkyWave(207, x * 3 + y * 7) / 127;
     // A travelling cool highlight makes the shaded lobes roll visibly.
-    const unsigned sheen = (127 + smoothSkyWave(114, type - 64)) * 18 / 254;
+    const unsigned sheen = (127 + wave) * 18 / 254;
     rgb[2] = min(255U, unsigned(rgb[2]) + sheen);
-  } else if (type >= 4) {
+  } else if (type >= 4 && claudeTint != 255) {
     const unsigned band = (type - 4) / 12, angle = (type - 4) % 12;
     const unsigned wave = 127 + smoothSkyWave(96, (angle * 3 + 96 - band * 18) % 96);
     // Alternate bright spokes with dim gaps, with a smooth outward pulse.
@@ -906,7 +914,8 @@ void modulateSky(uint8_t *rgb, uint8_t type, uint8_t x, uint8_t y) {
   for (unsigned channel = 0; channel < 3; ++channel) rgb[channel] = (uint16_t(rgb[channel]) * scale + 127) / 255;
   if (!pgm_read_byte(&PYRAMID_MASK[index]))
     sky_palette::apply(rgb, type, pgm_read_byte(&ENTRANCE_FIXED[index]), claudeTint,
-        control.codexSkyColor, control.claudeSkyColor, skyDaylight.at(sceneFrameMilli, x, y),
+        control.codexSkyColor == sky_palette::codexDefault ? nullptr : &codexPalette.at(control.codexSkyColor),
+        claudePalette.at(control.claudeSkyColor), skyDaylight.at(sceneFrameMilli, x, y),
         claudeHueFloor.at(control.claudeSkyColor, control.brightness));
 }
 

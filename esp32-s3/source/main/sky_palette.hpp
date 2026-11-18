@@ -85,7 +85,30 @@ class HueFloor {
   bool valid_ = false;
 };
 
-inline void colorize(uint8_t *rgb, uint8_t type, bool fixed, uint32_t color,
+struct Palette {
+  unsigned maximum = 0;
+  uint8_t weights[3] = {};
+  explicit Palette(uint32_t color) {
+    const unsigned component[] = {(color >> 16) & 255, (color >> 8) & 255, color & 255};
+    for (unsigned value : component) if (value > maximum) maximum = value;
+    if (!maximum) return;
+    for (unsigned i = 0; i < 3; ++i)
+      weights[i] = inverseGamma2[(component[i] * 255 + maximum / 2) / maximum];
+  }
+};
+
+class PaletteCache {
+ public:
+  const Palette &at(uint32_t color) {
+    if (color != color_) { palette_ = Palette(color); color_ = color; }
+    return palette_;
+  }
+ private:
+  uint32_t color_ = 0;
+  Palette palette_{0};
+};
+
+inline void colorize(uint8_t *rgb, uint8_t type, bool fixed, const Palette &palette,
                      uint8_t minimumPeak = 0) {
   const unsigned cool = rgb[1] > rgb[2] ? rgb[1] : rgb[2];
   unsigned base = 0, light = 0;
@@ -96,11 +119,7 @@ inline void colorize(uint8_t *rgb, uint8_t type, bool fixed, uint32_t color,
     if (rgb[2] < base) base = rgb[2];
     light = cool - rgb[0];
   } else return;
-  const unsigned red = (color >> 16) & 255;
-  const unsigned green = (color >> 8) & 255;
-  const unsigned blue = color & 255;
-  const unsigned maximum = red > green ? (red > blue ? red : blue)
-                                        : (green > blue ? green : blue);
+  const unsigned maximum = palette.maximum;
   // Keep the authored peak envelope, including headroom for neutral cores.
   unsigned authoredPeak = (light * 3 * maximum + 255) / 510;
   // Only nonblack, nonfixed sky gets the hue floor. Objects and night stay intact.
@@ -108,26 +127,48 @@ inline void colorize(uint8_t *rgb, uint8_t type, bool fixed, uint32_t color,
     authoredPeak = minimumPeak;
   const unsigned peak = authoredPeak > 255 - base ? 255 - base : authoredPeak;
   for (unsigned channel = 0; channel < 3; ++channel) {
-    const unsigned component = (color >> (16 - channel * 8)) & 255;
-    const unsigned ratio = maximum ? (component * 255 + maximum / 2) / maximum : 0;
-    const unsigned value = base + (peak * inverseGamma2[ratio] + 127) / 255;
-    rgb[channel] = uint8_t(value > 255 ? 255 : value);
+    rgb[channel] = uint8_t(base + (peak * palette.weights[channel] + 127) / 255);
+  }
+}
+
+inline void colorize(uint8_t *rgb, uint8_t type, bool fixed, uint32_t color,
+                     uint8_t minimumPeak = 0) {
+  colorize(rgb, type, fixed, Palette(color), minimumPeak);
+}
+
+inline void apply(uint8_t *rgb, uint8_t type, bool fixed, uint8_t amount,
+                  const Palette *codex, const Palette &claude, uint8_t daylight = 255,
+                  uint8_t claudeMinimumPeak = 0) {
+  const bool sky = !type && !fixed;
+  if (sky && !daylight) { rgb[0] = rgb[1] = rgb[2] = 0; return; }
+  if (!amount) {
+    if (codex) colorize(rgb, type, fixed, *codex);
+    if (sky && daylight != 255)
+      for (unsigned c = 0; c < 3; ++c) rgb[c] = uint8_t((unsigned(rgb[c]) * daylight + 127) / 255);
+    return;
+  }
+  if (amount == 255 && daylight == 255) {
+    colorize(rgb, type, fixed, claude, claudeMinimumPeak);
+    return;
+  }
+  uint8_t first[3] = {rgb[0], rgb[1], rgb[2]};
+  uint8_t second[3] = {rgb[0], rgb[1], rgb[2]};
+  if (codex && amount != 255) colorize(first, type, fixed, *codex);
+  colorize(second, type, fixed, claude, claudeMinimumPeak);
+  for (unsigned channel = 0; channel < 3; ++channel) {
+    const unsigned dayColor = (unsigned(rgb[channel]) * (255 - daylight) +
+                               unsigned(second[channel]) * daylight + 127) / 255;
+    const unsigned mixed = (unsigned(first[channel]) * (255 - amount) + dayColor * amount + 127) / 255;
+    rgb[channel] = uint8_t(sky ? (mixed * daylight + 127) / 255 : mixed);
   }
 }
 
 inline void apply(uint8_t *rgb, uint8_t type, bool fixed, uint8_t amount,
                   uint32_t codex, uint32_t claude, uint8_t daylight = 255,
                   uint8_t claudeMinimumPeak = 0) {
-  uint8_t first[3] = {rgb[0], rgb[1], rgb[2]};
-  uint8_t second[3] = {rgb[0], rgb[1], rgb[2]};
-  if (codex != codexDefault) colorize(first, type, fixed, codex);
-  colorize(second, type, fixed, claude, claudeMinimumPeak);
-  for (unsigned channel = 0; channel < 3; ++channel) {
-    const unsigned dayColor = (unsigned(rgb[channel]) * (255 - daylight) +
-                               unsigned(second[channel]) * daylight + 127) / 255;
-    const unsigned mixed = (unsigned(first[channel]) * (255 - amount) + dayColor * amount + 127) / 255;
-    rgb[channel] = uint8_t(!type && !fixed ? (mixed * daylight + 127) / 255 : mixed);
-  }
+  const Palette cool(codex), warm(claude);
+  apply(rgb, type, fixed, amount, codex == codexDefault ? nullptr : &cool,
+        warm, daylight, claudeMinimumPeak);
 }
 inline uint8_t nightBlue(uint8_t current, uint8_t minimum, uint8_t amount, uint32_t codex,
                          uint8_t daylight = 255) {

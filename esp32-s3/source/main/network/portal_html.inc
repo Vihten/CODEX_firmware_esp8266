@@ -239,27 +239,34 @@ void writePortalStats(Html &html, const View &view) {
         case 5: {
           if (!known) break;
           const time_t epoch = std::time(nullptr);
-          if (quota.resetAt && epoch >= 1700000000) {
+          const bool resetKnown = quota.resetAt && epoch >= 1700000000;
+          if (resetKnown) {
             if (uint64_t(epoch) < quota.resetAt) {
               const uint32_t minutes = (quota.resetAt - uint32_t(epoch) + 59) / 60;
-              if (minutes >= 60) html.format("Скидання 5-годинного ліміту через %lu год %lu хв", (unsigned long)(minutes / 60), (unsigned long)(minutes % 60));
-              else html.format("Скидання 5-годинного ліміту через %lu хв", (unsigned long)minutes);
-            } else html.text("Очікуємо оновлення ліміту");
+              if (minutes >= 1440)
+                html.format("↻ через %lu д %lu год", (unsigned long)(minutes / 1440), (unsigned long)(minutes / 60 % 24));
+              else html.format("↻ через %lu:%02lu", (unsigned long)(minutes / 60), (unsigned long)(minutes % 60));
+            } else html.text("↻ очікується");
           }
           if (quota.ageSeconds != UINT32_MAX) {
-            if (quota.resetAt && epoch >= 1700000000) html.text(" · ");
-            if (quota.ageSeconds < 5) html.text("Оновлено щойно");
-            else if (quota.ageSeconds < 60) html.format("Оновлено %lu с тому", (unsigned long)quota.ageSeconds);
-            else if (quota.ageSeconds < 3600) html.format("Оновлено %lu хв тому", (unsigned long)(quota.ageSeconds / 60));
-            else html.format("Оновлено %lu год тому", (unsigned long)(quota.ageSeconds / 3600));
+            if (resetKnown) html.text(" · ");
+            else html.text("Оновлено ");
+            if (quota.ageSeconds < 5) html.text("щойно");
+            else if (quota.ageSeconds < 60) html.format("%lu с тому", (unsigned long)quota.ageSeconds);
+            else if (quota.ageSeconds < 3600) html.format("%lu хв тому", (unsigned long)(quota.ageSeconds / 60));
+            else html.format("%lu год тому", (unsigned long)(quota.ageSeconds / 3600));
           }
-          if (!quota.fresh) { html.text(" · "); html.text(portal_strings::stale); }
+          if (!quota.fresh) {
+            if (resetKnown || quota.ageSeconds != UINT32_MAX) html.text(" · ");
+            html.text(portal_strings::stale);
+          }
           break;
         }
         case 6: if (!known) html.file("templates/hidden.html"); break;
         case 7: html.format("#%06lX", (unsigned long)(service ? view.control.claudeSkyColor : view.control.codexSkyColor)); break;
         case 8: html.text(known ? "true" : "false"); break;
         case 9: if (known) html.file("templates/hidden.html"); break;
+        case 10: if (known) html.text(quota.remaining <= 5 ? "critical" : quota.remaining < 20 ? "low" : "normal"); break;
       }
     });
   }
@@ -513,7 +520,7 @@ void writeSettings(Html &html, const View &view) {
   });
   html.render("templates/settings/frame-rate.html", [&](unsigned token) {
     switch (token) {
-      case 0: html.format("%u", unsigned(PROJECT_FPS)); break;
+      case 0: html.format("%u", unsigned(OUTPUT_FPS)); break;
     }
   });
   html.render("templates/settings/matrix-pin.html", [&](unsigned token) {

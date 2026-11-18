@@ -215,7 +215,6 @@ table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
 .token-history-details{position:absolute;top:100%;inset-inline:0;z-index:5;width:min(100%,25rem);box-sizing:border-box;padding:1rem 1.25rem;background:var(--surface);border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 20px #0005;font-size:.875rem;font-variant-numeric:tabular-nums}
 .token-history-details p{margin:.5rem 0 0}
 .token-history-details strong{display:block;font-weight:600}
-.token-history-hint{font-size:.8125rem;margin-top:1rem}
 @media(hover:hover) and (pointer:fine){.token-history .token-history-bar:hover{outline:2px solid var(--text);outline-offset:3px}}
 @media(forced-colors:active){.token-history .token-history-bar[data-unknown=true]{border-style:dashed}.token-history .token-history-bar[aria-pressed=true]{outline-color:Highlight}}
 @media(max-width:36rem){.token-history-summary{gap:.5rem}.token-history-details{padding:1rem}}
@@ -264,9 +263,12 @@ table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
 .quota-card h2{font-size:1.125rem;line-height:1.4;overflow-wrap:anywhere}
 .quota-value{font-size:clamp(2rem,5vw,3rem);font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .quota-value [data-live]{font-size:inherit}
-.quota-card progress{appearance:none;height:8px;flex:none;accent-color:var(--quota-color);border-radius:4px;overflow:hidden}
-.quota-card progress::-webkit-progress-value{background:var(--quota-color)}
-.quota-card progress::-moz-progress-bar{background:var(--quota-color)}
+.quota-card[data-quota-level=low]{--quota-warning:var(--warning)}
+.quota-card[data-quota-level=critical]{--quota-warning:var(--danger)}
+.quota-card .quota-value{color:var(--quota-warning,var(--text))}
+.quota-card progress{appearance:none;height:8px;flex:none;accent-color:var(--quota-warning,var(--quota-color));border-radius:4px;overflow:hidden}
+.quota-card progress::-webkit-progress-value{background:var(--quota-warning,var(--quota-color))}
+.quota-card progress::-moz-progress-bar{background:var(--quota-warning,var(--quota-color))}
 .quota-meta,.quota-current{font-size:.875rem;color:var(--muted);overflow-wrap:anywhere}
 .quota-meta:empty,.quota-current:empty{display:none}
 .quota-current{color:var(--text)}
@@ -314,6 +316,9 @@ table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
 #settings-appearance .settings-row>.appearance-form>.form-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr);align-items:end;gap:1rem;width:100%}
 .quota-card>.section-head{margin:0;align-items:center}
 .quota-card .quota-meta,.quota-card .quota-empty{margin:0}
+.quota-meta{font-variant-numeric:tabular-nums}
+.tabs a svg{width:1em;height:1em;flex:none;vertical-align:-.12em;margin-inline-end:.35em;stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+@media(max-width:380px){.tabs{gap:.75rem}.tabs a{font-size:.875rem}}
 .appearance-form .field{min-width:0;margin:0}
 .appearance-form .secondary{background:transparent;color:var(--text);border-color:#58645c}
 #session-banner{position:static;margin-block:.75rem 1rem;overflow-wrap:anywhere}

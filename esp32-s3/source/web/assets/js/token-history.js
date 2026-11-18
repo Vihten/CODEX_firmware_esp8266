@@ -1,4 +1,4 @@
-/* Loaded with defer after portal.js; protected same-origin aggregate endpoint. */
+/* Renders the current-week history from the portal's ranking snapshot. */
 (() => {
   'use strict';
   const DAY = 86400000;
@@ -47,7 +47,7 @@
       return {date: day, id, tokens: model.days.has(id) ? model.days.get(id) : null, quota_used_percent: model.quotas.has(id) ? model.quotas.get(id) : null, future: day > model.today};
     });
     const total = days.reduce((sum, day) => sum + (day.tokens === null ? 0 : day.tokens), 0);
-    return {start, days, total, complete: days.every(day => day.tokens !== null)};
+    return {start, days, total, complete: days.every(day => day.future || day.tokens !== null)};
   }
   function cells(model) {
     return week(model, model.today).days.map(day => ({...day, value: day.tokens}));
@@ -67,13 +67,10 @@
     grid.setAttribute('role', 'group');
     grid.setAttribute('aria-label', 'Токени за сім днів');
     const buttons = new Map(), refreshButton = find('refresh');
+    if (refreshButton) refreshButton.setAttribute('data-refresh', '');
     let model = null, selected = null, hovered = null, pinned = false;
-    let active = null, lastAttempt = -Infinity, denied = false, signature = '', disposed = false, pollTimer = null;
-    const stopPolling = () => { if (pollTimer !== null) env.clearTimeout(pollTimer); pollTimer = null; };
-    const schedule = () => {
-      stopPolling();
-      if (!disposed && !denied && !doc.hidden) pollTimer = env.setTimeout(() => { pollTimer = null; void refresh(); }, Math.max(1, 30000 - (env.now() - lastAttempt)));
-    };
+    let denied = false, signature = '';
+    const setStatus = message => { if (status.textContent !== message) status.textContent = message; };
     function hide() {
       if (selected && buttons.has(selected)) {
         buttons.get(selected).setAttribute('aria-pressed', 'false');
@@ -84,14 +81,13 @@
     const clear = () => {
       hide(); model = null; signature = ''; hovered = null;
       buttons.clear(); grid.replaceChildren(); find('week-total').textContent = '';
+      find('range').textContent = 'Поточний тиждень · усі агенти';
     };
     const stopForAuth = () => {
       denied = true;
-      stopPolling();
-      active?.abort();
       clear();
       if (refreshButton) refreshButton.disabled = true;
-      status.textContent = '';
+      setStatus('');
     };
     env.addEventListener('portal-auth-expired', stopForAuth);
     function inspect(id) {
@@ -176,56 +172,26 @@
     doc.addEventListener('pointerdown', event => { if (!root.contains(event.target)) { hovered = null; hide(); } });
     root.addEventListener('focusout', event => { if (!root.contains(event.relatedTarget)) { hovered = null; hide(); } });
     root.addEventListener('pointerleave', () => { hovered = null; if (!pinned) dismissIfIdle(); });
-    async function refresh() {
-      if (disposed || denied || doc.hidden || active) return;
-      if (env.now() - lastAttempt < 30000) { schedule(); return; }
-      stopPolling();
-      lastAttempt = env.now();
-      const request = new env.AbortController(); active = request;
-      const timeout = env.setTimeout(() => request.abort(), 6000);
-      root.setAttribute('aria-busy', 'true');
-      if (refreshButton) refreshButton.disabled = true;
+    root.addEventListener('portal-token-history', event => {
+      if (denied) return;
       try {
-        const response = await env.fetch('/token-history', {credentials: 'same-origin', cache: 'no-store', signal: request.signal, headers: {Accept: 'application/json'}});
-        if (request.signal.aborted || disposed) return;
-        if (response.status === 401) { stopForAuth(); env.expireSession?.(); return; }
-        if (!response.ok) throw new Error('History request failed');
-        const next = normalize(await response.json());
-        if (request.signal.aborted || disposed) return;
-        if (!next.available) { clear(); status.textContent = 'Історія поки недоступна. Дані не підмінюються нулями.'; return; }
+        const next = normalize(event.detail);
+        if (!next.available) { clear(); setStatus('Історія поки недоступна.'); return; }
         model = next; render();
-        status.textContent = next.save_failed ? 'Не вдалося зберегти історію на контролері. Показано поточні дані; після перезапуску вони можуть бути втрачені.' : model.days.size ? '' : 'Ще немає записаних днів. Невідомі значення не означають нуль токенів.';
-      } catch (error) {
-        if (!denied && !disposed && !doc.hidden) status.textContent = model ? 'Не вдалося оновити історію. Показано останні отримані дані; повторна спроба — через 30 секунд.' : 'Не вдалося завантажити історію. Повторна спроба — через 30 секунд.';
-      } finally {
-        env.clearTimeout(timeout);
-        if (active === request) { active = null; root.setAttribute('aria-busy', 'false'); }
-        if (refreshButton) refreshButton.disabled = denied;
-        schedule();
+        setStatus(next.save_failed ? 'Не вдалося зберегти історію на контролері. Після перезапуску поточні дані можуть бути втрачені.' :
+          model.days.size ? '' : 'Ще немає записаних днів.');
+      } catch (_) {
+        setStatus(model ? 'Не вдалося оновити історію. Показано останні отримані дані.' :
+          'Не вдалося завантажити історію. Спробуйте оновити ще раз.');
       }
-    }
-    if (refreshButton) refreshButton.addEventListener('click', () => {
-      if (!active && !denied && env.now() - lastAttempt < 30000) status.textContent = 'Історія оновлюється раз на 30 секунд. Наступне оновлення заплановано.';
-      void refresh();
     });
-    const onVisibility = () => {
-      if (doc.hidden) { stopPolling(); active?.abort(); }
-      else void refresh();
-    };
-    const onPageHide = () => { disposed = true; stopPolling(); active?.abort(); };
-    const onPageShow = () => { disposed = false; void refresh(); };
-    doc.addEventListener('visibilitychange', onVisibility);
-    env.addEventListener('focus', () => { void refresh(); });
-    env.addEventListener('pagehide', onPageHide); env.addEventListener('pageshow', onPageShow);
     if (env.authExpired?.()) stopForAuth();
-    else void refresh();
-    return {refresh, inspect};
+    return {inspect};
   }
   if (typeof module !== 'undefined' && module.exports) module.exports = {parseDate, key, add, monday, normalize, week, cells, level, mount};
   if (typeof document !== 'undefined') {
     const root = document.querySelector('#token-history');
-    if (root) mount(root, {fetch: window.fetch.bind(window), AbortController: window.AbortController, now: () => performance.now(), setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window), addEventListener: window.addEventListener.bind(window),
-      authExpired: () => window.portalAuthExpired === true,
-      expireSession: () => { window.portalAuthExpired = true; window.dispatchEvent(new Event('portal-auth-expired')); }});
+    if (root) mount(root, {addEventListener: window.addEventListener.bind(window),
+      authExpired: () => window.portalAuthExpired === true});
   }
 })();

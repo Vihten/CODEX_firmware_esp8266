@@ -100,11 +100,13 @@
     const update = (status, sequence) => {
       reconcileSubmissions(status, sequence);
       const stamp = {uptime: status.uptime_ms, frames: status.frames, device: status.device_id, version: status.version};
-      let fps = missing;
-      if (baseline && stamp.device === baseline.device && stamp.version === baseline.version && stamp.uptime > baseline.uptime && stamp.frames >= baseline.frames) {
-        fps = decimal.format((stamp.frames - baseline.frames) * 1000 / (stamp.uptime - baseline.uptime));
+      let fps = 'Очікування заміру';
+      if (status.maintenance === true) fps = 'Обслуговування';
+      else if (status.on === false) fps = 'Матриця вимкнена';
+      else if (baseline && stamp.device === baseline.device && stamp.version === baseline.version && stamp.uptime > baseline.uptime && stamp.frames >= baseline.frames) {
+        fps = `${decimal.format((stamp.frames - baseline.frames) * 1000 / (stamp.uptime - baseline.uptime))} кадр/с`;
       }
-      baseline = stamp;
+      baseline = status.on === false || status.maintenance === true ? null : stamp;
       // New firmware supplies actual build time in UTC seconds. Version IDs are
       // manually advanced; interpret them as milliseconds only for legacy status.
       const legacyVersion = typeof status.version === 'string' && /^\d{13}$/.test(status.version) ? Number(status.version) : NaN;
@@ -140,6 +142,7 @@
         if (view) {
           const current = known && status.on === true && status.quota_available === true && status.quota_provider === provider;
           view.card.dataset.known = String(known);
+          view.card.dataset.quotaLevel = !known ? '' : quota.remaining <= 5 ? 'critical' : quota.remaining < 20 ? 'low' : 'normal';
           view.card.dataset.active = String(current);
           view.card.dataset.stale = String(known && (quota.stale === true || quota.fresh === false));
           if (view.current) view.current.hidden = !current;
@@ -174,21 +177,33 @@
         if (quota?.known !== true || !finite(quota.remaining) || quota.remaining < 0 || quota.remaining > 100) {
           live(`${provider}-quota-meta`, '');
           live(`${provider}-quota-reset`, '');
+          quotaCards.get(provider)?.meta?.removeAttribute('title');
           quotaResetRows.get(provider).forEach(node => { node.hidden = true; });
           continue;
         }
         const validReset = finite(quota?.reset_at) && quota.reset_at > 0 && quota.reset_at <= 8640000000000;
-        let reset = validReset ? `${portalStrings.resetPrefix}${quotaClock.format(new Date(quota.reset_at * 1000))}` : '';
-        if (validReset && quotaCards.has(provider) && finite(status.time_epoch) && status.time_epoch >= 1700000000 && status.time_epoch <= 8640000000000) {
-          const remaining = Math.ceil(quota.reset_at - status.time_epoch);
-          reset += remaining > 0 ? ` · через ${compactSeconds(remaining)}` : ' · очікуємо скидання';
-        }
-        const age = finite(quota?.age_seconds) && quota.age_seconds >= 0
-          ? quota.age_seconds < 5 ? 'Оновлено щойно' : `${portalStrings.agePrefix}${compactSeconds(quota.age_seconds)}${portalStrings.ageSuffix}` : portalStrings.ageUnknown;
+        const localReset = validReset ? quotaClock.format(new Date(quota.reset_at * 1000)) : '';
+        const reset = validReset ? `${provider === 'codex' && quotaCards.has(provider) ? 'Скидання ліміту о ' : portalStrings.resetPrefix}${localReset}` : '';
+        const validAge = finite(quota.age_seconds) && quota.age_seconds >= 0;
+        const shortAge = validAge ? quota.age_seconds < 5 ? 'щойно' : `${compactSeconds(quota.age_seconds)}${portalStrings.ageSuffix}` : '';
+        const age = validAge ? `${portalStrings.agePrefix}${shortAge}` : portalStrings.ageUnknown;
         const resetRows = quotaResetRows.get(provider);
         resetRows.forEach(node => { node.hidden = !validReset; });
         live(`${provider}-quota-reset`, reset);
-        live(`${provider}-quota-meta`, `${resetRows.length ? '' : reset ? `${reset} · ` : ''}${age}${quota?.stale === true ? ` · ${portalStrings.stale}` : ''}`);
+        const stale = quota.stale === true || quota.fresh === false ? portalStrings.stale : '';
+        const meta = quotaCards.get(provider)?.meta;
+        if (!meta) {
+          live(`${provider}-quota-meta`, [resetRows.length ? '' : reset, age, stale].filter(Boolean).join(' · '));
+          continue;
+        }
+        let countdown = validReset ? `↻ о ${localReset}` : '';
+        if (validReset && finite(status.time_epoch) && status.time_epoch >= 1700000000 && status.time_epoch <= 8640000000000) {
+          const minutes = Math.ceil((quota.reset_at - status.time_epoch) / 60);
+          if (minutes >= 1440) countdown = `↻ через ${Math.floor(minutes / 1440)} д ${Math.floor(minutes / 60) % 24} год`;
+          else countdown = minutes > 0 ? `↻ через ${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}` : '↻ очікується';
+        }
+        meta.setAttribute('title', [reset, age, stale].filter(Boolean).join(' · '));
+        live(`${provider}-quota-meta`, [countdown, countdown || !validAge ? shortAge : age, stale].filter(Boolean).join(' · '));
       }
       const progress = otaProgress;
       if (progress) {

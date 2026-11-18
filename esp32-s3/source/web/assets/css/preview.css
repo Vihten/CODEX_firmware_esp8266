@@ -5,7 +5,7 @@
 #preview-state[data-state=live]{color:var(--accent)}
 #preview-state[data-state=error]{color:var(--warning)}
 #matrix-canvas{display:block;width:100%;height:auto;aspect-ratio:348/233;background:#080a09;image-rendering:pixelated}
-.device-visual{position:relative;width:100%;max-width:680px;margin-inline:auto;aspect-ratio:768/550}
+.device-visual{position:relative;width:100%;margin-inline:auto;aspect-ratio:768/550}
 .device-visual>img{display:block;width:100%;height:auto;aspect-ratio:768/550;pointer-events:none;filter:drop-shadow(0 8px 12px rgba(0,0,0,.32))}
 /* Image-space housing paths only: never tint the matrix or capture pointer input. */
 .device-light-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;mix-blend-mode:screen}

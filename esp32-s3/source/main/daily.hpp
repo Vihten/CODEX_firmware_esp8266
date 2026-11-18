@@ -31,6 +31,7 @@ struct WeekSummary {
   uint8_t elapsedDays = 0, observedDays = 0;
   bool saving = false, saveFailed = false;
   WeekEntry entries[kAgents] = {};
+  Day days[7] = {};
 };
 inline bool leap(uint32_t year) noexcept {
   return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
@@ -170,7 +171,8 @@ class Store {
     out.elapsedDays = uint8_t(end - begin + 1);
     uint64_t aggregate = 0;
     for (uint32_t when = begin; when <= end; ++when) {
-      bool observed = false;
+      auto& day = out.days[when - begin];
+      day.date = dateFromOrdinal(when);
       for (std::size_t i = 0; i < kAgents; ++i) {
         const Record& record = records_[i][when % kDays];
         if (!bound_[i] || record.ordinal != when) continue;
@@ -180,9 +182,10 @@ class Store {
         entry.identity = identities_[i];
         entry.tokens += record.tokens;
         ++entry.observedDays;
-        observed = true;
+        day.tokens += record.tokens;
+        day.agents |= static_cast<uint16_t>(1u << i);
       }
-      if (observed) ++out.observedDays;
+      if (day.agents) ++out.observedDays;
     }
     return true;
   }

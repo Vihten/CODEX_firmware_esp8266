@@ -1,3 +1,5 @@
+    const tokenHistory = one('#token-history');
+    const updateTokenHistory = detail => tokenHistory?.dispatchEvent(new CustomEvent('portal-token-history', {detail}));
     const schedule = delay => {
       if (timer !== null) clearTimeout(timer);
       timer = null;
@@ -30,6 +32,7 @@
       timer = null;
       const request = {controller: new AbortController(), reason: '', manual: false, sequence: ++pollSequence};
       active = request;
+      tokenHistory?.setAttribute('aria-busy', 'true');
       if (manual && feedback) manualFeedback(request);
       else if (!baseline) connection('Оновлення…');
       const timeout = setTimeout(() => { request.reason = 'timeout'; request.controller.abort(); }, 6000);
@@ -44,6 +47,8 @@
         if (!status || !finite(status.uptime_ms) || !finite(status.frames) || !Array.isArray(status.agents)) throw new Error('JSON');
         if (request.reason || !authenticated() || document.hidden) return;
         update(status, request.sequence);
+        updateTokenHistory(status.weekly?.source === 'daily' && Array.isArray(status.weekly.days) ?
+          status.weekly : {available: false});
         failures = 0;
         connection(status.maintenance === true ? 'Контролер зайнятий' : 'Дані оновлено', 'ok');
       } catch (_) {
@@ -54,6 +59,7 @@
           live('fps', missing);
           live('output-limit', '');
           text('[data-weekly-state],[data-lifetime-state]', 'Не вдалося оновити рейтинг. Спробуйте ще раз.');
+          updateTokenHistory(null);
           text('[data-air-alert-state]', 'Немає актуальних даних');
           text('[data-air-alert-updated]', 'Зв’язок із контролером втрачено');
           clearCityThreat();
@@ -62,7 +68,8 @@
       } finally {
         clearTimeout(timeout);
         active = null;
-        if (request.manual) all('[data-refresh]').forEach(button => { button.disabled = false; });
+        tokenHistory?.setAttribute('aria-busy', 'false');
+        if (request.manual) all('[data-refresh]').forEach(button => { button.disabled = !authenticated(); });
         schedule(Math.min(30000, 5000 * Math.pow(2, Math.min(failures, 3))));
         if (refreshAfterActive && authenticated()) { refreshAfterActive = false; setTimeout(() => poll(true, false), 0); }
       }
@@ -90,5 +97,6 @@
       return;
     }
     if (!authenticated()) stopForAuth();
+    else if (tokenHistory && !document.hidden) void poll(true, false);
     else if (automatic()) { connection('Очікування оновлення'); schedule(5000); }
     else pause();

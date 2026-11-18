@@ -9,6 +9,8 @@
 #include "quota_provider.hpp"
 
 constexpr size_t kAgentCapacity = 12;
+// Transport cadence is independent of the authored 30 Hz effect clock.
+constexpr uint32_t OUTPUT_FPS = 27;
 enum class Maintenance : uint8_t { None, Persist, Ota, Restart };
 
 struct AgentInput {

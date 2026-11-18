@@ -374,6 +374,17 @@ esp_err_t portalStatus(httpd_req_t *request) {
       string(ranking, "source", "daily"); boolean(ranking, "available", dailyReady);
       number(ranking, "observed_days", weekSummary.observedDays);
       number(ranking, "elapsed_days", weekSummary.elapsedDays);
+      number(ranking, "today", rankingClock.valid ? rankingClock.date : 0);
+      cJSON *days = cJSON_AddArrayToObject(ranking, "days");
+      if (!days) okay = false;
+      else if (dailyReady) for (const auto &day : weekSummary.days) {
+        if (!day.agents) continue;
+        cJSON *item = cJSON_CreateObject();
+        if (!item) { okay = false; break; }
+        if (!cJSON_AddItemToArray(days, item)) { cJSON_Delete(item); okay = false; break; }
+        number(item, "date", day.date);
+        number(item, "tokens", double(day.tokens));
+      }
     }
     boolean(ranking, "dirty", kind ? view.lifetimeDirty : weekSummary.saving);
     boolean(ranking, "save_failed", kind ? view.lifetimeSaveFailed : weekSummary.saveFailed);

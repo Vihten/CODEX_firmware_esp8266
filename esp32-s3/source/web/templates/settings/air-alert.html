@@ -12,9 +12,9 @@
 <p class='muted'>Ручний тест не знижує рівень реальної червоної тривоги.</p>
 <p class='muted'>Публічна стрічка Telegram може оновлюватися із затримкою. Допоміжна індикація не замінює офіційні сповіщення. Відсутність даних не означає відбій.</p>
 </details>
-<form method='post' action='/air-alert'><div class='actions'><button type='submit' name='mode' value='yellow' class='secondary' data-alert-test='yellow' data-air-alert-play {{4}}>Тест жовтої індикації · 60 с</button>
-<button type='submit' name='mode' value='red' class='secondary' data-alert-test='red' data-air-alert-play {{4}}>Тест червоної тривоги · 60 с</button>
-<button type='submit' name='mode' value='city' class='secondary' data-alert-test='city' data-air-alert-play {{4}}>Тест об’єктів над містом: блимання та звук · 60 с</button>
+<form method='post' action='/air-alert'><div class='actions'><button type='submit' name='mode' value='yellow' class='secondary' data-alert-test='yellow' data-air-alert-play {{4}}>Жовтий тест · 60 с</button>
+<button type='submit' name='mode' value='red' class='secondary' data-alert-test='red' data-air-alert-play {{4}}>Червоний тест · 60 с</button>
+<button type='submit' name='mode' value='city' class='secondary' aria-label='Тест блимання та звуку протягом 60 секунд' data-alert-test='city' data-air-alert-play {{4}}>Блимання і звук · 60 с</button>
 <button type='submit' name='mode' value='stop' class='secondary' data-air-alert-stop {{5}}>Зупинити тест</button></div>
 </form>
 <p class='muted' data-air-alert-manual>{{7}}</p>

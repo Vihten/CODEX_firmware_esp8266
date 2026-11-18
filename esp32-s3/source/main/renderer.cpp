@@ -30,8 +30,6 @@ namespace {
 #define FRAME_BYTES (NUM_LEDS * 3UL)
 #define EFFECT_BYTES NUM_LEDS
 #define EVENT_FPS PROJECT_FPS
-// Transport cadence is independent of the authored 30 Hz effect clock.
-constexpr uint32_t OUTPUT_FPS = 27;
 #define EVENT_MODE 1
 #define ACTIVITY_EFFECTS 1
 #define DIRECT_AGENT_CAPACITY kAgentCapacity

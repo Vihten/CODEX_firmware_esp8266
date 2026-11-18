@@ -359,7 +359,7 @@ struct Text {
 
 // Caller-owned storage is available for tasks with exceptionally small stacks.
 // No heap, recursion, global mutable storage, clocks, transport or persistence.
-template <typename TextPolicy = detail::Text>
+template <typename TextPolicy = detail::Text, bool AllowNestedTextWrapper = false>
 class BasicParser {
  public:
   bool parse(const char *body, size_t length, Page &out, Diagnostics *diagnostics = nullptr,
@@ -442,13 +442,23 @@ class BasicParser {
             page_.posts >= detail::kPostLimit || !detail::postId(tag.post, id_, channelPrefix)) return fail("markup");
         for (unsigned i = 0; i < page_.posts; ++i) if (ids_[i] == id_) return fail("duplicate-id");
         postDepth_ = depth_ + 1;
-        hasTime_ = hasText_ = forwarded_ = false; textValid_ = true;
+        hasTime_ = hasText_ = nestedText_ = forwarded_ = false; textValid_ = true;
         time_ = 0; level_ = Level::Unknown;
       }
       if (postDepth_ && forwarded && !excluded) forwarded_ = true;
       if (postDepth_ && text && !excluded) {
-        if (hasText_ || !detail::nameEqual(tag.name, "div") || tag.empty) return fail("markup");
-        hasText_ = true; textDepth_ = depth_ + 1; text_ = TextPolicy{};
+        if (!detail::nameEqual(tag.name, "div") || tag.empty) return fail("markup");
+        if (hasText_) {
+          // The municipal feed sometimes repeats the message-text wrapper.
+          // Keep a single text region and reject any separate sibling region.
+          bool scriptText;
+          if (!AllowNestedTextWrapper || !textDepth_ || depth_ != textDepth_ || nestedText_ ||
+              !detail::classToken(tag.classes, "js-message_text", scriptText) || !scriptText)
+            return fail("markup");
+          nestedText_ = true;
+        } else {
+          hasText_ = true; textDepth_ = depth_ + 1; text_ = TextPolicy{};
+        }
       }
       if (postDepth_ && !textDepth_ && !excluded && detail::nameEqual(tag.name, "time")) {
         // Telegram also uses <time> for video duration, without a datetime.
@@ -497,7 +507,7 @@ class BasicParser {
   uint32_t id_ = 0;
   int64_t time_ = 0;
   Level level_ = Level::Unknown;
-  bool hasTime_ = false, hasText_ = false, forwarded_ = false, textValid_ = true;
+  bool hasTime_ = false, hasText_ = false, nestedText_ = false, forwarded_ = false, textValid_ = true;
   bool seenHtml_ = false, closedHtml_ = false, seenBody_ = false, closedBody_ = false, closedHistory_ = false;
 
   void reset() {
@@ -505,7 +515,7 @@ class BasicParser {
     depth_ = postDepth_ = textDepth_ = svgDepth_ = 0;
     bodyDepth_ = historyDepth_ = 0;
     id_ = 0; time_ = 0; level_ = Level::Unknown;
-    hasTime_ = hasText_ = forwarded_ = false;
+    hasTime_ = hasText_ = nestedText_ = forwarded_ = false;
     textValid_ = true;
     seenHtml_ = closedHtml_ = seenBody_ = closedBody_ = closedHistory_ = false;
   }
@@ -538,7 +548,7 @@ class BasicParser {
   }
 };
 
-using Parser = BasicParser<>;
+using Parser = BasicParser<detail::Text, true>;
 
 static_assert(sizeof(Parser) <= 1536, "Keep parser scratch below the firmware task stack budget");
 

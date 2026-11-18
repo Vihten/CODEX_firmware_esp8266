@@ -20,13 +20,16 @@ esp_err_t httpEvent(esp_http_client_event_t *event) {
   if (!strcasecmp(event->header_key, "Content-Encoding") && strcasecmp(event->header_value, "identity")) headers.encoded = true;
   return ESP_OK;
 }
-const char *directGitHubUrl(const char *source) {
-  // Keep the published API URL compatible with older installed firmware.
+bool githubRequestUrl(const char *source, uint64_t cacheKey, char (&url)[1024]) {
+  // Keep the published API URLs compatible with older installed firmware.
+  constexpr char raw[] = "https://raw.githubusercontent.com/Vihten/CODEX_firmware_esp8266/refs/heads/main/esp32-s3";
+  int length;
   if (!std::strcmp(source, kFirmwareUrl))
-    return "https://raw.githubusercontent.com/Vihten/CODEX_firmware_esp8266/main/esp32-s3/firmware.bin";
-  if (!std::strcmp(source, "https://api.github.com/repos/Vihten/CODEX_firmware_esp8266/contents/esp32-s3/manifest.json?ref=main"))
-    return "https://raw.githubusercontent.com/Vihten/CODEX_firmware_esp8266/main/esp32-s3/manifest.json";
-  return source;
+    length = std::snprintf(url, sizeof(url), "%s/firmware.bin?version=%llu", raw, (unsigned long long)cacheKey);
+  else if (!std::strcmp(source, "https://api.github.com/repos/Vihten/CODEX_firmware_esp8266/contents/esp32-s3/manifest.json?ref=main"))
+    length = std::snprintf(url, sizeof(url), "%s/manifest.json?check=%016llx", raw, (unsigned long long)cacheKey);
+  else length = std::snprintf(url, sizeof(url), "%s", source);
+  return length >= 0 && size_t(length) < sizeof(url);
 }
 bool githubHttps(const char *url) {
   if (std::strncmp(url, "https://", 8)) return false;
@@ -48,8 +51,9 @@ class Download {
     const uint32_t now = uptimeMs();
     return due(now, deadline_) ? 0 : int(std::min(uint32_t(8000), deadline_ - now));
   }
-  bool openOnce(const char *source) {
-    char url[1024]; copy(url, directGitHubUrl(source));
+  bool openOnce(const char *source, uint64_t cacheKey) {
+    char url[1024];
+    if (!githubRequestUrl(source, cacheKey, url)) { reason_ = ESP_ERR_INVALID_ARG; return false; }
     for (unsigned redirects = 0; redirects <= 4; ++redirects) {
       const int timeout = timeoutMs();
       if (!timeout) { reason_ = ESP_ERR_TIMEOUT; return false; }
@@ -94,15 +98,15 @@ public:
   bool expired() const { return due(uptimeMs(), deadline_); }
   int32_t reason() const { return expired() ? ESP_ERR_TIMEOUT : reason_; }
   unsigned retries() const { return retries_; }
-  bool open(const char *source) {
-    if (openOnce(source)) return true;
+  bool open(const char *source, uint64_t cacheKey) {
+    if (openOnce(source, cacheKey)) return true;
     close();
     constexpr uint32_t retryDelay = 500;
     if (!retryable_ || timeoutMs() <= int(retryDelay)) return false;
     ESP_LOGW(kTag, "Retrying OTA HTTPS open (reason=%ld)", (long)reason_);
     vTaskDelay(pdMS_TO_TICKS(retryDelay));
     ++retries_;
-    const bool opened = openOnce(source);
+    const bool opened = openOnce(source, cacheKey);
     if (!opened) close();
     return opened;
   }
@@ -136,7 +140,11 @@ ManifestResult fetchManifest(const ManifestJob &job) {
     result.elapsed = uptimeMs() - (job.deadline - kManifestBudgetMs);
     return result;
   };
-  if (!download.open(job.url))
+  // GitHub's raw CDN can serve cached content even with Cache-Control: no-cache.
+  // Give each manifest check its own key, including immediately after a reboot.
+  const uint64_t nonceHigh = esp_random();
+  const uint64_t nonce = (nonceHigh << 32) | esp_random();
+  if (!download.open(job.url, nonce))
     return finish(download.expired() ? "Manifest timed out" : "Manifest HTTPS request failed", download.reason());
   if (download.length() > 4096) return finish("Manifest exceeds 4096 bytes");
   char body[4097]; size_t used = 0;
@@ -174,7 +182,8 @@ ManifestResult fetchManifest(const ManifestJob &job) {
   cJSON_Delete(json);
   if (download.expired()) return finish("Manifest timed out", ESP_ERR_TIMEOUT);
   if (!valid) return finish("Manifest does not match this S3 image");
-  if (version <= job.currentVersion) { result.upToDate = true; return finish("Up to date", ESP_OK); }
+  if (version < job.currentVersion) return finish("GitHub manifest older than installed firmware");
+  if (version == job.currentVersion) { result.upToDate = true; return finish("Up to date", ESP_OK); }
   manifest.version = version; manifest.size = size;
   result.manifest = manifest; result.newer = true;
   return finish("New firmware verified; waiting for LEDs", ESP_OK);
@@ -303,7 +312,7 @@ void installFirmware() {
     model.httpReady = false;
     model.httpRetryAt = uptimeMs();
   }
-  if (!download.open(kFirmwareUrl)) {
+  if (!download.open(kFirmwareUrl, model.manifest.version)) {
     if (otaExpired()) return reportOtaDeadline();
     return fail("Firmware HTTPS request failed", download.reason());
   }

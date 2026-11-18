@@ -212,6 +212,7 @@ const char *portalMatrixState(const View &view) {
 }
 const char *portalOtaLabel(const char *value) {
   if (!std::strcmp(value, "Up to date")) return "Встановлено актуальну версію";
+  if (!std::strcmp(value, "GitHub manifest older than installed firmware")) return "GitHub повернув старіший маніфест. Перевірка повториться.";
   if (!std::strcmp(value, "Not checked")) return "Перевірку ще не виконано";
   if (!std::strcmp(value, "Checking S3 firmware manifest")) return "Перевіряємо GitHub";
   if (!std::strcmp(value, "New firmware verified; waiting for LEDs")) return "Підготовка до встановлення";

@@ -36,22 +36,22 @@ Update an existing installation with update_codex_lan_agent.cmd to preserve
 its name, configuration and token history. Claude quota does not change
 Codex token accounting.
 
-FIVE-HOUR RESET METADATA (LFR1)
+QUOTA RESET METADATA (LFR1)
 
 For the verified marketing@tiras.ua account, the heartbeat sends the actual
-five-hour reset epoch separately from existing balance/activity/token packets:
+quota reset epoch separately from existing balance/activity/token packets:
 
   LFR1,<paired fingerprint>,<client>,<codex|claude>,<quota fingerprint>,<epoch seconds>,<observation age seconds>
 
 Codex reads the authenticated app-server account/rateLimits/read response,
-including rateLimitsByLimitId and legacy rateLimits. A candidate must explicitly
-report windowDurationMins=300 (or window_duration_mins=300). Among five-hour
-candidates, the highest usedPercent wins; equal values retain source order.
-The reset is copied from that window's resetsAt, resets_at, or reset_at field.
-Missing duration or reset is omitted, never inferred from primary/secondary,
-weekly limits, session logs, or now + five hours. A selected window with missing
-reset does not fall back to another window. Existing Codex remaining statistics
-still use the most exhausted window across all limits, exactly as before.
+including rateLimitsByLimitId and legacy rateLimits. Codex prefers a window with
+an explicit duration of 300 minutes and uses an explicit 10080-minute weekly
+window if no five-hour candidate exists. The duration comes from
+windowDurationMins or window_duration_mins. Within the selected duration, the
+highest usedPercent wins and ties retain source order. The epoch comes from the
+selected window's resetsAt, resets_at, or reset_at field. If that field is
+missing or invalid, the agent omits the packet. The Codex remaining balance
+uses the most exhausted window across all limits.
 
 Claude uses the authenticated usage response's five_hour.resets_at, preserving
 its explicit timezone when converting to Unix seconds. The existing utilization
@@ -65,11 +65,9 @@ TTL. The separate updater HMAC request/reply formats are unchanged. Credentials
 and raw authenticated responses are never added to packets or status logs.
 
 Controller integration: existing firmware accepts LFR1 and exposes reset_at in
-provider status. The value now specifically describes five hours, while legacy
-Codex remaining may be limited by a weekly window. UI must label this as the
-five-hour reset, not promise it resets the displayed limiting balance. Receivers
-cannot distinguish this new meaning from old agents that sent the limiting
-window reset; deployments requiring consistent meaning must update agents.
+provider status. LFR1 carries the epoch without the window duration. Label the
+Codex timestamp as a reset time, since it may describe a five-hour or weekly
+window. Claude's timestamp describes its five-hour window.
 
 Focused offline tests (mock responses/transports; no installed/live agent):
 
@@ -314,6 +312,19 @@ Focused tests (temporary files only, no installed worker or controller):
   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\test_weekly_token_v2.ps1
   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\test_weekly_token_backlog.ps1
   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\test_weekly_token_http.ps1
+
+CLAUDE CODE DAILY LOCAL TOKENS (LFD2)
+
+The agent counts local Claude Code assistant usage by Kyiv calendar day,
+including uncached input, output, cache writes and cache reads. A response
+counts once by message ID across session, fork and subagent logs. It sends
+absolute daily totals under the existing paired account and client over both
+UDP and HTTP /agent. Claude and Codex daily reports share one bounded send
+schedule. LFD2 requires controller support. See TOKEN_ACCOUNTING_V2.md for
+coverage, checkpoint behavior and the packet and ACK formats.
+
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\test_claude_daily_tokens.ps1
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\test_daily_token_http.ps1
 
 REPLACE A CONTROLLER (run separately on each agent PC)
 

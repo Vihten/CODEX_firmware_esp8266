@@ -287,14 +287,23 @@ function New-WeeklyTokenScanner {
 }
 
 function Start-WeeklyTokenScan($Scanner, [string]$HelperPath, [string]$SessionsRoot, [string]$StatePath,
-    [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow, [string]$ReportIdentity = '') {
+    [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow, [string]$ReportIdentity = '', [switch]$ClaudeDaily) {
     if ($null -ne $Scanner.Pending) { return $false }
     $Scanner.Worker.Commands.Clear()
     $Scanner.Worker.Streams.Error.Clear()
     [void]$Scanner.Worker.AddScript({
-        param($HelperPath, $SessionsRoot, $StatePath, $Now, $ReportIdentity)
+        param($HelperPath, $SessionsRoot, $StatePath, $Now, $ReportIdentity, $ClaudeDaily)
         $ErrorActionPreference = 'Stop'
         . $HelperPath
+        if ($ClaudeDaily) {
+            $state = Read-ClaudeDailyTokenState $StatePath
+            $changed = Update-ClaudeDailyTokenState $state $SessionsRoot $Now $ReportIdentity
+            if ($changed -and ($state.Files.Count -gt 0 -or $state.LastPath -or (Test-Path -LiteralPath $StatePath))) {
+                Save-DailyTokenState $state $StatePath $script:ClaudeTokenCheckpointBytes
+            }
+            [pscustomobject]@{ Daily = @($state.Days.Values | Sort-Object Day -Descending); ReportIdentity = $state.ReportIdentity }
+            return
+        }
         $state = Read-WeeklyTokenState $StatePath (Get-TokenWeek $Now)
         $migrating = $null -eq $state.DailyLedger
         if ($migrating) {
@@ -327,7 +336,7 @@ function Start-WeeklyTokenScan($Scanner, [string]$HelperPath, [string]$SessionsR
         $dailyRows = @($state.DailyLedger.Days.Values | Sort-Object Day -Descending)
         # Only fully scanned, durably committed snapshots cross the boundary.
         [pscustomobject]@{ Week = $state.Week; Total = $state.Total; LifetimeTotal = $state.LifetimeTotal; Revision = $state.Revision; ReportIdentity = $state.ReportIdentity; Daily = $dailyRows; DailyError = '' }
-    }).AddArgument($HelperPath).AddArgument($SessionsRoot).AddArgument($StatePath).AddArgument($Now).AddArgument($ReportIdentity)
+    }).AddArgument($HelperPath).AddArgument($SessionsRoot).AddArgument($StatePath).AddArgument($Now).AddArgument($ReportIdentity).AddArgument($ClaudeDaily.IsPresent)
     $Scanner.Pending = $Scanner.Worker.BeginInvoke()
     return $true
 }
@@ -337,7 +346,7 @@ function Receive-WeeklyTokenScan($Scanner) {
     try {
         $result = $Scanner.Worker.EndInvoke($Scanner.Pending)
         # A shared snapshot is valid only after its single durable commit.
-        if ($Scanner.Worker.Streams.Error.Count -ne 0 -or $result.Count -ne 1) { throw "Weekly token scan failed before commit (results=$($result.Count), errors=$($Scanner.Worker.Streams.Error.Count))." }
+        if ($Scanner.Worker.Streams.Error.Count -ne 0 -or $result.Count -ne 1) { throw "Token scan failed before commit (results=$($result.Count), errors=$($Scanner.Worker.Streams.Error.Count))." }
         return $result[0]
     }
     catch {
@@ -398,10 +407,8 @@ function New-DailyTokenState {
     return @{ Version = 1; Files = @{}; Days = @{}; ReportIdentity = ''; Metadata = @{} }
 }
 
-function Assert-DailyTokenState($state) {
-    if ((Get-DailyTokenField $state 'Version') -ne 1 -or
-        (Get-DailyTokenField $state 'Files') -isnot [hashtable] -or
-        (Get-DailyTokenField $state 'Days') -isnot [hashtable] -or
+function Assert-DailyTokenRows($state) {
+    if ((Get-DailyTokenField $state 'Days') -isnot [hashtable] -or
         (Get-DailyTokenField $state 'ReportIdentity') -isnot [string] -or $state.Days.Count -gt 366) { throw 'Invalid daily checkpoint' }
     foreach ($day in $state.Days.Keys) {
         $row = $state.Days[$day]
@@ -410,6 +417,12 @@ function Assert-DailyTokenState($state) {
             $null -eq (ConvertTo-TokenInteger (Get-DailyTokenField $row 'Revision')) -or
             [long]$row.Revision -le 0 -or [long]$row.Revision -gt 281474976710655) { throw 'Invalid daily total/revision' }
     }
+}
+
+function Assert-DailyTokenState($state) {
+    if ((Get-DailyTokenField $state 'Version') -ne 1 -or
+        (Get-DailyTokenField $state 'Files') -isnot [hashtable]) { throw 'Invalid daily checkpoint' }
+    Assert-DailyTokenRows $state
     foreach ($file in $state.Files.Values) {
         if ((Get-DailyTokenField $file 'Events') -isnot [hashtable] -or
             (Get-DailyTokenField $file 'Signature') -isnot [string] -or
@@ -590,9 +603,19 @@ function Update-DailyTokenState($State, [string]$SessionsRoot, [DateTimeOffset]$
         }
         $totals[$day] = [long]$totals[$day] + [long]$entry.Tokens
     }
-    # Zero tombstones correct previously reported dates if a source was rewritten.
+    [void](Update-DailyTokenRows $State $totals $Now $oldest $today $ReportIdentity)
+}
+
+function Update-DailyTokenRows($State, [hashtable]$Totals, [DateTimeOffset]$Now,
+    [string]$Oldest, [string]$Today, [string]$ReportIdentity) {
+    $changed = $State.ReportIdentity -cne $ReportIdentity
+    # Zero tombstones correct dates that have lost all their attributable evidence.
     foreach ($day in @($State.Days.Keys)) {
-        if ($day -lt $oldest -or $day -gt $today) { $State.Days.Remove($day); continue }
+        if ($day -lt $Oldest -or $day -gt $Today) {
+            $State.Days.Remove($day)
+            $changed = $true
+            continue
+        }
         if (-not $totals.ContainsKey($day)) { $totals[$day] = [long]0 }
     }
     foreach ($day in $totals.Keys) {
@@ -602,16 +625,19 @@ function Update-DailyTokenState($State, [string]$SessionsRoot, [DateTimeOffset]$
             $revision = [Math]::Max($milliseconds, [long](Get-DailyTokenField $old 'Revision') + 1)
             if ($revision -gt 281474976710655) { throw 'Daily token revision exhausted' }
             $State.Days[$day] = @{ Day = $day; Tokens = [long]$totals[$day]; Revision = [long]$revision }
+            $changed = $true
         }
     }
     $State.ReportIdentity = $ReportIdentity
     if ($State.Days.Count -gt 366) { throw 'Daily date window exceeded' }
+    return $changed
 }
 
-function Save-DailyTokenState($State, [string]$Path) {
+function Save-DailyTokenState($State, [string]$Path, [long]$MaximumBytes = [long]::MaxValue) {
     $temporary = "$Path.$PID.tmp"
     try {
         $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($State | ConvertTo-Json -Compress -Depth 32))
+        if ($bytes.LongLength -gt $MaximumBytes) { throw 'Daily token checkpoint size limit exceeded' }
         $stream = [IO.FileStream]::new($temporary, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
         try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
         if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, [NullString]::Value) }
@@ -619,7 +645,8 @@ function Save-DailyTokenState($State, [string]$Path) {
     } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
 }
 
-function New-DailyTokenPacket($Day, [string]$Account, [string]$Client, [string]$Color, [string]$NameHex) {
+function New-DailyTokenPacket($Day, [string]$Account, [string]$Client, [string]$Color, [string]$NameHex,
+    [ValidateSet('LFD1', 'LFD2')][string]$Protocol = 'LFD1') {
     $date = [DateTime]::MinValue
     if ($Account -cnotmatch '\A[0-9A-Fa-f]{8}\z' -or $Client -cnotmatch '\A[0-9A-Fa-f]{8}\z' -or
         $Client -ceq '00000000' -or
@@ -628,9 +655,264 @@ function New-DailyTokenPacket($Day, [string]$Account, [string]$Client, [string]$
             [Globalization.DateTimeStyles]::None, [ref]$date)) { throw 'Invalid daily token packet fields' }
     $tokens = ConvertTo-TokenInteger $Day.Tokens; $revision = ConvertTo-TokenInteger $Day.Revision
     if ($null -eq $tokens -or $null -eq $revision -or $revision -le 0 -or $revision -gt 281474976710655) { throw 'Invalid daily token total/revision' }
-    $packet = 'LFD1,{0},{1},{2},{3},{4},{5},{6}' -f $Account.ToUpperInvariant(), $Client.ToUpperInvariant(),
+    $packet = '{0},{1},{2},{3},{4},{5},{6},{7}' -f $Protocol, $Account.ToUpperInvariant(), $Client.ToUpperInvariant(),
         $Day.Day, $tokens.ToString([Globalization.CultureInfo]::InvariantCulture),
         $revision.ToString([Globalization.CultureInfo]::InvariantCulture), $Color.ToUpperInvariant(), $NameHex.ToUpperInvariant()
     if ([Text.Encoding]::ASCII.GetByteCount($packet) -ge 200) { throw 'Daily packet too large' }
     return $packet
+}
+
+$script:ClaudeTokenFileLimit = 8192
+$script:ClaudeTokenEvidenceLimit = 65536
+$script:ClaudeTokenCheckpointBytes = 32MB
+$script:ClaudeTokenSliceBytes = 1MB
+$script:ClaudeTokenScanBytes = 8MB
+$script:ClaudeTokenScanFiles = 128
+
+function Test-ClaudeTokenInteger($Value, [long]$Maximum = [long]::MaxValue) {
+    return (($Value -is [int] -or $Value -is [long]) -and $Value -ge 0 -and $Value -le $Maximum)
+}
+
+function Read-ClaudeDailyTokenState([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return @{ Version = 1; Files = @{}; Evidence = @{}; Days = @{}; ReportIdentity = ''; LastPath = '' }
+    }
+    try {
+        if ([IO.FileInfo]::new($Path).Length -gt $script:ClaudeTokenCheckpointBytes) { throw 'Checkpoint size limit' }
+        $state = ConvertTo-DailyTokenMap (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json)
+        Assert-DailyTokenRows $state
+        if ($state.Version -ne 1 -or $state.Files -isnot [hashtable] -or $state.Evidence -isnot [hashtable] -or
+            $state.LastPath -isnot [string] -or $state.Files.Count -gt $script:ClaudeTokenFileLimit -or
+            $state.Evidence.Count -gt $script:ClaudeTokenEvidenceLimit) { throw 'Invalid Claude token checkpoint' }
+        foreach ($cursor in $state.Files.Values) {
+            if ($cursor -isnot [hashtable] -or -not (Test-ClaudeTokenInteger $cursor.Offset) -or
+                -not (Test-ClaudeTokenInteger $cursor.Length) -or $cursor.Length -lt $cursor.Offset -or
+                -not (Test-ClaudeTokenInteger $cursor.Created ([DateTime]::MaxValue.Ticks)) -or
+                -not (Test-ClaudeTokenInteger $cursor.Written ([DateTime]::MaxValue.Ticks)) -or
+                $cursor.Complete -isnot [bool] -or $cursor.Discard -isnot [bool] -or
+                $cursor.Anchor -isnot [string] -or $cursor.Anchor -cnotmatch '\A(?:[A-Za-z0-9+/]{43}=)?\z' -or
+                (($cursor.Offset -eq 0) -ne ($cursor.Anchor.Length -eq 0))) { throw 'Invalid Claude token cursor' }
+        }
+        foreach ($key in $state.Evidence.Keys) {
+            $entry = $state.Evidence[$key]
+            if ($key -cnotmatch '\A[a-f0-9]{64}\z' -or $entry -isnot [hashtable] -or
+                -not (Test-ClaudeTokenInteger $entry.At ([DateTime]::MaxValue.Ticks)) -or
+                -not (Test-ClaudeTokenInteger $entry.Tokens $script:WeeklyTokenMaximum)) { throw 'Invalid Claude token evidence' }
+        }
+        return $state
+    }
+    catch {
+        # Preserve revisions and retained observations if the checkpoint is unreadable.
+        throw 'Claude daily checkpoint invalid; preserved original. Publication suspended.'
+    }
+}
+
+function Find-ClaudeTokenFiles([string]$Root) {
+    $files = @{}
+    if ([string]::IsNullOrWhiteSpace($Root)) { return $files }
+    $rootPath = [IO.Path]::GetFullPath($Root)
+    try { $attributes = [IO.File]::GetAttributes($rootPath) }
+    catch [IO.FileNotFoundException] { return $files }
+    catch [IO.DirectoryNotFoundException] { return $files }
+    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        -not ($attributes -band [IO.FileAttributes]::Directory)) { return $files }
+    $stack = [Collections.Generic.List[object]]::new()
+    $stack.Add([IO.Directory]::EnumerateFileSystemEntries($rootPath).GetEnumerator())
+    try {
+        $visited = 0
+        while ($stack.Count -gt 0) {
+            $iterator = $stack[$stack.Count - 1]
+            if (-not $iterator.MoveNext()) {
+                $iterator.Dispose()
+                $stack.RemoveAt($stack.Count - 1)
+                continue
+            }
+            if (++$visited -gt 65536) { throw 'Claude transcript discovery limit exceeded' }
+            $path = $iterator.Current
+            try { $attributes = [IO.File]::GetAttributes($path) }
+            catch [IO.FileNotFoundException] { continue }
+            catch [IO.DirectoryNotFoundException] { continue }
+            if ($attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+            if ($attributes -band [IO.FileAttributes]::Directory) {
+                if ($stack.Count -lt 8) { $stack.Add([IO.Directory]::EnumerateFileSystemEntries($path).GetEnumerator()) }
+                continue
+            }
+            if ([IO.Path]::GetExtension($path) -ne '.jsonl') { continue }
+            if ($files.Count -ge $script:ClaudeTokenFileLimit) { throw 'Claude transcript file limit exceeded' }
+            $files[$path] = [IO.FileInfo]::new($path)
+        }
+    }
+    finally { foreach ($iterator in $stack) { $iterator.Dispose() } }
+    return $files
+}
+
+function Get-ClaudeTokenAnchor($Stream, [long]$Offset, $Hasher) {
+    if ($Offset -eq 0) { return '' }
+    $size = [int][Math]::Min(4096L, $Offset)
+    $sample = [byte[]]::new(2 * $size)
+    $Stream.Position = 0
+    if ($Stream.Read($sample, 0, $size) -ne $size) { throw [IO.IOException]::new('Transcript changed during read') }
+    $Stream.Position = $Offset - $size
+    if ($Stream.Read($sample, $size, $size) -ne $size) { throw [IO.IOException]::new('Transcript changed during read') }
+    return [Convert]::ToBase64String($Hasher.ComputeHash($sample))
+}
+
+function ConvertFrom-ClaudeTokenLine([string]$Line, [DateTimeOffset]$Now, [string]$Oldest, $Hasher) {
+    if ($Line -cnotmatch '"assistant"' -or $Line -cnotmatch '"usage"\s*:') { return }
+    try { $record = $Line | ConvertFrom-Json -ErrorAction Stop } catch { return }
+    if ((Get-DailyTokenField $record 'type') -cne 'assistant') { return }
+    $message = Get-DailyTokenField $record 'message'
+    $id = Get-DailyTokenField $message 'id'
+    if ($id -isnot [string] -or $id -cnotmatch '\A[A-Za-z0-9_-]{1,160}\z' -or
+        (Get-DailyTokenField $message 'model') -ceq '<synthetic>') { return }
+    $usage = Get-DailyTokenField $message 'usage'
+    $tokens = [long]0
+    foreach ($name in @('input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens')) {
+        $raw = Get-DailyTokenField $usage $name
+        if ($null -eq $raw -and $name.StartsWith('cache_')) { continue }
+        if (-not (Test-ClaudeTokenInteger $raw $script:WeeklyTokenMaximum)) { return }
+        $count = [long]$raw
+        if ($tokens -gt $script:WeeklyTokenMaximum - $count) { throw 'Claude message token total overflow' }
+        $tokens += $count
+    }
+    $stamp = Get-DailyTokenField $record 'timestamp'
+    $at = [DateTimeOffset]::MinValue
+    if ($stamp -is [DateTimeOffset]) { $at = $stamp }
+    elseif ($stamp -is [DateTime] -and $stamp.Kind -ne [DateTimeKind]::Unspecified) { $at = [DateTimeOffset]$stamp }
+    elseif ($stamp -isnot [string] -or $stamp -cnotmatch '(Z|[+-][0-9]{2}:[0-9]{2})\z' -or
+        -not [DateTimeOffset]::TryParse($stamp, [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::None, [ref]$at)) { return }
+    if ($at -gt $Now.AddDays(1) -or (Get-TokenDay $at) -lt $Oldest) { return }
+    $key = [BitConverter]::ToString($Hasher.ComputeHash([Text.Encoding]::ASCII.GetBytes($id))).Replace('-', '').ToLowerInvariant()
+    return @{ Key = $key; At = $at.UtcTicks; Tokens = $tokens }
+}
+
+function Read-ClaudeTokenSlice([IO.FileInfo]$File, $Cursor, [byte[]]$Buffer, [int]$Limit, $Hasher) {
+    # Fix the read window before opening the file. Retry a visibly moving file
+    # before accepting any evidence out of the buffer.
+    $length = $File.Length
+    $created = $File.CreationTimeUtc.Ticks
+    $written = $File.LastWriteTimeUtc.Ticks
+    $offset = 0L
+    $discard = $false
+    if ($File.Attributes -band [IO.FileAttributes]::ReparsePoint) { return }
+    $stream = [IO.File]::Open($File.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    try {
+        if ($null -ne $Cursor -and $created -eq $Cursor.Created -and $length -ge $Cursor.Length -and
+            ($length -gt $Cursor.Length -or $written -eq $Cursor.Written) -and
+            (Get-ClaudeTokenAnchor $stream $Cursor.Offset $Hasher) -ceq $Cursor.Anchor) {
+            $offset = [long]$Cursor.Offset
+            $discard = $Cursor.Discard
+        }
+        $stream.Position = $offset
+        $count = 0
+        $target = [int][Math]::Min([long]$Limit, $length - $offset)
+        while ($count -lt $target) {
+            $read = $stream.Read($Buffer, $count, $target - $count)
+            if ($read -eq 0) { throw [IO.IOException]::new('Transcript shortened during read') }
+            $count += $read
+        }
+        $lastLf = if ($count -gt 0) { [Array]::LastIndexOf($Buffer, [byte]10, $count - 1, $count) } else { -1 }
+        $consumed = $lastLf + 1
+        $nextDiscard = $discard -and $lastLf -lt 0
+        if ($nextDiscard -or $count - $consumed -gt $script:WeeklyTokenRecordLimit) {
+            $consumed = $count
+            $nextDiscard = $true
+        }
+        $nextOffset = $offset + $consumed
+        $anchor = Get-ClaudeTokenAnchor $stream $nextOffset $Hasher
+        $File.Refresh()
+        if (-not $File.Exists -or $File.CreationTimeUtc.Ticks -ne $created -or $File.Length -ne $length -or
+            $File.LastWriteTimeUtc.Ticks -ne $written -or
+            ($File.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return }
+        return @{ Count = $count; LastLf = $lastLf; DiscardFirst = $discard; FirstSlice = $offset -eq 0;
+            Cursor = @{ Offset = $nextOffset; Length = $length; Created = $created; Written = $written;
+                Complete = ($offset + $count -eq $length); Anchor = $anchor; Discard = $nextDiscard } }
+    }
+    finally { $stream.Dispose() }
+}
+
+function Update-ClaudeDailyTokenState($State, [string]$Root, [DateTimeOffset]$Now, [string]$ReportIdentity) {
+    $local = [TimeZoneInfo]::ConvertTime($Now, $script:KyivTimeZone)
+    $oldest = $local.Date.AddDays(-365).ToString('yyyyMMdd', [Globalization.CultureInfo]::InvariantCulture)
+    $today = Get-TokenDay $Now
+    $oldestTicks = [TimeZoneInfo]::ConvertTimeToUtc($local.Date.AddDays(-365), $script:KyivTimeZone).Ticks
+    $changed = $false
+    $lastPath = $State.LastPath
+    foreach ($key in @($State.Evidence.Keys)) {
+        if ($State.Evidence[$key].At -lt $oldestTicks) {
+            $State.Evidence.Remove($key)
+            $changed = $true
+        }
+    }
+    $files = Find-ClaudeTokenFiles $Root
+    foreach ($path in @($State.Files.Keys)) {
+        if (-not $files.ContainsKey($path)) {
+            $State.Files.Remove($path)
+            $changed = $true
+        }
+    }
+    $paths = [string[]]@($files.Keys)
+    [Array]::Sort($paths, [StringComparer]::OrdinalIgnoreCase)
+    $start = [Array]::BinarySearch($paths, [string]$State.LastPath, [StringComparer]::OrdinalIgnoreCase)
+    $start = if ($start -ge 0) { $start + 1 } else { -bnot $start }
+    $buffer = [byte[]]::new($script:ClaudeTokenSliceBytes)
+    $decoder = [Text.UTF8Encoding]::new($false, $true)
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    $remaining = $script:ClaudeTokenScanBytes
+    $attempts = 0
+    try {
+        # Leave enough room for a whole bounded record, otherwise an incomplete
+        # record at the budget boundary could repeatedly make no progress.
+        for ($i = 0; $i -lt $paths.Count -and $remaining -ge $buffer.Length -and $attempts -lt $script:ClaudeTokenScanFiles; ++$i) {
+            $path = $paths[($start + $i) % $paths.Count]
+            $file = $files[$path]
+            $cursor = $State.Files[$path]
+            if (-not $file.Exists -or ($null -ne $cursor -and $cursor.Complete -and $cursor.Length -eq $file.Length -and
+                $cursor.Created -eq $file.CreationTimeUtc.Ticks -and $cursor.Written -eq $file.LastWriteTimeUtc.Ticks)) { continue }
+            $State.LastPath = $path
+            ++$attempts
+            try { $slice = Read-ClaudeTokenSlice $file $cursor $buffer $buffer.Length $hasher }
+            catch [IO.IOException] { $slice = $null }
+            # Charge a failed read at its maximum size as it may have consumed a
+            # whole slice before detecting rotation.
+            if ($null -eq $slice) { $remaining -= $buffer.Length; continue }
+            $remaining -= $slice.Count
+            $position = 0
+            while ($position -le $slice.LastLf) {
+                $newline = [Array]::IndexOf($buffer, [byte]10, $position, $slice.LastLf - $position + 1)
+                $lineStart = $position
+                $position = $newline + 1
+                if (($lineStart -eq 0 -and $slice.DiscardFirst) -or $newline - $lineStart -gt $script:WeeklyTokenRecordLimit) { continue }
+                try { $line = $decoder.GetString($buffer, $lineStart, $newline - $lineStart) }
+                catch [Text.DecoderFallbackException] { continue }
+                if ($slice.FirstSlice -and $lineStart -eq 0) { $line = $line.TrimStart([char]0xFEFF) }
+                $entry = ConvertFrom-ClaudeTokenLine $line $Now $oldest $hasher
+                if ($null -eq $entry) { continue }
+                $prior = $State.Evidence[$entry.Key]
+                if ($null -eq $prior) {
+                    if ($State.Evidence.Count -ge $script:ClaudeTokenEvidenceLimit) { throw 'Claude token evidence limit exceeded' }
+                    $State.Evidence[$entry.Key] = @{ At = $entry.At; Tokens = $entry.Tokens }
+                } else {
+                    # Content blocks, retries and copied fork prefixes can repeat
+                    # a response. Keep one largest snapshot on its first date.
+                    $prior.At = [Math]::Min([long]$prior.At, [long]$entry.At)
+                    $prior.Tokens = [Math]::Max([long]$prior.Tokens, [long]$entry.Tokens)
+                }
+            }
+            $State.Files[$path] = $slice.Cursor
+            $changed = $true
+        }
+    }
+    finally { $hasher.Dispose() }
+    $totals = @{}
+    foreach ($entry in $State.Evidence.Values) {
+        if ($entry.At -gt $Now.UtcTicks -or $entry.Tokens -eq 0) { continue }
+        $day = Get-TokenDay ([DateTimeOffset]::new([long]$entry.At, [TimeSpan]::Zero))
+        if ([long]$totals[$day] -gt $script:WeeklyTokenMaximum - [long]$entry.Tokens) { throw 'Claude daily token total overflow' }
+        $totals[$day] = [long]$totals[$day] + [long]$entry.Tokens
+    }
+    $rowsChanged = Update-DailyTokenRows $State $totals $Now $oldest $today $ReportIdentity
+    return ($changed -or $rowsChanged -or $State.LastPath -cne $lastPath)
 }

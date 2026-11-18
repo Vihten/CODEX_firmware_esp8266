@@ -24,7 +24,8 @@ param(
     [string]$ControllerStatePath = '',
     [string]$TokenStatePath = '',
     [string]$UpdateControlPath = '',
-    [string]$ClaudeRoot = (Join-Path $env:USERPROFILE '.claude\projects')
+    [string]$ClaudeRoot = $(if ($env:CLAUDE_CONFIG_DIR) { Join-Path $env:CLAUDE_CONFIG_DIR 'projects' }
+        else { Join-Path $env:USERPROFILE '.claude\projects' })
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +42,10 @@ $dailyTokenIdentity = ''
 $dailyTokenIndex = 0
 $nextDailyReportAt = [DateTime]::MinValue
 $tokenScanner = $null
+$claudeDailyScanner = $null
+$claudeDailyTokens = $null
+$nextClaudeDailyScan = [DateTime]::MinValue
+$preferClaudeDaily = $false
 $claudePoller = $null
 $claudeHttpSender = $null
 $originHttpSender = $null
@@ -306,8 +311,9 @@ function Get-RemainingPercent {
             $limits = @($response.result.rateLimits)
         }
         $maximumUsed = $null
-        $fiveHourWindow = $null
-        $fiveHourUsed = $null
+        $resetWindow = $null
+        $resetWindowMinutes = 0
+        $resetWindowUsed = $null
         foreach ($limit in $limits) {
             foreach ($window in @($limit.primary, $limit.secondary)) {
                 if ($null -eq $window -or $null -eq $window.usedPercent) { continue }
@@ -315,28 +321,29 @@ function Get-RemainingPercent {
                 if ($null -eq $maximumUsed -or $used -gt $maximumUsed) {
                     $maximumUsed = $used
                 }
-                # Reset metadata describes the five-hour window, independently
-                # of the historical minimum-across-all-windows balance above.
-                # Require source duration; never infer five hours from position.
+                # Prefer an explicit five-hour window. Some Codex accounts
+                # only expose a weekly window, which has its own observed reset.
                 $duration = $window.windowDurationMins
                 if ($null -eq $duration) { $duration = $window.window_duration_mins }
-                if ([string]$duration -ceq '300' -and
-                    -not [double]::IsNaN($used) -and -not [double]::IsInfinity($used) -and
-                    $used -ge 0 -and $used -le 100 -and
-                    ($null -eq $fiveHourUsed -or $used -gt $fiveHourUsed)) {
-                    $fiveHourUsed = $used
-                    $fiveHourWindow = $window
+                if ([string]$duration -cnotin @('300', '10080') -or
+                    [double]::IsNaN($used) -or $used -lt 0 -or $used -gt 100) { continue }
+                $minutes = [int]$duration
+                if ($null -eq $resetWindow -or $minutes -lt $resetWindowMinutes -or
+                    ($minutes -eq $resetWindowMinutes -and $used -gt $resetWindowUsed)) {
+                    $resetWindow = $window
+                    $resetWindowMinutes = $minutes
+                    $resetWindowUsed = $used
                 }
             }
         }
         if ($null -eq $maximumUsed) { return -1 }
         $remaining = [Math]::Max(0.0, [Math]::Min(100.0, 100.0 - $maximumUsed))
         $script:quotaFingerprint = $AccountFingerprint.ToUpperInvariant()
-        # Copy only an observed five-hour reset; missing/invalid timestamps are
+        # Copy only the selected window's reset. Missing/invalid timestamps are
         # omitted by New-QuotaResetPacket, never replaced by now + five hours.
-        $reset = $fiveHourWindow.resetsAt
-        if ($null -eq $reset) { $reset = $fiveHourWindow.resets_at }
-        if ($null -eq $reset) { $reset = $fiveHourWindow.reset_at }
+        $reset = $resetWindow.resetsAt
+        if ($null -eq $reset) { $reset = $resetWindow.resets_at }
+        if ($null -eq $reset) { $reset = $resetWindow.reset_at }
         if ($AccountFingerprint -ieq (Get-AccountFingerprint 'marketing@tiras.ua')) {
             $script:codexResetQuota = @{ Fingerprint=$script:quotaFingerprint; ResetEpoch=$reset; FetchedAt=$observedAt }
         }
@@ -1436,21 +1443,32 @@ function Send-Heartbeat {
         $ack = Send-DirectHttpPacket $tokenBytes
         if ($null -ne $ack) { [void](Test-WeeklyTokenAcknowledgement $ack) }
     }
-    # One dated absolute snapshot per interval, never a 366-request burst.
-    # LFD1_RAM_ACK confirms volatile RAM acceptance, never durable storage.
-    # Replay the bounded backlog cyclically even after ACK/loss/controller reboot.
-    if (-not $sentWeekly -and $script:dailyTokenIdentity -ceq $reportIdentity -and
-        $script:dailyTokens.Count -gt 0 -and $now -ge $script:nextDailyReportAt) {
+    # Both providers share one dated slot. RAM acknowledgements leave the cyclic
+    # retry schedule intact so a reboot can recover all dates.
+    $codexDailyReady = $script:dailyTokenIdentity -ceq $reportIdentity -and $script:dailyTokens.Count -gt 0
+    $claudeDailyReady = $null -ne $script:claudeDailyTokens -and
+        $script:claudeDailyTokens.ReportIdentity -ceq $reportIdentity -and $script:claudeDailyTokens.Daily.Count -gt 0
+    if (-not $sentWeekly -and ($codexDailyReady -or $claudeDailyReady) -and $now -ge $script:nextDailyReportAt) {
         $script:nextDailyReportAt = $now.AddSeconds(2)
-        if ($script:dailyTokenIndex -ge $script:dailyTokens.Count) { $script:dailyTokenIndex = 0 }
-        $day = $script:dailyTokens[$script:dailyTokenIndex]
-        $script:dailyTokenIndex = ($script:dailyTokenIndex + 1) % $script:dailyTokens.Count
-        $dayMessage = New-DailyTokenPacket $day $AccountFingerprint $clientHash $metadata.ColorHex6 $metadata.NameUtf8Hex
+        if ($claudeDailyReady -and ($script:preferClaudeDaily -or -not $codexDailyReady)) {
+            $report = $script:claudeDailyTokens
+            $day = $report.Daily[$report.Index]
+            $report.Index = ($report.Index + 1) % $report.Daily.Count
+            $protocol = 'LFD2'
+            $script:preferClaudeDaily = $false
+        } else {
+            if ($script:dailyTokenIndex -ge $script:dailyTokens.Count) { $script:dailyTokenIndex = 0 }
+            $day = $script:dailyTokens[$script:dailyTokenIndex]
+            $script:dailyTokenIndex = ($script:dailyTokenIndex + 1) % $script:dailyTokens.Count
+            $protocol = 'LFD1'
+            $script:preferClaudeDaily = $true
+        }
+        $dayMessage = New-DailyTokenPacket $day $AccountFingerprint $clientHash $metadata.ColorHex6 $metadata.NameUtf8Hex $protocol
         $dayBytes = [Text.Encoding]::ASCII.GetBytes($dayMessage)
         try { [void]$udp.Send($dayBytes, $dayBytes.Length, $DirectHost, $DirectPort) }
         catch [Net.Sockets.SocketException] { }
         $ack = Send-DirectHttpPacket $dayBytes
-        if ($null -ne $ack) { [void](Test-DailyTokenAcknowledgement $ack $day) }
+        if ($null -ne $ack) { [void](Test-DailyTokenAcknowledgement $ack $day $protocol) }
     }
 }
 
@@ -1502,9 +1520,10 @@ function Send-DirectHttpPacket([byte[]]$Bytes) {
     finally { $request.Abort() }
 }
 
-function Test-DailyTokenAcknowledgement([string]$Response, $Day) {
+function Test-DailyTokenAcknowledgement([string]$Response, $Day,
+    [ValidateSet('LFD1', 'LFD2')][string]$Protocol = 'LFD1') {
     $parts = $Response.Trim() -split ','
-    return ($parts.Count -eq 5 -and $parts[0] -ceq 'LFD1_RAM_ACK' -and
+    return ($parts.Count -eq 5 -and $parts[0] -ceq "${Protocol}_RAM_ACK" -and
         $parts[1] -cmatch '\A[0-9A-Fa-f]{6}\z' -and $parts[2] -eq $clientHash -and
         ([string]::IsNullOrEmpty($controllerDeviceId) -or $parts[1] -eq $controllerDeviceId) -and
         $parts[3] -ceq [string]$Day.Day -and $parts[4] -ceq [string]$Day.Revision)
@@ -1566,7 +1585,7 @@ function Read-DirectAcknowledgements {
         $response = [Text.Encoding]::ASCII.GetString($responseBytes)
         if ($remoteEndpoint.Port -ne $DirectPort -or
             ($remoteEndpoint.Address.ToString() -ne $DirectHost -and $DirectHost -ne '255.255.255.255')) { continue }
-        if ($response -clike 'LFD1_RAM_ACK,*') { continue } # never adopt controller/color from calendar ACKs
+        if ($response -clike 'LFD[12]_RAM_ACK,*') { continue } # calendar ACKs cannot adopt controller/color
         if ($response -clike 'LFT2_ACK,*') {
             [void](Test-WeeklyTokenAcknowledgement $response)
             continue
@@ -1746,6 +1765,7 @@ try {
         $resetHttpSenders[$provider] = @{ Worker=$null; Pending=$null; Stopping=$null; Started=[DateTimeOffset]::MinValue }
     }
     $tokenScanner = New-WeeklyTokenScanner
+    $claudeDailyScanner = New-WeeklyTokenScanner
     if (-not $DisableLimitPolling) {
         $claudePoller = New-ClaudeQuotaPoller
         $claudeHttpSender = @{ Worker=$null; Pending=$null; Stopping=$null; Started=[DateTimeOffset]::MinValue }
@@ -1761,6 +1781,7 @@ try {
         Update-ClaudeHttpSender $claudeHttpSender
         Update-ClaudeHttpSender $originHttpSender
         foreach ($sender in $resetHttpSenders.Values) { Update-ClaudeHttpSender $sender }
+        $reportIdentity = ("$AccountFingerprint,$clientHash,$($metadata.ColorHex6),$($metadata.NameUtf8Hex)").ToUpperInvariant()
         try {
             $committedTokens = Receive-WeeklyTokenScan $tokenScanner
             if ($null -ne $committedTokens) {
@@ -1777,10 +1798,26 @@ try {
             }
             if ($null -eq $tokenScanner.Pending -and $now -ge $nextTokenScan) {
                 $nextTokenScan = $now.AddSeconds(15)
-                [void](Start-WeeklyTokenScan $tokenScanner (Join-Path $PSScriptRoot 'weekly_tokens.ps1') $SessionsRoot $TokenStatePath -ReportIdentity (("$AccountFingerprint,$clientHash,$($metadata.ColorHex6),$($metadata.NameUtf8Hex)").ToUpperInvariant()))
+                [void](Start-WeeklyTokenScan $tokenScanner (Join-Path $PSScriptRoot 'weekly_tokens.ps1') $SessionsRoot $TokenStatePath -ReportIdentity $reportIdentity)
             }
         }
         catch { Write-AgentStatus "Weekly token checkpoint unavailable; retrying: $($_.Exception.Message)" }
+        try {
+            $committed = Receive-WeeklyTokenScan $claudeDailyScanner
+            if ($null -ne $committed) {
+                $index = if ($null -ne $claudeDailyTokens) { $claudeDailyTokens.Index } else { 0 }
+                if ($index -ge $committed.Daily.Count) { $index = 0 }
+                $claudeDailyTokens = @{ Daily = $committed.Daily; ReportIdentity = $committed.ReportIdentity; Index = $index }
+            }
+            if ($null -eq $claudeDailyScanner.Pending -and $now -ge $nextClaudeDailyScan) {
+                $nextClaudeDailyScan = $now.AddSeconds(15)
+                [void](Start-WeeklyTokenScan $claudeDailyScanner (Join-Path $PSScriptRoot 'weekly_tokens.ps1') $ClaudeRoot "${TokenStatePath}.claude-daily-v1.json" -ReportIdentity $reportIdentity -ClaudeDaily)
+            }
+        }
+        catch {
+            $claudeDailyTokens = $null
+            Write-AgentStatus "Claude daily token checkpoint unavailable; retrying: $($_.Exception.Message)"
+        }
         if (-not $DisableLimitPolling -and $now -ge $nextLimitPoll) {
             $nextLimitPoll = $now.AddSeconds($LimitPollSeconds)
             $previousRemaining = $remainingPercent
@@ -1821,6 +1858,7 @@ finally {
     if ($null -ne $originHttpSender) { Stop-ClaudeQuotaWorker $originHttpSender }
     foreach ($sender in $resetHttpSenders.Values) { Stop-ClaudeQuotaWorker $sender }
     Stop-WeeklyTokenScanner $tokenScanner
+    Stop-WeeklyTokenScanner $claudeDailyScanner
     $udp.Dispose()
     if ($null -ne $discoveryUdp) { $discoveryUdp.Dispose() }
     try {

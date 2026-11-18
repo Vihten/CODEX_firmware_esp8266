@@ -546,57 +546,65 @@ void writeTokenCount(Html &html, uint64_t value) {
   }
 }
 void writeRanking(Html &html, const View &view, bool lifetime) {
-  daily::WeekSummary weekSummary;
-  const auto rankingClock = memorialClock();
-  const bool dailyReady = !lifetime && daily_runtime::weeklySummary(rankingClock.valid ? rankingClock.date : 0, weekSummary);
-  weekly::Store displayWeek;
-  displayWeek.week = weekSummary.week;
-  if (dailyReady) for (size_t i = 0; i < daily::kAgents; ++i) {
-    const auto &day = weekSummary.entries[i];
-    if (!day.identity || !day.observedDays) continue;
-    auto &entry = displayWeek.entries[i];
-    entry.clientId = uint32_t(day.identity); entry.tokens = day.tokens;
-    entry.rgb = 0xd400ff;
-    std::snprintf(entry.name, sizeof(entry.name), "%08lX", (unsigned long)entry.clientId);
-    for (const auto &reported : view.weekly.entries) if (reported.clientId == entry.clientId) {
-      entry.rgb = reported.rgb; std::snprintf(entry.name, sizeof(entry.name), "%s", reported.name); break;
-    }
-    for (const auto &agent : view.control.agents) if (agent.present && agent.clientId == entry.clientId) {
-      entry.rgb = agent.rgb; std::snprintf(entry.name, sizeof(entry.name), "%s", agent.name); break;
-    }
+  daily_runtime::WeeklySnapshot snapshot;
+  if (!lifetime) {
+    const auto clock = memorialClock();
+    daily_runtime::weeklySummary(clock.valid ? clock.date : 0, snapshot);
   }
-  const auto &store = lifetime ? view.lifetime : displayWeek;
+  const bool dailyReady = snapshot.codexReady || snapshot.claudeReady;
+  const uint32_t week = snapshot.codex.week ? snapshot.codex.week : snapshot.claude.week;
+  auto rating = weeklyRatingRows(snapshot);
+  if (lifetime) for (const auto &entry : view.lifetime.entries) {
+    if (entry.clientId) rating.rows[rating.count++] = {entry.tokens, 0, entry.clientId, 1, 0};
+  }
+  std::sort(rating.rows, rating.rows + rating.count, [](const RatingRow &a, const RatingRow &b) {
+    if (bool(a.codexDays) != bool(b.codexDays)) return bool(a.codexDays);
+    const uint64_t aTokens = a.codexDays ? a.codex : a.claude;
+    const uint64_t bTokens = b.codexDays ? b.codex : b.claude;
+    return aTokens != bTokens ? aTokens > bTokens : a.clientId < b.clientId;
+  });
+  uint64_t total = 0;
+  for (size_t i = 0; i < rating.count; ++i) total += rating.rows[i].codex;
+
   html.file(lifetime ? "templates/lifetime/open.html" : "templates/weekly/open.html");
   if (lifetime) html.text("За доступними журналами агентів");
-  else if (store.week) html.format("%02lu.%02lu.%04lu · понеділок–неділя, Київ", (unsigned long)(store.week % 100),
-      (unsigned long)(store.week / 100 % 100), (unsigned long)(store.week / 10000));
+  else if (week) html.format("%02lu.%02lu.%04lu · понеділок–неділя, Київ", (unsigned long)(week % 100),
+      (unsigned long)(week / 100 % 100), (unsigned long)(week / 10000));
   else html.text("Очікування щоденних даних і синхронізації часу");
   html.file(lifetime ? "templates/lifetime/table.html" : "templates/weekly/table.html");
-  const weekly::Entry *sorted[weekly::capacity] = {};
-  size_t count = 0; double total = 0;
-  for (const auto &entry : store.entries) if (entry.clientId) { sorted[count++] = &entry; total += double(entry.tokens); }
-  std::sort(sorted, sorted + count, [](const weekly::Entry *a, const weekly::Entry *b) {
-    return a->tokens != b->tokens ? a->tokens > b->tokens : a->clientId < b->clientId;
-  });
-  for (size_t i = 0; i < count; ++i) {
-    const auto &entry = *sorted[i];
-    html.format("<tr><td>%u</td><td><span class='weekly-agent-color' style='background:#%06lX' aria-hidden='true'></span>",
-        unsigned(i + 1), (unsigned long)entry.rgb);
+  for (size_t i = 0; i < rating.count; ++i) {
+    const auto &row = rating.rows[i];
+    const weekly::Entry entry = lifetime ? *std::find_if(std::begin(view.lifetime.entries), std::end(view.lifetime.entries),
+        [&](const weekly::Entry &item) { return item.clientId == row.clientId; }) : weeklyRatingAgent(view, row.clientId);
+    html.text("<tr><td>");
+    if (row.codexDays) html.format("%u", unsigned(i + 1)); else html.text("—");
+    html.format("</td><td><span class='weekly-agent-color' style='background:#%06lX' aria-hidden='true'></span>",
+        (unsigned long)entry.rgb);
     html.escaped(entry.name);
-    html.text("</td><td>"); writeTokenCount(html, entry.tokens);
-    const unsigned tenths = total ? unsigned(1000.0 * double(entry.tokens) / total + 0.5) : 0;
     html.text("</td><td>");
-    if (entry.tokens && !tenths) html.text("&lt;0,1%");
+    if (row.codexDays) writeTokenCount(html, row.codex); else html.text("—");
+    if (!lifetime) {
+      html.text("</td><td>");
+      if (row.claudeDays) writeTokenCount(html, row.claude); else html.text("—");
+    }
+    html.text("</td><td>");
+    if (!row.codexDays) html.text("—");
     else {
-      html.format("%u", tenths / 10);
-      if (tenths % 10) html.format(",%u", tenths % 10);
-      html.text("%");
+      unsigned tenths = 0;
+      if (total) tenths = lifetime ? unsigned(1000.0 * double(row.codex) / double(total) + 0.5) :
+          unsigned((1000 * row.codex + total / 2) / total);
+      if (row.codex && (lifetime ? !tenths : 1000 * row.codex < total)) html.text("&lt;0,1%");
+      else {
+        html.format("%u", tenths / 10);
+        if (tenths % 10) html.format(",%u", tenths % 10);
+        html.text("%");
+      }
     }
     html.text("</td></tr>");
   }
   html.file(lifetime ? "templates/lifetime/close.html" : "templates/weekly/close.html");
   html.format("<p class='muted' data-%s-empty%s>%s</p></section>", lifetime ? "lifetime" : "weekly",
-      count ? " hidden" : "", lifetime ? "Ще немає даних із журналів агентів." : !dailyReady ? "Щоденні дані тимчасово недоступні. Оновіть сторінку." : "Ще немає щоденних даних за цей тиждень.");
+      rating.count ? " hidden" : "", lifetime ? "Ще немає даних із журналів агентів." : !dailyReady ? "Щоденні дані тимчасово недоступні. Оновіть сторінку." : "Ще немає щоденних даних за цей тиждень.");
 }
 void writeWeekly(Html &html, const View &view) { writeRanking(html, view, false); }
 void writeLifetime(Html &html, const View &) { html.file("templates/history/calendar.html"); }

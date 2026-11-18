@@ -230,7 +230,7 @@ bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
     }
     return false;
   }
-  if (!std::strncmp(packet, "LFD1,", 5)) {
+  if (!std::strncmp(packet, "LFD1,", 5) || !std::strncmp(packet, "LFD2,", 5)) {
     const auto clock = memorialClock();
     return daily_runtime::accept(packet, clock.valid ? clock.date : 0, model.deviceId, ack);
   }

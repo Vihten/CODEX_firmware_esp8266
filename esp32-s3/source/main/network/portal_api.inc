@@ -343,72 +343,83 @@ esp_err_t portalStatus(httpd_req_t *request) {
         uptimeMs() - update->polledAt < agent_update::freshMs);
     number(item, "management_state", update ? update->actionState : 0);
   }
-  // Weekly ranking and calendar share daily evidence. Keep old cumulative
-  // reports in NVS for diagnostics; never reinterpret them as verified day sums.
-  daily::WeekSummary weekSummary;
+  daily_runtime::WeeklySnapshot snapshot;
   const auto rankingClock = memorialClock();
-  const bool dailyReady = daily_runtime::weeklySummary(rankingClock.valid ? rankingClock.date : 0, weekSummary);
-  weekly::Store displayWeek;
-  displayWeek.week = weekSummary.week;
-  if (dailyReady) for (size_t i = 0; i < daily::kAgents; ++i) {
-    const auto &day = weekSummary.entries[i];
-    if (!day.identity || !day.observedDays) continue;
-    auto &entry = displayWeek.entries[i];
-    entry.clientId = uint32_t(day.identity); entry.tokens = day.tokens;
-    entry.rgb = 0xd400ff;
-    std::snprintf(entry.name, sizeof(entry.name), "%08lX", (unsigned long)entry.clientId);
-    for (const auto &reported : view.weekly.entries) if (reported.clientId == entry.clientId) {
-      entry.rgb = reported.rgb; std::snprintf(entry.name, sizeof(entry.name), "%s", reported.name); break;
-    }
-    for (const auto &agent : view.control.agents) if (agent.present && agent.clientId == entry.clientId) {
-      entry.rgb = agent.rgb; std::snprintf(entry.name, sizeof(entry.name), "%s", agent.name); break;
-    }
-  }
-  for (unsigned kind = 0; kind < 2; ++kind) {
-  const auto &store = kind ? view.lifetime : displayWeek;
-  cJSON *ranking = cJSON_AddObjectToObject(root, kind ? "lifetime" : "weekly");
-  if (!ranking) okay = false;
+  daily_runtime::weeklySummary(rankingClock.valid ? rankingClock.date : 0, snapshot);
+  const auto rating = weeklyRatingRows(snapshot);
+  const auto addRow = [&](cJSON *rows, const weekly::Entry &entry) -> cJSON * {
+    cJSON *item = cJSON_CreateObject();
+    if (!item) { okay = false; return nullptr; }
+    if (!cJSON_AddItemToArray(rows, item)) { cJSON_Delete(item); okay = false; return nullptr; }
+    char id[9], color[8];
+    std::snprintf(id, sizeof(id), "%08lX", (unsigned long)entry.clientId);
+    std::snprintf(color, sizeof(color), "#%06lX", (unsigned long)entry.rgb);
+    string(item, "id", id); string(item, "name", entry.name); string(item, "color", color);
+    return item;
+  };
+  const auto tokenValue = [&](cJSON *item, const char *key, uint64_t tokens, bool present) {
+    if (present) number(item, key, double(tokens));
+    else if (!cJSON_AddNullToObject(item, key)) okay = false;
+  };
+  cJSON *week = cJSON_AddObjectToObject(root, "weekly");
+  if (!week) okay = false;
   else {
-    if (!kind) number(ranking, "week", store.week);
-    if (!kind) {
-      string(ranking, "source", "daily"); boolean(ranking, "available", dailyReady);
-      number(ranking, "observed_days", weekSummary.observedDays);
-      number(ranking, "elapsed_days", weekSummary.elapsedDays);
-      number(ranking, "today", rankingClock.valid ? rankingClock.date : 0);
-      cJSON *days = cJSON_AddArrayToObject(ranking, "days");
-      if (!days) okay = false;
-      else if (dailyReady) for (const auto &day : weekSummary.days) {
-        if (!day.agents) continue;
-        cJSON *item = cJSON_CreateObject();
-        if (!item) { okay = false; break; }
-        if (!cJSON_AddItemToArray(days, item)) { cJSON_Delete(item); okay = false; break; }
-        number(item, "date", day.date);
-        number(item, "tokens", double(day.tokens));
-      }
-    }
-    boolean(ranking, "dirty", kind ? view.lifetimeDirty : weekSummary.saving);
-    boolean(ranking, "save_failed", kind ? view.lifetimeSaveFailed : weekSummary.saveFailed);
-    cJSON *rows = cJSON_AddArrayToObject(ranking, "entries");
-    if (!rows) okay = false;
-    else for (const auto &entry : store.entries) {
-      if (!entry.clientId) continue;
+    const auto &codex = snapshot.codex;
+    const auto &claude = snapshot.claude;
+    number(week, "week", codex.week ? codex.week : claude.week);
+    string(week, "source", "daily");
+    boolean(week, "available", snapshot.codexReady || snapshot.claudeReady);
+    boolean(week, "dirty", codex.saving || claude.saving);
+    boolean(week, "save_failed", codex.saveFailed || claude.saveFailed);
+    boolean(week, "codex_available", snapshot.codexReady);
+    boolean(week, "codex_dirty", codex.saving);
+    boolean(week, "codex_save_failed", codex.saveFailed);
+    boolean(week, "claude_available", snapshot.claudeReady);
+    number(week, "observed_days", codex.observedDays);
+    number(week, "claude_observed_days", claude.observedDays);
+    number(week, "elapsed_days", codex.elapsedDays ? codex.elapsedDays : claude.elapsedDays);
+    number(week, "today", rankingClock.valid ? rankingClock.date : 0);
+
+    cJSON *days = cJSON_AddArrayToObject(week, "days");
+    if (!days) okay = false;
+    else if (snapshot.codexReady) for (const auto &day : codex.days) {
+      if (!day.agents) continue;
       cJSON *item = cJSON_CreateObject();
       if (!item) { okay = false; break; }
-      if (!cJSON_AddItemToArray(rows, item)) { cJSON_Delete(item); okay = false; break; }
-      char id[9], color[8]; std::snprintf(id, sizeof(id), "%08lX", (unsigned long)entry.clientId);
-      std::snprintf(color, sizeof(color), "#%06lX", (unsigned long)entry.rgb);
-      string(item, "id", id); string(item, "name", entry.name); string(item, "color", color);
-      number(item, "tokens", double(entry.tokens));
-      if (!kind) {
-        for (const auto &day : weekSummary.entries) if (day.identity == entry.clientId)
-          number(item, "observed_days", day.observedDays);
-        for (const auto &reported : view.weekly.entries) if (reported.clientId == entry.clientId) {
-          number(item, "reported_tokens", double(reported.tokens));
-          string(item, "reported_protocol", weekly::v2(reported) ? "LFT2" : "LFT1"); break;
-        }
+      if (!cJSON_AddItemToArray(days, item)) { cJSON_Delete(item); okay = false; break; }
+      number(item, "date", day.date);
+      number(item, "tokens", double(day.tokens));
+    }
+
+    cJSON *rows = cJSON_AddArrayToObject(week, "entries");
+    if (!rows) okay = false;
+    else for (size_t i = 0; i < rating.count; ++i) {
+      const auto &row = rating.rows[i];
+      cJSON *item = addRow(rows, weeklyRatingAgent(view, row.clientId));
+      if (!item) break;
+      tokenValue(item, "tokens", row.codex, row.codexDays);
+      tokenValue(item, "claude_tokens", row.claude, row.claudeDays);
+      number(item, "observed_days", row.codexDays);
+      for (const auto &reported : view.weekly.entries) if (reported.clientId == row.clientId) {
+        number(item, "reported_tokens", double(reported.tokens));
+        string(item, "reported_protocol", weekly::v2(reported) ? "LFT2" : "LFT1"); break;
       }
     }
   }
+
+  cJSON *lifetime = cJSON_AddObjectToObject(root, "lifetime");
+  if (!lifetime) okay = false;
+  else {
+    boolean(lifetime, "dirty", view.lifetimeDirty);
+    boolean(lifetime, "save_failed", view.lifetimeSaveFailed);
+    cJSON *rows = cJSON_AddArrayToObject(lifetime, "entries");
+    if (!rows) okay = false;
+    else for (const auto &entry : view.lifetime.entries) {
+      if (!entry.clientId) continue;
+      cJSON *item = addRow(rows, entry);
+      if (!item) break;
+      number(item, "tokens", double(entry.tokens));
+    }
   }
   // Keep the bounded response off both the HTTP stack and TLS's scarce internal heap.
   std::unique_ptr<char, decltype(&heap_caps_free)> body(
@@ -865,6 +876,7 @@ esp_err_t telemetryPost(httpd_req_t *request) {
   quota_metadata::Packet metadataPacket;
   if (!parseTelemetry(command.packet, agent, legacy, remaining, activity) &&
       !parseWeeklyTelemetry(command.packet, weeklyEntry, week) &&
+      !daily_runtime::validPacket(command.packet) &&
       !quota_provider::parse(command.packet, PROJECT_ACCOUNT_FINGERPRINT, claudePacket) &&
       !quota_metadata::parse(command.packet, PROJECT_ACCOUNT_FINGERPRINT, metadataPacket)) return error(request, "400 Bad Request", "Invalid telemetry.");
   command.receivedAt = uptimeMs();

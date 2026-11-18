@@ -339,6 +339,7 @@ esp_err_t error(httpd_req_t *request, const char *status, const char *text) {
   httpd_sess_trigger_close(request->handle, httpd_req_to_sockfd(request));
   return result;
 }
+#include "network/weekly_rating.inc"
 #include "network/portal_html.inc"
 
 #include "network/portal_api.inc"

@@ -47,8 +47,11 @@
         if (!status || !finite(status.uptime_ms) || !finite(status.frames) || !Array.isArray(status.agents)) throw new Error('JSON');
         if (request.reason || !authenticated() || document.hidden) return;
         update(status, request.sequence);
-        updateTokenHistory(status.weekly?.source === 'daily' && Array.isArray(status.weekly.days) ?
-          status.weekly : {available: false});
+        const week = status.weekly;
+        updateTokenHistory(week?.source === 'daily' && Array.isArray(week.days) ? {
+          ...week, available: week.codex_available ?? week.available,
+          saving: week.codex_dirty ?? week.dirty, save_failed: week.codex_save_failed ?? week.save_failed,
+        } : {available: false});
         failures = 0;
         connection(status.maintenance === true ? 'Контролер зайнятий' : 'Дані оновлено', 'ok');
       } catch (_) {

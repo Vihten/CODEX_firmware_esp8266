@@ -184,6 +184,14 @@ table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
   .weekly-table td:nth-child(3){grid-column:2;grid-row:2;text-align:left;white-space:normal;overflow-wrap:anywhere;margin-top:.375rem}
   .weekly-table td:nth-child(3)::before{content:'Токени: ';color:var(--muted);font-size:.75rem}
   .weekly-table td:nth-child(4){grid-column:3;grid-row:2;margin-top:.375rem;font-size:.8125rem;color:var(--muted)}
+  .weekly-providers tr{grid-template-columns:1.75rem minmax(0,1fr) minmax(0,1fr)}
+  .weekly-providers td:first-child{grid-row:1 / 4}
+  .weekly-providers td:nth-child(3),.weekly-providers td:nth-child(4){text-align:left;white-space:normal;overflow-wrap:anywhere;color:inherit;font-size:.875rem}
+  .weekly-providers td:nth-child(3)::before,.weekly-providers td:nth-child(4)::before{display:block;color:var(--muted);font-size:.75rem}
+  .weekly-providers td:nth-child(3)::before{content:'Токени Codex'}
+  .weekly-providers td:nth-child(4)::before{content:'Токени Claude'}
+  .weekly-providers td:nth-child(5){grid-column:2 / 4;grid-row:3;text-align:left;margin-top:.35rem;color:var(--muted);font-size:.75rem}
+  .weekly-providers td:nth-child(5)::before{content:'Частка Codex: '}
 }
 .weekly-agent-color{display:inline-block;width:.7rem;height:.7rem;margin-right:.5rem;border-radius:2px}
 .pill{display:inline-block;color:var(--muted);font-size:.8125rem}

@@ -2,7 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 
-// Portable LFD1 daily totals. Allocate Store in PSRAM, never on a task stack.
+// Portable daily totals. Allocate Store in PSRAM, never on a task stack.
 // Caller synchronizes all access and owns stable agent-slot identity + NVS keys.
 // No allocation, I/O, inferred history, clock source, or raw client identifiers.
 namespace daily {
@@ -16,7 +16,6 @@ enum class Result : uint8_t {
   InvalidRevision, Future, TooOld, Overflow
 };
 struct Record { uint64_t tokens = 0; uint64_t revision = 0; uint32_t ordinal = 0; };
-using AgentStore = Record[kDays];
 struct Day {
   uint32_t date = 0;
   uint64_t tokens = 0;
@@ -63,11 +62,18 @@ inline uint32_t dateFromOrdinal(uint32_t value) noexcept {
   return low * 10000 + month * 100 + value - ordinal(low * 10000 + month * 100 + 1) + 1;
 }
 
-class Store {
+template<std::size_t Days>
+class Ledger {
  public:
-  Store() noexcept = default;
-  Store(const Store&) = delete;
-  Store& operator=(const Store&) = delete;
+  static constexpr std::size_t retention = Days;
+  static constexpr std::size_t blobBytes = 24 + Days * 18 + 4;
+
+ private:
+  using AgentRecords = Record[Days];
+ public:
+  Ledger() noexcept = default;
+  Ledger(const Ledger&) = delete;
+  Ledger& operator=(const Ledger&) = delete;
   // Bind stable IDs once; no eviction, including on a thirteenth identity.
   // Persist mapping or restore each blob via decodeAgent before accepting data.
   bool findAgent(uint64_t identity, std::size_t& client) const noexcept {
@@ -95,8 +101,8 @@ class Store {
     if (!when || !current) return Result::InvalidDate;
     if (revision > kMaxRevision) return Result::InvalidRevision;
     if (when > current) return Result::Future;
-    if (current - when >= kDays) return Result::TooOld;
-    Record& record = records_[client][when % kDays];
+    if (current - when >= Days) return Result::TooOld;
+    Record& record = records_[client][when % Days];
     if (record.ordinal > when) return Result::TooOld;
     if (record.ordinal == when) {
       if (revision < record.revision) return Result::Stale;
@@ -106,7 +112,7 @@ class Store {
     uint64_t total = tokens;
     for (std::size_t agent = 0; agent < kAgents; ++agent) {
       if (agent == client) continue;
-      const Record& other = records_[agent][when % kDays];
+      const Record& other = records_[agent][when % Days];
       if (other.ordinal != when) continue;
       if (other.tokens > UINT64_MAX - total) return Result::Overflow;
       total += other.tokens;
@@ -119,7 +125,7 @@ class Store {
     out = Record{};
     const uint32_t when = ordinal(day);
     if (!when || client >= kAgents) return false;
-    const Record& found = records_[client][when % kDays];
+    const Record& found = records_[client][when % Days];
     if (found.ordinal != when) return false;
     out = found;
     return true;
@@ -130,7 +136,7 @@ class Store {
     if (!when) return false;
     out.date = day;
     for (std::size_t agent = 0; agent < kAgents; ++agent) {
-      const Record& record = records_[agent][when % kDays];
+      const Record& record = records_[agent][when % Days];
       if (record.ordinal != when) continue;
       if (record.tokens > UINT64_MAX - out.tokens) { out = Day{}; return false; }
       out.tokens += record.tokens;
@@ -144,7 +150,7 @@ class Store {
              uint32_t& observed_days) const noexcept {
     tokens = 0; observed_days = 0;
     const uint32_t begin = ordinal(first), end = ordinal(last);
-    if (!begin || end < begin || end - begin >= kDays) return false;
+    if (!begin || end < begin || end - begin >= Days) return false;
     for (uint32_t when = begin; when <= end; ++when) {
       Day day;
       if (!readDay(dateFromOrdinal(when), day) || day.tokens > UINT64_MAX - tokens) {
@@ -174,7 +180,7 @@ class Store {
       auto& day = out.days[when - begin];
       day.date = dateFromOrdinal(when);
       for (std::size_t i = 0; i < kAgents; ++i) {
-        const Record& record = records_[i][when % kDays];
+        const Record& record = records_[i][when % Days];
         if (!bound_[i] || record.ordinal != when) continue;
         if (record.tokens > UINT64_MAX - aggregate) { out = WeekSummary{}; return false; }
         aggregate += record.tokens;
@@ -200,12 +206,12 @@ class Store {
   // tentative identity at offset 8 and passing it to decodeAgent for validation.
   bool encodeAgent(std::size_t client, uint64_t identity, void* buffer,
                    std::size_t bytes) const noexcept {
-    if (client >= kAgents || !buffer || bytes != kAgentBlobBytes) return false;
+    if (client >= kAgents || !buffer || bytes != blobBytes) return false;
     if (bound_[client] && identities_[client] != identity) return false;
     auto* out = static_cast<uint8_t*>(buffer);
     put(out, 0x3144464c, 4); put(out + 4, 1, 4);
-    put(out + 8, identity, 8); put(out + 16, kDays, 4); put(out + 20, 0, 4);
-    for (std::size_t i = 0; i < kDays; ++i) {
+    put(out + 8, identity, 8); put(out + 16, Days, 4); put(out + 20, 0, 4);
+    for (std::size_t i = 0; i < Days; ++i) {
       const Record& r = records_[client][i];
       put(out + 24 + i * 18, r.ordinal, 4);
       put(out + 28 + i * 18, r.tokens, 8);
@@ -218,19 +224,19 @@ class Store {
   // remains unchanged. Buffer must not alias Store; caller owns a ~6.6KB buffer.
   bool decodeAgent(std::size_t client, uint64_t identity, const void* buffer,
                    std::size_t bytes) noexcept {
-    if (client >= kAgents || !buffer || bytes != kAgentBlobBytes) return false;
+    if (client >= kAgents || !buffer || bytes != blobBytes) return false;
     if (bound_[client] && identities_[client] != identity) return false;
     std::size_t existing = 0;
     if (findAgent(identity, existing) && existing != client) return false;
     const auto* in = static_cast<const uint8_t*>(buffer);
     if (get(in,4) != 0x3144464c || get(in+4,4) != 1 || get(in+8,8) != identity ||
-        get(in+16,4) != kDays || get(in+20,4) != 0 ||
+        get(in+16,4) != Days || get(in+20,4) != 0 ||
         get(in+bytes-4,4) != crc(in, bytes-4)) return false;
-    for (std::size_t i = 0; i < kDays; ++i) {
+    for (std::size_t i = 0; i < Days; ++i) {
       const uint64_t tokens = get(in+28+i*18,8), revision = get(in+36+i*18,6);
       const uint32_t when = static_cast<uint32_t>(get(in+24+i*18,4));
       if (!when) { if (tokens || revision) return false; continue; }
-      if (when > ordinal(99991231) || when % kDays != i || revision > kMaxRevision) return false;
+      if (when > ordinal(99991231) || when % Days != i || revision > kMaxRevision) return false;
       uint64_t sum = tokens;
       for (std::size_t agent = 0; agent < kAgents; ++agent) {
         if (agent == client || records_[agent][i].ordinal != when) continue;
@@ -240,7 +246,7 @@ class Store {
     }
     // Sparse histories may retain stale slots across long idle periods; each
     // slot still holds its newest date. Merge's trusted today bounds backfill.
-    for (std::size_t i = 0; i < kDays; ++i)
+    for (std::size_t i = 0; i < Days; ++i)
       records_[client][i] = Record{get(in+28+i*18,8), get(in+36+i*18,6),
           static_cast<uint32_t>(get(in+24+i*18,4))};
     dirty_[client] = false;
@@ -266,11 +272,19 @@ class Store {
     }
     return ~value;
   }
-  AgentStore records_[kAgents]{};
+  AgentRecords records_[kAgents]{};
   bool dirty_[kAgents]{};
   uint64_t identities_[kAgents]{};
   bool bound_[kAgents]{};
 };
+using Store = Ledger<kDays>;
+// Four weeks cover weekly backfill within the separate 4-sector NVS partition.
+using ClaudeStore = Ledger<28>;
+static_assert(sizeof(ClaudeStore) + ClaudeStore::blobBytes <= 9000, "Claude PSRAM budget exceeded");
+// NVS pages have 126 entries of 32 bytes. Each blob has a data header and
+// index. Allow a chunk header per page, an overwritten blob, and a GC sector.
+static_assert((kAgents + 1) * ((ClaudeStore::blobBytes + 31) / 32 + 4) + 1 <= 3 * 126,
+              "Claude NVS budget exceeded");
 static_assert(sizeof(Store) <= 106000, "Daily store PSRAM budget exceeded");
 static_assert(kAgentBlobBytes <= 6700, "Per-agent NVS blob budget exceeded");
 } // namespace daily

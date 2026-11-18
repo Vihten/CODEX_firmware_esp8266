@@ -14,14 +14,21 @@
         return;
       }
       const seen = new Set();
+      const split = kind === 'weekly';
+      const validTokens = value => Number.isSafeInteger(value) && value >= 0;
       const entries = ranking.entries.filter(row => row && /^[0-9a-f]{8}$/i.test(row.id) &&
-        Number.isSafeInteger(row.tokens) && row.tokens >= 0 && /^#[0-9a-f]{6}$/i.test(row.color))
+        (validTokens(row.tokens) || (split && validTokens(row.claude_tokens))) && /^#[0-9a-f]{6}$/i.test(row.color))
         .filter(row => {
           const id = row.id.toUpperCase();
           if (seen.has(id) || id === '00000000') return false;
           seen.add(id); return true;
-        }).slice(0, 12).sort((a, b) => b.tokens - a.tokens || a.id.localeCompare(b.id));
-      const total = entries.reduce((sum, row) => sum + BigInt(row.tokens), 0n);
+        }).slice(0, split ? 24 : 12).sort((a, b) => {
+          const aCodex = validTokens(a.tokens), bCodex = validTokens(b.tokens);
+          if (aCodex !== bCodex) return aCodex ? -1 : 1;
+          const difference = aCodex ? b.tokens - a.tokens : b.claude_tokens - a.claude_tokens;
+          return difference || a.id.localeCompare(b.id);
+        });
+      const total = entries.reduce((sum, row) => sum + (validTokens(row.tokens) ? BigInt(row.tokens) : 0n), 0n);
       const retained = new Set();
       const rows = entries.map((row, index) => {
         const id = row.id.toUpperCase();
@@ -29,15 +36,19 @@
         let record = records.get(id);
         if (!record) {
           const tr = document.createElement('tr');
-          const cells = Array.from({length: 4}, () => tr.appendChild(document.createElement('td')));
+          const cells = Array.from({length: split ? 5 : 4}, () => tr.appendChild(document.createElement('td')));
           const color = document.createElement('span');
           color.className = 'weekly-agent-color'; color.setAttribute('aria-hidden', 'true');
           record = {tr, cells, color, values: []};
           records.set(id, record);
         }
-        const values = [String(index + 1), typeof row.name === 'string' ? row.name : row.id,
-          number(row.tokens), row.tokens > 0 && BigInt(row.tokens) * 1000n < total ? '<0,1%' :
-          `${decimal.format(total ? Number((BigInt(row.tokens) * 1000n + total / 2n) / total) / 10 : 0)}%`];
+        const hasCodex = validTokens(row.tokens);
+        const values = [hasCodex ? String(index + 1) : '—', typeof row.name === 'string' ? row.name : row.id,
+          hasCodex ? number(row.tokens) : '—'];
+        if (split) values.push(validTokens(row.claude_tokens) ? number(row.claude_tokens) : '—');
+        const share = !hasCodex ? '—' : row.tokens > 0 && BigInt(row.tokens) * 1000n < total ? '<0,1%' :
+          `${decimal.format(total ? Number((BigInt(row.tokens) * 1000n + total / 2n) / total) / 10 : 0)}%`;
+        values.push(share);
         values.forEach((value, column) => {
           if (record.values[column] === value) return;
           const td = record.cells[column];

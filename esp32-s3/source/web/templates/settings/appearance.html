@@ -1,9 +1,7 @@
-<section class='section settings-row' aria-labelledby='appearance-heading'>
-<div class='section-head'><h2 id='appearance-heading'>Небо і перемикання</h2></div>
+<section class='section settings-row' aria-label='Кольори неба й чергування'>
 <form class='appearance-form' method='post' action='/sky-colors'>
-<div class='form-grid'>
-<div class='field'><label for='codex-sky-color'>Колір Codex</label><input id='codex-sky-color' type='color' name='codex' value='{{0}}' required></div>
-<div class='field'><label for='claude-sky-color'>Колір Claude</label><input id='claude-sky-color' type='color' name='claude' value='{{1}}' required></div>
-<div class='field'><label for='quota-rotation-minutes'>Перемикати кожні, хв</label><input id='quota-rotation-minutes' name='minutes' type='number' min='1' max='60' step='1' value='{{2}}' required></div>
-</div><button type='submit'>Зберегти</button>
+<div class='field'><label for='codex-sky-color'>Codex</label><input id='codex-sky-color' type='color' name='codex' aria-label='Колір неба Codex' value='{{0}}' required></div>
+<div class='field'><label for='claude-sky-color'>Claude</label><input id='claude-sky-color' type='color' name='claude' aria-label='Колір неба Claude' value='{{1}}' required></div>
+<div class='field'><label for='quota-rotation-minutes'>Чергування, хв</label><input id='quota-rotation-minutes' name='minutes' type='number' min='1' max='60' step='1' value='{{2}}' required></div>
+<button type='submit'>Зберегти</button>
 </form></section>

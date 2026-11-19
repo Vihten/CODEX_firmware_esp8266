@@ -140,13 +140,6 @@ float entranceOriginVisibility(const EntranceOrigin &origin, float dx, float dy)
   const float radial = entranceSmooth((origin.reach * origin.reach - dx * dx - dy * dy) / max(2.0f, 4 * origin.reach));
   return (angular + (1 - angular) * origin.complete) * radial;
 }
-// Keep dark blue visible at the usual 20% setting without cancelling dimming.
-void preserveNightSkyPixel(uint8_t *rgb, uint16_t index, uint8_t effectType, uint8_t brightness) {
-  if (!brightness || effectType || pgm_read_byte(&ENTRANCE_FIXED[index]) ||
-      rgb[2] < 2 || rgb[2] > 4 || rgb[1] >= rgb[2] || rgb[0] > rgb[1]) return;
-  const uint8_t minimumBlue = 5;
-  rgb[2] = sky_palette::nightBlue(rgb[2], minimumBlue, claudeTint, control.codexSkyColor, skyDaylight.at(sceneFrameMilli, index % MATRIX_WIDTH, index / MATRIX_WIDTH));
-}
 float entranceClosingFrom = 0, entranceClosingTo = 0;
 uint32_t entranceClosingAt = 0;
 bool entranceClosingTarget = false;
@@ -271,7 +264,6 @@ void drawSceneEntrance() {
       const uint8_t *rgb = &entrancePixels[reflected * 3];
       uint8_t visibleRgb[3] = {uint8_t(rgb[0] * visibility + .5f),
           uint8_t(rgb[1] * visibility + .5f), uint8_t(rgb[2] * visibility + .5f)};
-      preserveNightSkyPixel(visibleRgb, index, entranceMask[reflected], strip.getBrightness());
       strip.setPixelColor(physicalIndex(x, y), strip.Color(visibleRgb[0], visibleRgb[1], visibleRgb[2]));
       effectMask[index] = visibility <= 0 ? 0 : entranceMask[reflected];
     }
@@ -1356,7 +1348,6 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
       }
       const uint16_t entranceIndex = (y * MATRIX_WIDTH + x) * 3;
       memcpy(&entrancePixels[entranceIndex], rgb, 3);
-      preserveNightSkyPixel(rgb, pixelIndex, effectMask[pixelIndex], strip.getBrightness());
       #endif
       strip.setPixelColor(
         physicalIndex(x, y),

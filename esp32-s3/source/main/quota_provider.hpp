@@ -197,9 +197,4 @@ inline void tint(uint8_t *rgb, uint8_t type, bool fixed, uint8_t amount) {
     rgb[i] = uint8_t((unsigned(rgb[i]) * (255 - amount) + warm * amount + 127) / 255);
   }
 }
-// The blue visibility floor fades with the same provider mix as the artwork.
-inline uint8_t nightBlue(uint8_t current, uint8_t minimum, uint8_t amount) {
-  if (current >= minimum) return current;
-  return uint8_t(current + (unsigned(minimum - current) * (255 - amount) + 127) / 255);
-}
 }  // namespace quota_provider

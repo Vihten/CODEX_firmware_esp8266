@@ -25,18 +25,22 @@ class Daylight {
       const float angle = -float(phase) * 6.28318530718f / 200000.0f;
       nx_ = std::sin(angle);
       ny_ = -1.85f * std::cos(angle);
+      const uint32_t distance = phase > 100000U ? phase - 100000U : 100000U - phase;
+      // Fade the last sliver of daylight at the horizon into a black background.
+      const float night = distance < 10000U ? float(distance) / 10000.0f : 1.0f;
+      horizon_ = night * night * (3.0f - 2.0f * night);
       phase_ = phase;
     }
     float day = ((float(x) - 24.5f) * nx_ + (float(y) - 18.5f) * ny_ + 2.0f) * .25f;
     if (day <= 0.0f) return 0;
-    if (day >= 1.0f) return 255;
+    if (day >= 1.0f) return uint8_t(horizon_ * 255.0f + 0.5f);
     day = day * day * (3.0f - 2.0f * day);
-    return uint8_t(day * 255.0f + 0.5f);
+    return uint8_t(day * horizon_ * 255.0f + 0.5f);
   }
 
  private:
   uint32_t phase_ = UINT32_MAX;
-  float nx_ = 0.0f, ny_ = 0.0f;
+  float nx_ = 0.0f, ny_ = 0.0f, horizon_ = 1.0f;
 };
 
 // sqrt(ratio) precompensates the output driver's per-channel gamma 2.
@@ -152,7 +156,7 @@ inline void apply(uint8_t *rgb, uint8_t type, bool fixed, uint8_t amount,
                   const Palette *codex, const Palette &claude, uint8_t daylight = 255,
                   uint8_t claudeMinimumPeak = 0, bool preserveSkyRim = false) {
   const bool sky = !type && !fixed;
-  if (sky && !daylight) { rgb[0] = rgb[1] = rgb[2] = 0; return; }
+  if (!type && !daylight) { rgb[0] = rgb[1] = rgb[2] = 0; return; }
   if (!amount) {
     if (codex) colorize(rgb, type, fixed, *codex);
     if (sky && daylight != 255)
@@ -181,10 +185,5 @@ inline void apply(uint8_t *rgb, uint8_t type, bool fixed, uint8_t amount,
   const Palette cool(codex), warm(claude);
   apply(rgb, type, fixed, amount, codex == codexDefault ? nullptr : &cool,
         warm, daylight, claudeMinimumPeak);
-}
-inline uint8_t nightBlue(uint8_t current, uint8_t minimum, uint8_t amount, uint32_t codex,
-                         uint8_t daylight = 255) {
-  const uint8_t warm = uint8_t((unsigned(amount) * daylight + 127) / 255);
-  return codex == codexDefault ? quota_provider::nightBlue(current, minimum, warm) : current;
 }
 }  // namespace sky_palette

@@ -78,10 +78,12 @@
           if (field) field.focus();
           return;
         }
-        // Move the existing form, preserving native submission, field IDs and dirty state.
+        // Advanced panels include useful live status beside their form.
+        const panel = target.form.closest('[data-device-advanced]') && target.form.closest('section');
+        // Move the existing content to preserve native submission and unsaved edits.
         placeholder = document.createComment('device settings form');
-        target.form.before(placeholder);
-        moved = target.form;
+        moved = panel || target.form;
+        moved.before(placeholder);
         trigger = button;
         heading.textContent = target.title;
         content.append(moved);

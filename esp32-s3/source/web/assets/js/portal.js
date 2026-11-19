@@ -457,10 +457,12 @@
           if (field) field.focus();
           return;
         }
-        // Move the existing form, preserving native submission, field IDs and dirty state.
+        // Advanced panels include useful live status beside their form.
+        const panel = target.form.closest('[data-device-advanced]') && target.form.closest('section');
+        // Move the existing content to preserve native submission and unsaved edits.
         placeholder = document.createComment('device settings form');
-        target.form.before(placeholder);
-        moved = target.form;
+        moved = panel || target.form;
+        moved.before(placeholder);
         trigger = button;
         heading.textContent = target.title;
         content.append(moved);
@@ -848,7 +850,10 @@
         const meter = one('[data-agent-bar]', row);
         const activity = row.dataset.activity === undefined ? (meter ? Number(meter.value) : 0) : Number(row.dataset.activity);
         const activeAgent = online && activity > 0;
-        row.hidden = selectedFilter === 'online' ? !online : selectedFilter === 'active' ? !activeAgent : false;
+        const outside = selectedFilter === 'online' ? !online : selectedFilter === 'active' ? !activeAgent : false;
+        const editing = outside && (row.contains(document.activeElement) || one('details[open]', row) ||
+          all('form', row).some(form => dirtyForms.has(form)));
+        row.hidden = outside && !editing;
         if (!row.hidden) ++visible;
       });
       all('.filter-empty').forEach(node => { node.hidden = rows.length === 0 || visible !== 0; });

@@ -330,6 +330,7 @@ void writeAgentSummaryRow(Html &html, const AgentInput &agent) {
 }
 void writeAgentSummary(Html &html, const View &view) {
   html.file("templates/summary/section-open.html");
+  html.text("<details><summary>Активність агентів</summary>");
   html.file("templates/summary/list-open.html");
   const AgentInput *ordered[kAgentCapacity] = {};
   unsigned known = 0;
@@ -344,6 +345,7 @@ void writeAgentSummary(Html &html, const View &view) {
   html.file("templates/summary/template-open.html");
   writeAgentSummaryRow(html, AgentInput{});
   html.file("templates/agents/template-close.html");
+  html.text("<a class='summary-link' href='/agents'>Усі агенти</a></details>");
   html.file("templates/summary/section-close.html");
 }
 void writeOverview(Html &html, const View &view) {
@@ -365,7 +367,7 @@ void writeOverview(Html &html, const View &view) {
   html.text("<p class='muted rotation-summary'><span data-quota-rotation-status>Небо чергує сервіси кожні ");
   html.format("%u", unsigned(view.control.quotaRotationMinutes));
   html.text(" хв</span><a class='info-link' href='/settings#settings-appearance' aria-label='Налаштувати чергування сервісів' title='Налаштувати чергування сервісів'><svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' aria-hidden='true'><circle cx='12' cy='12' r='9'/><path d='M12 11v6M12 7v1'/></svg></a></p>");
-  html.text("<div class='overview-toolbar' data-overview-toolbar data-device-controls><section class='matrix-quick-controls'><div class='section-head'><h2>Матриця</h2><span class='muted' data-live='matrix'>");
+  html.text("<div class='overview-device'><div class='overview-toolbar' data-overview-toolbar data-device-controls><section class='matrix-quick-controls'><div class='section-head'><h2>Матриця</h2><span class='muted' data-live='matrix'>");
   html.text(portalMatrixState(view)); html.file("templates/overview/power-heading.html");
   html.file("templates/overview/power-form-open.html");
   for (unsigned mode = 0; mode < 3; ++mode)
@@ -406,6 +408,7 @@ void writeOverview(Html &html, const View &view) {
   });
   html.text("</div>");
   html.file("templates/overview/matrix-preview.html");
+  html.text("</div>");
   writeAgentSummary(html, view);
 }
 void writeSettings(Html &html, const View &view) {
@@ -449,15 +452,15 @@ void writeSettings(Html &html, const View &view) {
       else html.text("Ручний тест не активний");
     }
   });
-  html.text("<section class='section' aria-labelledby='buzzer-heading'><div class='section-head'><h2 id='buzzer-heading'>Звук</h2></div><form id='buzzer-volume-form' method='post' action='/buzzer-volume'><label for='buzzer-volume'>Гучність (0% — беззвучно) <output id='buzzer-volume-value' for='buzzer-volume'>");
+  html.text("<section class='section' aria-labelledby='buzzer-heading'><div class='section-head'><h2 id='buzzer-heading'>Звук</h2></div><form id='buzzer-volume-form' method='post' action='/buzzer-volume'><label for='buzzer-volume'>Гучність <output id='buzzer-volume-value' for='buzzer-volume'>");
   html.format("%u%%", unsigned(view.buzzerVolume));
   html.text("</output></label><input id='buzzer-volume' type='range' name='value' min='0' max='100' step='1' value='");
   html.format("%u", unsigned(view.buzzerVolume));
-  html.text("'><button type='submit'>Застосувати</button></form><p class='muted' data-buzzer-save role='status'>");
+  html.text("' aria-label='Гучність бузера, 0% — беззвучно'><button type='submit'>Зберегти</button></form><p class='muted' data-buzzer-save role='status'>");
   html.text(view.buzzerSaveFailed ? "Не вдалося зберегти. Повторюємо спробу." : view.buzzerDirty ? "Збереження…" : "");
   html.text("</p><form method='post' action='/buzzer-test'><button type='submit' class='secondary' data-buzzer-test ");
   html.attribute(!view.buzzerReady || view.restarting || view.control.maintenance != Maintenance::None ? "@disabled" : "");
-  html.text(">Перевірити бузер</button></form></section>");
+  html.text(">Тест звуку</button></form></section>");
   html.render("templates/settings/memorial.html", [&](unsigned token) {
     if (token == 0) html.attribute(view.memorialEnabled ? "@checked" : "");
     else if (token == 1) html.text(view.control.memorialActive ? "Відтворюється" : "Не відтворюється");
@@ -660,6 +663,7 @@ esp_err_t page(httpd_req_t *request) {
   else if (settingsPage) writeSettings(html, view);
   else writeOverview(html, view);
   html.file("templates/shell/footer.html");
+  if (agentsPage) html.text("<script src='/assets/js/token-history.js' defer></script>");
   if (!agentsPage && !settingsPage) html.file("templates/shell/preview-script.html");
   html.file("templates/shell/document-close.html");
   return html.end();

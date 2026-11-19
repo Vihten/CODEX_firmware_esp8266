@@ -6,10 +6,10 @@
 <meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>Вхід до контролера · Codex</title>
 <style>
-:root{color-scheme:dark;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#edf2ee;background:#111315;line-height:1.5}
-*{box-sizing:border-box;letter-spacing:0}body{margin:0}main{max-width:34rem;margin:3rem auto;padding:0 1.25rem 2rem;overflow-wrap:anywhere}
-h1{font-size:1.75rem;line-height:1.2;margin:0 0 1.5rem}h2{font-size:1.25rem}p{margin:1rem 0}form{margin:1.5rem 0;display:grid;gap:1rem}
-label{display:grid;gap:.4rem}input,button{font:inherit;min-width:0;max-width:100%;border-radius:6px;padding:.65rem .8rem;border:1px solid #536059}
+:root{color-scheme:dark;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#edf2ee;background:#111715;line-height:1.45}
+*{box-sizing:border-box}body{margin:0}main{width:min(calc(100% - 2rem),29rem);margin:clamp(1rem,7vh,4rem) auto;padding:clamp(1rem,4vw,1.75rem);background:#18201d;border:1px solid #39463f;border-radius:10px;overflow-wrap:anywhere}
+h1{font-size:1.55rem;line-height:1.2;letter-spacing:-.02em;margin:0 0 .8rem}h2{font-size:1.125rem;margin:.75rem 0 .25rem}p{margin:.75rem 0}form{margin:1rem 0;display:grid;gap:.65rem}
+label{display:grid;gap:.3rem;font-size:.875rem}input,button{font:inherit;min-width:0;max-width:100%;border-radius:5px;padding:.6rem .75rem;border:1px solid #6b7970}
 input{width:100%;background:#1a1e20;color:#edf2ee}button{cursor:pointer;background:#56d39b;color:#111315;font-weight:600;white-space:normal}
 a{color:#79ddb1;text-underline-offset:.2em}.muted{color:#a6b0aa;font-size:.9375rem}small{font-size:.9375rem;color:#a6b0aa}
 :focus-visible{outline:2px solid #e8bc72;outline-offset:3px}.secondary{background:transparent;color:#edf2ee}
@@ -17,8 +17,9 @@ a{color:#79ddb1;text-underline-offset:.2em}.muted{color:#a6b0aa;font-size:.9375r
 .login-toggle input{width:20px;height:20px;flex:none;margin:0;padding:0}
 #login-form input:not([type=hidden]),#login-form button{min-height:44px}
 #login-form button:disabled{cursor:wait;background:#303833;color:#b2bcb5}
-#login-feedback{margin:0;min-height:1.5em}#login-password[aria-invalid=true]{border-color:#f2a09a}
-@media(max-width:36rem){main{margin-top:1.5rem}}
+#login-feedback{margin:0}#login-feedback:empty{display:none}#login-password[aria-invalid=true]{border-color:#f2a09a}
+#login-form>button{justify-self:start;min-width:7.5rem}
+small,.muted{line-height:1.4}
 </style>
 <script src='/auth/login.js' defer></script>
 </head>

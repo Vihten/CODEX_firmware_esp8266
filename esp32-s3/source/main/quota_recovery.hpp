@@ -13,28 +13,44 @@ constexpr int32_t signedPhase(uint32_t phase) {
 // Retarget from the last displayed sample, with bounded work and no allocation.
 class ProviderTransition {
  public:
-  static constexpr uint32_t durationMs = 1020;
+  // Leave room for the next rendered frame within the three-second handoff.
+  static constexpr uint32_t durationMs = 2900;
   void begin(uint32_t phase, uint8_t tint) {
-    fromPhase_ = phase;
+    position_ = fromPhase_ = int32_t(phase);
     fromTint_ = tint;
-    elapsed_ = 0;
+    elapsed_ = phaseStartedAt_ = 0;
+    hasTarget_ = false;
   }
   bool active() const { return elapsed_ < durationMs; }
   void advance(uint32_t delta, uint32_t target, uint8_t tintTarget,
                uint32_t &phase, uint8_t &tint) {
+    if (!hasTarget_) {
+      destination_ = fromPhase_ + signedPhase((target + 200000 - uint32_t(fromPhase_)) % 200000);
+      targetPhase_ = target;
+      hasTarget_ = true;
+    } else if (targetPhase_ != target) {
+      // Keep the destination on the same arc when a new limit arrives mid-fade.
+      destination_ += signedPhase((target + 200000 - targetPhase_) % 200000);
+      targetPhase_ = target;
+      fromPhase_ = position_;
+      phaseStartedAt_ = elapsed_;
+    }
     elapsed_ += delta < durationMs - elapsed_ ? delta : durationMs - elapsed_;
-    const float t = float(elapsed_) / durationMs;
-    // Match the incumbent scene's smoothstep, shared by position and palette.
-    const float mix = t * t * (3 - 2 * t);
-    const int32_t distance = signedPhase((target + 200000 - fromPhase_) % 200000);
-    const int32_t position = int32_t(fromPhase_) + int32_t(std::lround(distance * mix));
-    phase = uint32_t((position + 200000) % 200000);
-    tint = uint8_t(std::lround(fromTint_ + (int(tintTarget) - int(fromTint_)) * mix));
-    if (!active()) { phase = target; tint = tintTarget; }
+    if (!active()) { phase = target; tint = tintTarget; return; }
+    const float progress = ease(float(elapsed_) / durationMs);
+    const float phaseProgress = phaseStartedAt_
+        ? ease(float(elapsed_ - phaseStartedAt_) / (durationMs - phaseStartedAt_)) : progress;
+    position_ = fromPhase_ + int32_t(std::lround((destination_ - fromPhase_) * phaseProgress));
+    phase = uint32_t((position_ % 200000 + 200000) % 200000);
+    tint = uint8_t(std::lround(fromTint_ + (int(tintTarget) - int(fromTint_)) * progress));
   }
  private:
-  uint32_t fromPhase_ = 0, elapsed_ = durationMs;
+  // Match the incumbent scene's smoothstep for position and palette.
+  static float ease(float t) { return t * t * (3 - 2 * t); }
+  int32_t position_ = 0, fromPhase_ = 0, destination_ = 0;
+  uint32_t targetPhase_ = 0, elapsed_ = durationMs, phaseStartedAt_ = 0;
   uint8_t fromTint_ = 0;
+  bool hasTarget_ = false;
 };
 
 // Rare quota resets use the authored sky rotation, not a new full scene entrance.

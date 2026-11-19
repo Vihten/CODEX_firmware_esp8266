@@ -780,7 +780,8 @@ uint8_t ipGlyphIndex(char value) {
 
 uint32_t updateSkySample(uint16_t target, bool frozen) {
   const uint32_t now = millis();
-  const uint32_t delta = min(uint32_t(250), uint32_t(now - skySampleAt));
+  const uint32_t elapsed = now - skySampleAt;
+  const uint32_t delta = min(uint32_t(250), elapsed);
   skySampleAt = now;
   const uint8_t tintTarget = control.quotaProvider == quota_provider::Provider::Claude ? 255 : 0;
   if (status.memorialTransition) return quotaFrameMilli;
@@ -793,17 +794,19 @@ uint32_t updateSkySample(uint16_t target, bool frozen) {
     skyProvider = control.quotaProvider;
     providerTransition = {};
   } else {
-    // Meteor holds freeze the provider's identity and position together.
-    if (frozen && !quotaRecovery.active()) return quotaFrameMilli;
-    if (!frozen && skyProvider != control.quotaProvider) {
+    // During shutdown, finish the meteor against the last visible sky.
+    if (frozen && !control.on && !quotaRecovery.active()) return quotaFrameMilli;
+    if (skyProvider != control.quotaProvider) {
       skyProvider = control.quotaProvider;
       quotaRecovery.observe(control.quotaRecoveryEpoch, false, false);
       providerTransition.begin(quotaFrameMilli, claudeTint);
-    }
-    if (providerTransition.active()) {
-      providerTransition.advance(delta, wanted, tintTarget, quotaFrameMilli, claudeTint);
       return quotaFrameMilli;
     }
+    if (providerTransition.active()) {
+      providerTransition.advance(elapsed, wanted, tintTarget, quotaFrameMilli, claudeTint);
+      return quotaFrameMilli;
+    }
+    if (frozen && !quotaRecovery.active()) return quotaFrameMilli;
     if (quotaRecovery.pending() && !frozen) quotaRecovery.begin(quotaFrameMilli, wanted);
     if (quotaRecovery.active()) {
       quotaFrameMilli = quotaRecovery.advance(delta, wanted);
@@ -1309,8 +1312,7 @@ bool renderScene(FrameReader &animationFile, FrameReader &effectMaskFile,
                  uint16_t &frame, bool finishingMeteorFlight) {
 #if EVENT_MODE
   entranceMirror = false;
-  if (!finishingMeteorFlight || sceneEntranceActive() || quotaRecovery.active()) frame = 100 - remainingPercent;
-  sceneFrameMilli = updateSkySample(frame, finishingMeteorFlight);
+  sceneFrameMilli = updateSkySample(100 - remainingPercent, finishingMeteorFlight);
   frame = sceneFrameMilli / 1000;
   const uint32_t entranceElapsed = sceneProgress;
   const int32_t phase = entranceMotionPhase(entranceElapsed);

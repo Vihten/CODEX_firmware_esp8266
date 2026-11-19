@@ -15,7 +15,7 @@ idf_component_register(
   INCLUDE_DIRS "."
   EMBED_FILES "animation.bin" "effects.bin" "claude_animation.bin" "claude_effects.bin" "web_bundle.bin"
   REQUIRES esp_wifi esp_event esp_netif esp_http_server esp_http_client app_update bootloader_support esp_timer
-          esp_https_ota nvs_flash espressif__cjson espressif__led_strip mbedtls esp-tls http_parser esp_driver_gpio esp_driver_ledc esp_psram joltwallet__littlefs
+          esp_https_ota nvs_flash espressif__cjson mbedtls esp-tls http_parser esp_driver_gpio esp_driver_ledc esp_driver_rmt esp_psram joltwallet__littlefs
 )
 
 # The renderer must prepare the next 1000-LED frame inside a 37 ms transport budget (27 Hz).

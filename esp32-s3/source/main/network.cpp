@@ -177,6 +177,7 @@ struct View {
   bool airEnabled = false, airManual = false, airFresh = false, airSaveFailed = false;
   bool cityFresh = false, cityFailed = false, cityDemo = false, cityReported = false;
   uint8_t airLevel = 0;
+  uint8_t airOfficialLevel = uint8_t(air_alert::Level::Unknown);
   air_alert::Failure airFailure = air_alert::Failure::None;
   int airHttpStatus = 0;
   uint32_t airPollMs = 0;

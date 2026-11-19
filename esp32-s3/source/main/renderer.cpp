@@ -1439,9 +1439,12 @@ bool showFrame(bool dark = false) {
 
 ota_visual::Fill<ota_visual::perimeter(MATRIX_WIDTH, MATRIX_HEIGHT)> otaFill;
 uint32_t otaFillEpoch = 0;
+bool otaFrameRequested() {
+  return control.maintenance == Maintenance::Ota && control.otaVisualSequence &&
+      (status.otaVisualSequence != control.otaVisualSequence || control.otaVisualAnimate);
+}
+
 void renderOtaProgress() {
-  if (control.maintenance != Maintenance::Ota || !control.otaVisualSequence ||
-      (status.otaVisualSequence == control.otaVisualSequence && !control.otaVisualAnimate)) return;
   // Continuous motion is granted only during network reads. Core 0 revokes it
   // and waits for an exact one-shot ACK before any subsequent flash operation.
   const uint32_t now = millis();
@@ -1481,12 +1484,12 @@ void renderTask(void *) {
   status.assetsReady = animationFile && effectMaskFile &&
       animationFile.size() == FRAME_BYTES * FRAME_COUNT &&
       effectMaskFile.size() == EFFECT_BYTES * FRAME_COUNT;
-  bool outputReady = status.watchdogReady && strip.begin();
+  const bool bootOutputReady = status.watchdogReady && strip.begin();
   status.ledError = strip.lastError();
   ESP_LOGI("renderer", "LED init: GPIO=%d core=%d ready=%d error=%d watchdog=%d assets=%d on=%d",
-           PROJECT_DATA_PIN, xPortGetCoreID(), outputReady, int(status.ledError),
+           PROJECT_DATA_PIN, xPortGetCoreID(), bootOutputReady, int(status.ledError),
            status.watchdogReady, status.assetsReady, control.on);
-  if (outputReady) {
+  if (bootOutputReady) {
     strip.setBrightness(255);
     strip.clear();
     if (showFrame(true) && control.maintenance == Maintenance::None) {
@@ -1527,6 +1530,17 @@ void renderTask(void *) {
     feedWatchdog();
     const int64_t started = esp_timer_get_time();
     const bool fresh = xQueueReceive(controlQueue, &control, 0) == pdTRUE;
+    const bool serviceOtaFrame = parked && acknowledgedEpoch == control.maintenanceEpoch &&
+        otaFrameRequested();
+    // With a published barrier, only a requested OTA frame may start DMA.
+    if (!strip.isReady() && (!parked || serviceOtaFrame)) {
+      if (strip.recover(millis(), control.maintenance != Maintenance::Persist)) {
+        matrixDark = true; // Recovery synchronously sent a black frame.
+        lightPresentationActive = false;
+      }
+      status.ledError = strip.lastError();
+    }
+    const bool outputReady = strip.isReady();
     const bool lightForcedOff = control.lightForcedOff ||
         !outputReady || status.ledError != 0 ||
         control.maintenance == Maintenance::Ota || control.maintenance == Maintenance::Restart;
@@ -1565,7 +1579,7 @@ void renderTask(void *) {
       blackHole.pause(millis());
       blackHolePreview.pause(millis());
       quotaRecovery.observe(control.quotaRecoveryEpoch, true, false);
-      if (outputReady) renderOtaProgress();
+      if (serviceOtaFrame && outputReady) renderOtaProgress();
       // Keep the original maintenance ACK alive. No PSRAM or artwork reads;
       // Core 0 revokes animation and waits for the stop-frame ACK before flash.
       status.quiescent = strip.isQuiescent();
@@ -1660,11 +1674,13 @@ void renderTask(void *) {
       if (maintenanceReady || (maintenance && !flying && memorialTransition)) {
         // Persist freezes the last completed frame. OTA and restart ACK only
         // after a synchronous black transfer has completed successfully.
-        bool complete = strip.wait() && strip.isQuiescent();
+        bool complete;
         if (control.maintenance == Maintenance::Ota || control.maintenance == Maintenance::Restart) {
           strip.clear();
           complete = showFrame(true) && strip.isQuiescent();
           if (complete) { sceneVisible = false; sceneProgress = 0; }
+        } else {
+          complete = strip.wait() && strip.isQuiescent();
         }
         if (complete) {
           acknowledgedEpoch = control.maintenanceEpoch;
@@ -1785,14 +1801,25 @@ void renderTask(void *) {
         }
       }
       memorialWasActive = memorialActive;
-    } else if (control.maintenance != Maintenance::None && strip.isQuiescent()) {
-      // Failed initialization can ACK only when the adapter confirms no DMA.
-      ipParkedAt = millis();
-      parked = true;
-      acknowledgedEpoch = control.maintenanceEpoch;
-      status.otaVisualSequence = 0;
-      status.maintenanceEpoch = acknowledgedEpoch;
-      status.quiescent = true;
+    } else {
+      if (fresh) applyControlAgents();
+      const uint32_t now = millis();
+      blackHole.pause(now);
+      blackHolePreview.pause(now);
+      quotaRecovery.observe(control.quotaRecoveryEpoch, true, false);
+      sceneTimelineAt = skySampleAt = previousRenderAt = now;
+      effectOrigin = started - (int64_t(effectTick) * 256 + effectSubTick) * 1000000 / (EVENT_FPS * 256);
+      if (control.maintenance != Maintenance::None && strip.isQuiescent() &&
+          (control.maintenance == Maintenance::Persist || !strip.canRecover())) {
+        // A stopped faulted output can park. Keep its error visible so the
+        // network can refuse OTA and no visual sequence can be acknowledged.
+        memorialParkedAt = ipParkedAt = now;
+        parked = true;
+        acknowledgedEpoch = control.maintenanceEpoch;
+        status.otaVisualSequence = 0;
+        status.maintenanceEpoch = acknowledgedEpoch;
+        status.quiescent = true;
+      }
     }
     if (!parked) status.quiescent = false;
     status.lastFrameUs = esp_timer_get_time() - started;

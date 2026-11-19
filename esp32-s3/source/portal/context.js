@@ -16,6 +16,7 @@
     let pollSequence = 0, refreshAfterActive = false;
     const memorialForm = one('#memorial-settings');
     const airAlertForm = one('#air-alert-settings');
+    const overviewAir = one('[data-overview-air-state]');
     const rotationInputs = all('#quota-rotation-minutes,form[action="/sky-colors"] input[name=minutes]');
     const liveNodes = new Map();
     all('[data-live]').forEach(node => {
@@ -74,6 +75,12 @@
       if (node.textContent !== next) node.textContent = next;
     });
     const text = (selector, value, root = document) => setText(all(selector, root), value);
+    const setOverviewAir = (level, label, note = '') => {
+      if (!overviewAir) return;
+      if (overviewAir.dataset.overviewAirState !== level) overviewAir.dataset.overviewAirState = level;
+      text('[data-overview-air-label]', label, overviewAir);
+      text('[data-overview-air-note]', note, overviewAir);
+    };
     const clearCityThreat = () => {
       text('[data-city-threat-state]', 'Немає актуальних даних');
       text('[data-city-threat-source]', '');
@@ -120,6 +127,7 @@
       baseline = null;
       setLightOutputs(null);
       clearCityThreat();
+      setOverviewAir('unknown', 'Немає актуальних даних', 'Сеанс завершено');
       live('output-limit', '');
       connection('Сеанс завершено. Увійдіть знову.', 'error');
       const dialog = one('#device-settings-dialog');

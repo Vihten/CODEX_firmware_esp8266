@@ -354,6 +354,20 @@ void writeAgentSummary(Html &html, const View &view) {
   html.file("templates/summary/section-close.html");
 }
 void writeOverview(Html &html, const View &view) {
+  const uint8_t official = view.airOfficialLevel;
+  const bool active = air_alert::active(static_cast<air_alert::Level>(official));
+  const auto level = view.airEnabled && (active || view.airFresh) ? official : uint8_t(air_alert::Level::Unknown);
+  html.render("templates/overview/air-alert.html", [&](unsigned token) {
+    if (token == 0) html.text(airLevelName(level));
+    else if (token == 1) html.text(!view.airEnabled ? "Моніторинг вимкнено" :
+        level == 2 ? "Ракетна загроза" : level == 1 ? "Дронова загроза" :
+        level == 4 ? "Тривога: тип загрози невідомий" :
+        level == 0 ? "Тривогу не оголошено" : "Немає актуальних даних");
+    else if (token == 2) {
+      if (active && !view.airFresh && view.airEnabled) html.text("Останній відомий стан · дані застаріли");
+      else if (view.airManual) html.text("На матриці активний ручний тест");
+    }
+  });
   writePortalStats(html, view);
   html.text("<p class='muted rotation-summary'><span data-quota-rotation-status>Небо чергує сервіси кожні ");
   html.format("%u", unsigned(view.control.quotaRotationMinutes));

@@ -285,12 +285,14 @@ struct PasswordHmac {
     return hash(inner, bytes, size, digest) && hash(outer, digest, sizeof(digest), out);
   }
 };
-// Give IDLE0 time during the CPU-only KDF, including when other network tasks
-// use its periodic sleep ticks. Restore the worker priority before locks or I/O.
+constexpr UBaseType_t kKdfPriority = tskIDLE_PRIORITY + 1;
+constexpr int64_t kKdfSliceUs = 16000;
+// Hash ahead of IDLE0 but below HTTPD and the network task. Restore the
+// worker priority before it takes auth locks or sends an HTTP response.
 struct KdfSchedulingScope {
   const UBaseType_t original = uxTaskPriorityGet(nullptr);
-  KdfSchedulingScope() { if (original > tskIDLE_PRIORITY) vTaskPrioritySet(nullptr, tskIDLE_PRIORITY); }
-  ~KdfSchedulingScope() { if (original > tskIDLE_PRIORITY) vTaskPrioritySet(nullptr, original); }
+  KdfSchedulingScope() { if (original > kKdfPriority) vTaskPrioritySet(nullptr, kKdfPriority); }
+  ~KdfSchedulingScope() { if (original > kKdfPriority) vTaskPrioritySet(nullptr, original); }
   KdfSchedulingScope(const KdfSchedulingScope &) = delete;
   KdfSchedulingScope &operator=(const KdfSchedulingScope &) = delete;
 };
@@ -302,17 +304,18 @@ bool derive(const char *password, const uint8_t (&salt)[16], uint8_t (&out)[32])
   PasswordHmac hmac;
   uint8_t first[20] = {}, current[32] = {};
   std::memcpy(first, salt, sizeof(salt)); first[19] = 1;
+  int64_t sliceStarted = esp_timer_get_time();
   bool okay = hmac.setup(password) && hmac.compute(first, sizeof(first), current);
   if (okay) std::memcpy(out, current, sizeof(out));
-  int64_t yielded = nowMs();
   for (uint32_t iteration = 1; okay && iteration < kIterations; ++iteration) {
     okay = hmac.compute(current, sizeof(current), current);
     if (!okay) break;
     for (size_t i = 0; i < sizeof(out); ++i) out[i] ^= current[i];
-    // Retain periodic blocking in addition to idle-priority time slicing.
-    // Never mask a watchdog or sleep once per KDF iteration.
-    if ((iteration & 7U) == 0 && nowMs() - yielded >= 4) {
-      vTaskDelay(1); yielded = nowMs();
+    if ((iteration & 7U) == 0 && esp_timer_get_time() - sliceStarted >= kKdfSliceUs) {
+      // Two ticks leave at least one full tick for lower priorities, even
+      // if the call lands just before a tick boundary.
+      vTaskDelay(2);
+      sliceStarted = esp_timer_get_time();
     }
   }
   erase(first, sizeof(first)); erase(current, sizeof(current));

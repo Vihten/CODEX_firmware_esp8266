@@ -15,6 +15,8 @@ constexpr bool sameEventLevel(Level previous, Level next) {
 }
 enum class Failure : uint8_t { None, Memory, Dns, Tls, Write, Read, Http, Payload, Timeout };
 
+constexpr uint32_t kPollBudgetMs = 8000;
+
 enum class FetchPhase : uint8_t { None, Dns, Connect, Write, Read, Parse };
 constexpr const char *fetchPhaseName(FetchPhase phase) {
   switch (phase) {

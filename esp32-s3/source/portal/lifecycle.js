@@ -65,6 +65,7 @@
           updateTokenHistory(null);
           text('[data-air-alert-state]', 'Немає актуальних даних');
           text('[data-air-alert-updated]', 'Зв’язок із контролером втрачено');
+          setOverviewAir('unknown', 'Немає актуальних даних', 'Зв’язок із контролером втрачено');
           clearCityThreat();
           connection(request.reason === 'timeout' ? 'Контролер не відповів вчасно' : 'Не вдалося оновити дані', 'error');
         }

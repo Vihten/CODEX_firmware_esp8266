@@ -269,6 +269,7 @@ esp_err_t portalStatus(httpd_req_t *request) {
     boolean(airStatus, "fresh", view.airFresh);
     boolean(airStatus, "save_failed", view.airSaveFailed);
     string(airStatus, "level", airLevelName(view.airLevel));
+    string(airStatus, "official_level", airLevelName(view.airOfficialLevel));
     string(airStatus, "status", view.airStatus);
     string(airStatus, "source_status", view.airSource);
     string(airStatus, "details", view.airDetails);

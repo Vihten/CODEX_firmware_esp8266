@@ -285,6 +285,13 @@ table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
 .quota-empty-notice[data-quota-guidance]{margin:0;font-size:.875rem;line-height:1.5;color:var(--muted);overflow-wrap:anywhere}
 .quota-empty-notice[data-quota-guidance] a{display:inline-flex;align-items:center;min-height:44px}
 .overview-status{padding-block:.75rem;border-bottom:1px solid var(--line)}
+.overview-air-alert{display:flex;align-items:center;flex-wrap:wrap;gap:.125rem 1rem;margin:0 0 1rem;padding:.35rem .875rem;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
+.overview-air-alert h2,.overview-air-alert p{margin:0;font-size:.875rem}
+.overview-air-alert p{display:flex;flex-wrap:wrap;gap:0 .5rem;flex:1 1 15rem}
+.overview-air-alert a{display:inline-flex;align-items:center;min-height:44px;font-size:.8125rem}
+.overview-air-alert [data-overview-air-state=clear] strong{color:var(--accent)}
+.overview-air-alert [data-overview-air-state=red] strong{color:var(--danger)}
+.overview-air-alert :is([data-overview-air-state=yellow],[data-overview-air-state=untyped]) strong{color:var(--warning)}
 .overview-status .stats{grid-template-columns:repeat(auto-fit,minmax(min(100%,9rem),1fr));gap:.75rem 1.5rem}
 .overview-toolbar{display:flex;align-items:flex-end;gap:1rem;flex-wrap:wrap;padding-block:1rem;border-bottom:1px solid var(--line)}
 .matrix-quick-controls{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:.5rem 1.5rem;flex:1 1 34rem;min-width:0;align-items:start}

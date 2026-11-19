@@ -21,6 +21,7 @@
     let pollSequence = 0, refreshAfterActive = false;
     const memorialForm = one('#memorial-settings');
     const airAlertForm = one('#air-alert-settings');
+    const overviewAir = one('[data-overview-air-state]');
     const rotationInputs = all('#quota-rotation-minutes,form[action="/sky-colors"] input[name=minutes]');
     const liveNodes = new Map();
     all('[data-live]').forEach(node => {
@@ -79,6 +80,12 @@
       if (node.textContent !== next) node.textContent = next;
     });
     const text = (selector, value, root = document) => setText(all(selector, root), value);
+    const setOverviewAir = (level, label, note = '') => {
+      if (!overviewAir) return;
+      if (overviewAir.dataset.overviewAirState !== level) overviewAir.dataset.overviewAirState = level;
+      text('[data-overview-air-label]', label, overviewAir);
+      text('[data-overview-air-note]', note, overviewAir);
+    };
     const clearCityThreat = () => {
       text('[data-city-threat-state]', 'Немає актуальних даних');
       text('[data-city-threat-source]', '');
@@ -125,6 +132,7 @@
       baseline = null;
       setLightOutputs(null);
       clearCityThreat();
+      setOverviewAir('unknown', 'Немає актуальних даних', 'Сеанс завершено');
       live('output-limit', '');
       connection('Сеанс завершено. Увійдіть знову.', 'error');
       const dialog = one('#device-settings-dialog');
@@ -779,6 +787,22 @@
           !memorial.time_ready ? 'Очікування часу NTP. Ручне відтворення доступне.' : '');
       }
       const airAlert = status.air_alert;
+      if (overviewAir) {
+        const level = airAlert?.official_level ?? (airAlert?.manual ? 'unknown' : airAlert?.level);
+        const active = ['yellow', 'red', 'untyped'].includes(level);
+        if (!['clear', 'yellow', 'red', 'untyped', 'unknown'].includes(level) ||
+            !['enabled', 'manual', 'fresh'].every(key => typeof airAlert[key] === 'boolean')) {
+          setOverviewAir('unknown', 'Немає актуальних даних');
+        } else {
+          const shown = airAlert.enabled && (active || airAlert.fresh) ? level : 'unknown';
+          const labels = {clear: 'Тривогу не оголошено', yellow: 'Дронова загроза',
+            red: 'Ракетна загроза', untyped: 'Тривога: тип загрози невідомий',
+            unknown: 'Немає актуальних даних'};
+          const note = airAlert.enabled && active && !airAlert.fresh ? 'Останній відомий стан · дані застаріли' :
+            airAlert.manual ? 'На матриці активний ручний тест' : '';
+          setOverviewAir(shown, airAlert.enabled ? labels[shown] : 'Моніторинг вимкнено', note);
+        }
+      }
       if (airAlertForm && airAlert && typeof airAlert === 'object' && !Array.isArray(airAlert) &&
           ['enabled', 'manual', 'fresh', 'save_failed'].every(key => typeof airAlert[key] === 'boolean') &&
           ['clear', 'yellow', 'red', 'untyped', 'unknown'].includes(airAlert.level) &&
@@ -1104,6 +1128,7 @@
           updateTokenHistory(null);
           text('[data-air-alert-state]', 'Немає актуальних даних');
           text('[data-air-alert-updated]', 'Зв’язок із контролером втрачено');
+          setOverviewAir('unknown', 'Немає актуальних даних', 'Зв’язок із контролером втрачено');
           clearCityThreat();
           connection(request.reason === 'timeout' ? 'Контролер не відповів вчасно' : 'Не вдалося оновити дані', 'error');
         }

@@ -299,6 +299,22 @@
           !memorial.time_ready ? 'Очікування часу NTP. Ручне відтворення доступне.' : '');
       }
       const airAlert = status.air_alert;
+      if (overviewAir) {
+        const level = airAlert?.official_level ?? (airAlert?.manual ? 'unknown' : airAlert?.level);
+        const active = ['yellow', 'red', 'untyped'].includes(level);
+        if (!['clear', 'yellow', 'red', 'untyped', 'unknown'].includes(level) ||
+            !['enabled', 'manual', 'fresh'].every(key => typeof airAlert[key] === 'boolean')) {
+          setOverviewAir('unknown', 'Немає актуальних даних');
+        } else {
+          const shown = airAlert.enabled && (active || airAlert.fresh) ? level : 'unknown';
+          const labels = {clear: 'Тривогу не оголошено', yellow: 'Дронова загроза',
+            red: 'Ракетна загроза', untyped: 'Тривога: тип загрози невідомий',
+            unknown: 'Немає актуальних даних'};
+          const note = airAlert.enabled && active && !airAlert.fresh ? 'Останній відомий стан · дані застаріли' :
+            airAlert.manual ? 'На матриці активний ручний тест' : '';
+          setOverviewAir(shown, airAlert.enabled ? labels[shown] : 'Моніторинг вимкнено', note);
+        }
+      }
       if (airAlertForm && airAlert && typeof airAlert === 'object' && !Array.isArray(airAlert) &&
           ['enabled', 'manual', 'fresh', 'save_failed'].every(key => typeof airAlert[key] === 'boolean') &&
           ['clear', 'yellow', 'red', 'untyped', 'unknown'].includes(airAlert.level) &&

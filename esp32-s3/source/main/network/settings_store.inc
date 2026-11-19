@@ -240,6 +240,8 @@ void serviceAirAlert() {
   const uint32_t now = uptimeMs();
   model.air.expire(now);
   model.city.expire(now, int64_t(std::time(nullptr)));
+  // A completion published during this drain must be applied before a new job.
+  const bool workerWasBusy = air_alert::busy();
   air_alert::PollResult result;
   while (air_alert::receive(result)) {
     if (result.generation != model.airGeneration) continue;
@@ -279,12 +281,20 @@ void serviceAirAlert() {
   }
   if (!scheduledOn() || !model.airWorkerReady || !model.airSettings.enabled ||
       !model.connected || model.restarting || model.manifestBusy || model.manifestReady || model.updateRequested ||
-      model.control.maintenance != Maintenance::None || air_alert::busy() || (!due(now, model.airNextAt) && !due(now, model.cityNextAt))) return;
-  // Persist a new municipal event before starting the secondary TLS request.
-  if (model.airDirty && !due(now, model.airNextAt)) return;
-  if (!backgroundTlsReady()) { model.airNextAt = model.cityNextAt = now + 5000; return; }
+      model.control.maintenance != Maintenance::None || workerWasBusy) return;
+  const bool municipalDue = due(now, model.airNextAt);
+  const bool secondaryDue = due(now, model.cityNextAt);
+  if (!municipalDue && !secondaryDue) return;
+  // Give an overdue municipal poll the worker first. Admit secondary work
+  // only after persistence and with enough time before the next municipal poll.
+  if (!municipalDue && (model.airDirty || model.airNextAt - now <= air_alert::kPollBudgetMs)) return;
+  if (!backgroundTlsReady()) {
+    if (municipalDue) model.airNextAt = now + 5000;
+    if (secondaryDue) model.cityNextAt = now + 5000;
+    return;
+  }
   air_alert::PollJob job{};
-  job.cityThreat = !due(now, model.airNextAt);
+  job.cityThreat = !municipalDue;
   job.generation = model.airGeneration;
   job.knownHeadId = model.air.telegramHeadId; job.knownEventId = model.air.telegramMessageId;
   job.knownLevel = model.air.last; job.knownEventTime = model.air.telegramMessageTime;
@@ -307,6 +317,8 @@ void fillAirAlertView(View &view) {
   view.airFresh = model.air.fresh(now, model.connected, !model.airFetchFailed);
   view.airSaveFailed = model.airSaveFailed;
   view.airLevel = model.control.airAlertLevel;
+  view.airOfficialLevel = uint8_t(view.airEnabled && (view.airFresh || air_alert::active(model.air.last)) ?
+      model.air.last : air_alert::Level::Unknown);
   view.airFailure = model.airFailure;
   view.airHttpStatus = model.airHttpStatus;
   view.airPollMs = model.airPollMs;

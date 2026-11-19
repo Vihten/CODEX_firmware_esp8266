@@ -5,7 +5,7 @@
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "led_strip.h"
+#include "driver/rmt_tx.h"
 #include "project_config.hpp"
 
 // Pure integer output policy. Current is a conservative model, not a sensor.
@@ -81,17 +81,20 @@ public:
   LedOutput(LedOutput &&) = delete;
   LedOutput &operator=(LedOutput &&) = delete;
 
-  // Call on renderer core 1. Allocates once and synchronously sends black.
-  // A failed initialization stays failed; it never repeatedly churns the heap.
+  // Call on renderer core 1. Allocates frame storage once and sends black.
   bool begin();
   // Async submits the driver buffer and returns immediately. The next show
   // drains it before copying staging pixels. Startup/black output stays sync.
   bool show(bool synchronous = true);
-  // Renderer core/task only. Drains pending output, including after a failure.
+  // Renderer core/task only. Finite drain of a healthy submission.
   bool wait();
+  bool isReady() const { return ready_; }
+  bool canRecover() const;
+  // One rate-limited recovery attempt. Persist can stop DMA without rebuilding.
+  bool recover(uint32_t now, bool restoreOutput = true);
   esp_err_t lastError() const { return lastError_; }
-  // Confirmed RMT idle/no channel; readiness or an error cannot prove this.
-  bool isQuiescent() const { return quiescent_; }
+  // A successful drain or explicit stop proves there is no outstanding DMA.
+  bool isQuiescent() const { return !transferUncertain_; }
 
   uint32_t numPixels() const { return static_cast<uint32_t>(PROJECT_PIXELS); }
   // Renderer task only; renderer selects gamma for appropriate content/modes.
@@ -138,10 +141,16 @@ public:
 
 private:
   static constexpr size_t kPixelBytes = size_t(PROJECT_PIXELS) * 3;
-  void release();
+  bool start();
+  bool stop();
+  bool destroyChannel();
+  bool fail(esp_err_t error);
+  bool owned() const;
 
   uint8_t *pixels_ = nullptr;
-  led_strip_handle_t strip_ = nullptr;
+  uint8_t *txPixels_ = nullptr;
+  rmt_channel_handle_t channel_ = nullptr;
+  rmt_encoder_handle_t encoder_ = nullptr;
   TaskHandle_t owner_ = nullptr;
   esp_err_t lastError_ = ESP_ERR_INVALID_STATE;
   uint8_t brightness_ = 0; // Adafruit encoding: 0 means full brightness.
@@ -153,6 +162,11 @@ private:
   uint32_t estimatedSupplyCurrentMa_ = 0;
   bool beginAttempted_ = false;
   bool ready_ = false;
-  bool quiescent_ = true;
-  bool pending_ = false;
+  bool enabled_ = false;
+  bool transferUncertain_ = false;
+  bool teardownFailed_ = false;
+  uint8_t stopAttempts_ = 0;
+  uint8_t recoveryAttempts_ = 0;
+  uint8_t healthyTransfers_ = 0;
+  uint32_t lastRecoveryAt_ = 0;
 };

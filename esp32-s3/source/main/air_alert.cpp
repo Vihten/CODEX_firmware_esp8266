@@ -2,6 +2,7 @@
 #include "telegram_alert.hpp"
 #include "city_threat.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -27,7 +28,7 @@ namespace air_alert {
 namespace {
 constexpr size_t kBodyLimit = 256 * 1024;
 constexpr size_t kWireLimit = 320 * 1024;
-constexpr int64_t kDeadlineUs = 8000000;
+constexpr int64_t kMunicipalPageUs = 6500000;
 constexpr uint32_t kMaximumRetryMs = 86400000;  // Fits main's signed wrap-safe due comparison.
 constexpr char kHost[] = "t.me";
 
@@ -208,11 +209,16 @@ bool wantsIo(int result) {
   return result == ESP_TLS_ERR_SSL_WANT_READ || result == ESP_TLS_ERR_SSL_WANT_WRITE;
 }
 
-PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, int64_t deadline) {
+bool beforeDeadline(int64_t deadline) { return esp_timer_get_time() < deadline; }
+
+PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, int64_t pollDeadline) {
   PollResult result;
   result.generation = job.generation;
   result.cityThreat = job.cityThreat;
   const int64_t started = esp_timer_get_time();
+  const int64_t pageDeadline = job.cityThreat ? pollDeadline :
+      std::min(pollDeadline, started + kMunicipalPageUs);
+  int64_t phaseDeadline = pageDeadline;
   int64_t phaseStarted = started;
   const auto recordPhase = [&]() {
     const uint32_t ms = uint32_t((esp_timer_get_time() - phaseStarted) / 1000);
@@ -225,10 +231,11 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
       case FetchPhase::None: break;
     }
   };
-  const auto enterPhase = [&](FetchPhase phase) {
+  const auto enterPhase = [&](FetchPhase phase, int64_t budgetUs) {
     recordPhase();
     result.fetchPhase = phase;
     phaseStarted = esp_timer_get_time();
+    phaseDeadline = job.cityThreat ? pageDeadline : std::min(pageDeadline, phaseStarted + budgetUs);
   };
   const auto finish = [&]() {
     recordPhase();
@@ -238,15 +245,16 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
   Response r;
   if (!r.body) { result.failure = Failure::Memory; return finish(); }
   char address[48] = {};
-  enterPhase(FetchPhase::Dns);
-  if (!resolve(address, sizeof(address), deadline)) {
-    result.failure = esp_timer_get_time() >= deadline ? Failure::Timeout : Failure::Dns;
+  enterPhase(FetchPhase::Dns, 1500000);
+  const bool resolved = beforeDeadline(phaseDeadline) && resolve(address, sizeof(address), phaseDeadline);
+  if (!resolved || !beforeDeadline(phaseDeadline)) {
+    result.failure = beforeDeadline(phaseDeadline) ? Failure::Dns : Failure::Timeout;
     return finish();
   }
   result.heapBeforeTls = uint32_t(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   result.largestBeforeTls = uint32_t(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   result.clockBeforeTls = int64_t(std::time(nullptr));
-  enterPhase(FetchPhase::Connect);
+  enterPhase(FetchPhase::Connect, 3000000);
   TlsSession connection;
   esp_tls_t *tls = connection.value;
   if (!tls) { result.failure = Failure::Memory; return finish(); }
@@ -257,25 +265,25 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
   };
   esp_tls_cfg_t config{};
   config.non_block = true;
-  config.timeout_ms = 8000;
   config.crt_bundle_attach = esp_crt_bundle_attach;
   config.common_name = kHost;  // Certificate verification and SNI remain the fixed DNS host.
   config.skip_common_name = false;
   int connected = 0;
-  while (esp_timer_get_time() < deadline) {
-    config.timeout_ms = int((deadline - esp_timer_get_time() + 999) / 1000);
-    if (config.timeout_ms <= 0) break;
+  for (;;) {
+    const int64_t remainingUs = phaseDeadline - esp_timer_get_time();
+    if (remainingUs <= 0) break;
+    config.timeout_ms = int((remainingUs + 999) / 1000);
     connected = esp_tls_conn_new_async(address, int(std::strlen(address)), 443, &config, tls);
-    if (connected != 0) break;
+    if (connected != 0 || !beforeDeadline(phaseDeadline)) break;
     vTaskDelay(1);
   }
-  if (connected != 1 || esp_timer_get_time() >= deadline) {
-    result.failure = esp_timer_get_time() >= deadline ? Failure::Timeout : Failure::Tls;
+  if (connected != 1 || !beforeDeadline(phaseDeadline)) {
+    result.failure = beforeDeadline(phaseDeadline) ? Failure::Tls : Failure::Timeout;
     captureTlsError();
     return finish();
   }
   char path[64] = "/s/vmroficial";
-  enterPhase(FetchPhase::Write);
+  enterPhase(FetchPhase::Write, 500000);
   if (job.cityThreat) std::snprintf(path, sizeof(path), "/s/kpszsu");
   else if (before) std::snprintf(path, sizeof(path), "/s/vmroficial?before=%lu", (unsigned long)before);
   char request[320];
@@ -284,7 +292,7 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
       "User-Agent: Codex-Matrix\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n", path);
   const size_t requestSize = size_t(requestLength);
   size_t sent = 0;
-  while (sent < size_t(requestSize) && esp_timer_get_time() < deadline) {
+  while (sent < requestSize && beforeDeadline(phaseDeadline)) {
     const int count = int(esp_tls_conn_write(tls, request + sent, requestSize - sent));
     if (count > 0) sent += size_t(count);
     else if (!wantsIo(count)) break;
@@ -299,12 +307,13 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
   settings.on_headers_complete = headersComplete;
   settings.on_body = bodyData;
   settings.on_message_complete = messageComplete;
-  bool parsed = sent == size_t(requestSize);
+  bool parsed = sent == requestSize && beforeDeadline(phaseDeadline);
   size_t wireBytes = 0;
   unsigned readyReads = 0;
+  const unsigned readsPerYield = job.cityThreat ? 1 : 32;
   // Failed/expired writes must retain their own phase, without attempting reads.
-  if (parsed && esp_timer_get_time() < deadline) enterPhase(FetchPhase::Read);
-  while (parsed && !r.complete && esp_timer_get_time() < deadline) {
+  if (parsed) enterPhase(FetchPhase::Read, 5000000);
+  while (parsed && !r.complete && beforeDeadline(phaseDeadline)) {
     char chunk[512];
     const int count = int(esp_tls_conn_read(tls, chunk, sizeof(chunk)));
     ++result.readCalls;
@@ -319,10 +328,9 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
       parsed = HTTP_PARSER_ERRNO(&parser) == HPE_OK || HTTP_PARSER_ERRNO(&parser) == HPE_PAUSED;
       break;
     } else if (!wantsIo(count)) { parsed = false; break; }
-    // Drain ready TLS data without charging one scheduler tick per 512 bytes
-    // against the shared pagination deadline. Still let idle/lower-priority
-    // tasks run after at most 32 reads (16 KiB), including tiny fragments.
-    if (parsed && !r.complete && (count < 0 || ++readyReads == 32)) {
+    // Batch ready municipal reads to leave time for pagination. Secondary
+    // reads and TLS waits yield a tick between calls.
+    if (parsed && !r.complete && (count < 0 || ++readyReads == readsPerYield)) {
       if (count < 0) ++result.readWaits;
       readyReads = 0;
       vTaskDelay(1);
@@ -335,35 +343,37 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
   // Release internal TLS buffers before the bounded HTML scan.
   captureTlsError();
   connection.close();
-  if (parsed && r.complete && !r.bad && r.status == 200 && esp_timer_get_time() < deadline) {
-    enterPhase(FetchPhase::Parse);
+  bool timedOut = !beforeDeadline(phaseDeadline);
+  if (parsed && r.complete && !r.bad && r.status == 200 && !timedOut) {
+    enterPhase(FetchPhase::Parse, 500000);
     telegram::Diagnostics diagnostic;
     result.valid = job.cityThreat ? city_threat::parsePage(r.body, r.used, page, &diagnostic) :
-        telegram::parsePage(r.body, r.used, page, &diagnostic);
-    if (!result.valid) {
+        telegram::parsePage(r.body, r.used, page, &diagnostic, beforeDeadline, phaseDeadline);
+    timedOut = !beforeDeadline(phaseDeadline);
+    if (!result.valid && !timedOut) {
       // No HTML, message contents or cookies in diagnostics. An HTTP-200 login
       // or challenge page is not a verified channel and cannot imply all-clear.
       ESP_LOGW("air-alert", "HTTP 200 payload rejected: scope=%s reason=%s bytes=%u offset=%u posts=%u",
           diagnostic.channel ? "channel" : "unverified", diagnostic.reason,
           unsigned(r.used), unsigned(diagnostic.offset), diagnostic.posts);
     }
-  } else if (r.status == 200) {
+  } else if (r.status == 200 && (!timedOut || job.cityThreat)) {
     ESP_LOGW("air-alert", "HTTP 200 response rejected: complete=%u headers=%u parser=%u bytes=%u",
         unsigned(r.complete), unsigned(!r.bad), unsigned(parsed), unsigned(r.used));
   }
-  if (result.valid && esp_timer_get_time() >= deadline) {
+  if (timedOut) {
     result.valid = false;
     result.level = Level::Unknown;
   }
   if (result.valid) result.retryAfterMs = 15000;
-  else result.failure = esp_timer_get_time() >= deadline ? Failure::Timeout :
+  else result.failure = timedOut ? Failure::Timeout :
       sent != requestSize ? Failure::Write : r.status && r.status != 200 ? Failure::Http :
       !parsed || !r.complete ? Failure::Read : Failure::Payload;
   return finish();
 }
 
 PollResult poll(const PollJob &job) {
-  const int64_t started = esp_timer_get_time(), deadline = started + kDeadlineUs;
+  const int64_t started = esp_timer_get_time(), deadline = started + int64_t(kPollBudgetMs) * 1000;
   PollResult result;
   result.generation = job.generation;
   result.cityThreat = job.cityThreat;
@@ -418,6 +428,13 @@ PollResult poll(const PollJob &job) {
     if (result.retryAfterMs < 30000) result.retryAfterMs = 30000;
   } else { result.failure = Failure::None; result.retryAfterMs = 15000; }
   result.elapsedMs = uint32_t((esp_timer_get_time() - started) / 1000);
+  if (!job.cityThreat && result.failure == Failure::Timeout)
+    ESP_LOGW("air-alert", "municipal timeout: page=%u phase=%s http=%d total_ms=%u "
+        "dns_ms=%u connect_ms=%u write_ms=%u read_ms=%u parse_ms=%u body=%u wire=%u reads=%u waits=%u",
+        unsigned(result.pageAttempt), fetchPhaseName(result.fetchPhase), result.httpStatus,
+        unsigned(result.elapsedMs), unsigned(result.dnsMs), unsigned(result.connectMs),
+        unsigned(result.writeMs), unsigned(result.readMs), unsigned(result.parseMs),
+        unsigned(result.bodyBytes), unsigned(result.wireBytes), unsigned(result.readCalls), unsigned(result.readWaits));
   return result;
 }
 

@@ -24,6 +24,22 @@ struct Diagnostics {
 
 namespace detail {
 
+struct ParseBudget {
+  bool (*beforeDeadline)(int64_t) = nullptr;
+  int64_t deadline = 0;
+  unsigned steps = 0;
+  bool expired = false;
+
+  bool check() {
+    expired = expired || (beforeDeadline && !beforeDeadline(deadline));
+    return !expired;
+  }
+
+  bool step() {
+    return !beforeDeadline || ((++steps & 1023) ? !expired : check());
+  }
+};
+
 constexpr size_t kPageLimit = 256 * 1024;
 constexpr unsigned kPostLimit = 100, kDepthLimit = 64;
 constexpr size_t kTextLimit = 8192;
@@ -102,7 +118,7 @@ inline bool entity(const char *&p, const char *end, uint32_t &cp) {
   return false;
 }
 
-inline bool classToken(Slice value, const char *wanted, bool &found) {
+inline bool classToken(Slice value, const char *wanted, bool &found, ParseBudget &budget) {
   // Relevant attributes are decoded too, rather than interpreted as raw substrings.
   const char *p = value.data, *end = p ? p + value.size : p;
   size_t matched = 0;
@@ -110,6 +126,7 @@ inline bool classToken(Slice value, const char *wanted, bool &found) {
   const size_t length = std::strlen(wanted);
   found = false;
   while (p != end) {
+    if (!budget.step()) return false;
     uint32_t cp;
     if (!(*p == '&' ? entity(p, end, cp) : scalar(p, end, cp))) return false;
     if (cp <= 0x7f && space(char(cp))) {
@@ -172,35 +189,41 @@ struct Tag {
 };
 
 class Tokenizer {
+  ParseBudget &budget;
  public:
   const char *p;
   const char *end;
-  Tokenizer(const char *body, size_t length) : p(body), end(body + length) {}
+  Tokenizer(const char *body, size_t length, ParseBudget &limit)
+      : budget(limit), p(body), end(body + length) {}
+
+  bool hasClass(Slice value, const char *wanted, bool &found) {
+    return classToken(value, wanted, found, budget);
+  }
 
   bool tag(Tag &t) {
     if (p == end || *p++ != '<' || p == end) return false;
     if (end - p >= 3 && !std::memcmp(p, "!--", 3)) {
       p += 3;
-      while (end - p >= 3 && std::memcmp(p, "-->", 3)) ++p;
+      while (end - p >= 3 && std::memcmp(p, "-->", 3)) if (!advance()) return false;
       if (end - p < 3) return false;
       p += 3; t.declaration = true; return true;
     }
     if (*p == '!') {
       const char *start = ++p;
-      while (p != end && *p != '>') ++p;
+      while (p != end && *p != '>') if (!advance()) return false;
       if (p == end || !nameEqual({start, size_t(p - start)}, "doctype html")) return false;
       ++p; t.declaration = true; return true;
     }
     if (*p == '/') { t.closing = true; ++p; }
     const char *start = p;
-    while (p != end && nameChar(*p)) ++p;
+    while (p != end && nameChar(*p)) if (!advance()) return false;
     t.name = {start, size_t(p - start)};
     if (!t.name.size || t.name.size > 32 || lower(*start) < 'a' || lower(*start) > 'z') return false;
     unsigned attributes = 0, relevant = 0;
     bool replyQuote = false;
     while (p != end) {
       const bool separated = space(*p);
-      while (p != end && space(*p)) ++p;
+      while (p != end && space(*p)) if (!advance()) return false;
       if (p == end) return false;
       if (*p == '>') { ++p; return true; }
       if (*p == '/' && !t.closing && end - p >= 2 && p[1] == '>') {
@@ -208,7 +231,7 @@ class Tokenizer {
       }
       if (t.closing || !separated || ++attributes > 64) return false;
       start = p;
-      while (p != end && nameChar(*p)) ++p;
+      while (p != end && nameChar(*p)) if (!advance()) return false;
       const Slice name{start, size_t(p - start)};
       if (!name.size) {
         // Public Telegram reply links currently end with href="..." ">.
@@ -217,7 +240,7 @@ class Tokenizer {
         bool reply = false;
         if (replyQuote || !nameEqual(t.name, "a") || end - p < 2 ||
             p[0] != '"' || p[1] != '>' ||
-            !classToken(t.classes, "tgme_widget_message_reply", reply) || !reply) return false;
+            !hasClass(t.classes, "tgme_widget_message_reply", reply) || !reply) return false;
         replyQuote = true; ++p; continue;
       }
       unsigned bit = nameEqual(name, "class") ? 1U : nameEqual(name, "data-post") ? 2U :
@@ -225,18 +248,18 @@ class Tokenizer {
       if (bit && (relevant & bit)) return false;
       relevant |= bit;
       const char *afterName = p;
-      while (p != end && space(*p)) ++p;
+      while (p != end && space(*p)) if (!advance()) return false;
       if (p == end) return false;
       if (*p != '=') {
         if (bit) return false;
         p = afterName; continue;
       }
       ++p;
-      while (p != end && space(*p)) ++p;
+      while (p != end && space(*p)) if (!advance()) return false;
       if (p == end || (*p != '\'' && *p != '"')) return false;
       const char quote = *p++;
       start = p;
-      while (p != end && *p != quote) ++p;
+      while (p != end && *p != quote) if (!advance()) return false;
       if (p == end) return false;
       const Slice value{start, size_t(p++ - start)};
       if (bit == 1) t.classes = value;
@@ -252,7 +275,7 @@ class Tokenizer {
         const char *candidate = p;
         p += 2;
         const char *start = p;
-        while (p != end && nameChar(*p)) ++p;
+        while (p != end && nameChar(*p)) if (!advance()) return false;
         Slice closing{start, size_t(p - start)};
         bool same = closing.size == name.size;
         for (size_t i = 0; same && i < name.size; ++i) same = lower(closing.data[i]) == lower(name.data[i]);
@@ -263,9 +286,15 @@ class Tokenizer {
         }
         p = candidate;
       }
-      ++p;
+      if (!advance()) return false;
     }
     return false;
+  }
+
+ private:
+  bool advance() {
+    ++p;
+    return budget.step();
   }
 };
 
@@ -358,26 +387,29 @@ struct Text {
 }  // namespace detail
 
 // Caller-owned storage is available for tasks with exceptionally small stacks.
-// No heap, recursion, global mutable storage, clocks, transport or persistence.
+// No heap, recursion, global mutable storage, transport or persistence.
 template <typename TextPolicy = detail::Text, bool AllowNestedTextWrapper = false>
 class BasicParser {
  public:
   bool parse(const char *body, size_t length, Page &out, Diagnostics *diagnostics = nullptr,
-             const char *channelPrefix = "vmroficial/") {
+             const char *channelPrefix = "vmroficial/", detail::ParseBudget budget = {}) {
     out = Page{};
     reset();
     if (diagnostics) *diagnostics = Diagnostics{};
     if (!body || !length || length > detail::kPageLimit || std::memchr(body, 0, length)) return false;
-    detail::Tokenizer tokens(body, length);
+    detail::Tokenizer tokens(body, length, budget);
     bool channelSeen = false;
     const auto fail = [&](const char *reason) {
       if (diagnostics) {
-        diagnostics->reason = reason; diagnostics->offset = size_t(tokens.p - body);
+        diagnostics->reason = budget.expired ? "deadline" : reason;
+        diagnostics->offset = size_t(tokens.p - body);
         diagnostics->posts = page_.posts; diagnostics->channel = channelSeen;
       }
       return false;
     };
+    if (!budget.check()) return fail("deadline");
     while (tokens.p != tokens.end) {
+      if (!budget.step()) return fail("deadline");
       if (*tokens.p != '<') {
         uint32_t cp;
         if (textDepth_ && !hidden()) {
@@ -423,13 +455,13 @@ class BasicParser {
         seenBody_ = true; bodyDepth_ = depth_ + 1;
       }
       bool message, text, forwarded, history, historyScript, reply, replyText;
-      if (!detail::classToken(tag.classes, "tgme_widget_message", message) ||
-          !detail::classToken(tag.classes, "tgme_widget_message_text", text) ||
-          !detail::classToken(tag.classes, "tgme_widget_message_forwarded_from", forwarded) ||
-          !detail::classToken(tag.classes, "tgme_channel_history", history) ||
-          !detail::classToken(tag.classes, "js-message_history", historyScript) ||
-          !detail::classToken(tag.classes, "tgme_widget_message_reply", reply) ||
-          !detail::classToken(tag.classes, "js-message_reply_text", replyText)) return fail("markup");
+      if (!tokens.hasClass(tag.classes, "tgme_widget_message", message) ||
+          !tokens.hasClass(tag.classes, "tgme_widget_message_text", text) ||
+          !tokens.hasClass(tag.classes, "tgme_widget_message_forwarded_from", forwarded) ||
+          !tokens.hasClass(tag.classes, "tgme_channel_history", history) ||
+          !tokens.hasClass(tag.classes, "js-message_history", historyScript) ||
+          !tokens.hasClass(tag.classes, "tgme_widget_message_reply", reply) ||
+          !tokens.hasClass(tag.classes, "js-message_reply_text", replyText)) return fail("markup");
       const bool parentHidden = hidden();
       const bool excluded = parentHidden || exclude(tag.name) || reply || replyText;
       if (history && !excluded) {
@@ -451,11 +483,15 @@ class BasicParser {
         if (hasText_) {
           // The municipal feed sometimes repeats the message-text wrapper.
           // Keep a single text region and reject any separate sibling region.
-          bool scriptText;
-          if (!AllowNestedTextWrapper || !textDepth_ || depth_ != textDepth_ || nestedText_ ||
-              !detail::classToken(tag.classes, "js-message_text", scriptText) || !scriptText)
+          if constexpr (AllowNestedTextWrapper) {
+            bool scriptText;
+            if (!textDepth_ || depth_ != textDepth_ || nestedText_ ||
+                !tokens.hasClass(tag.classes, "js-message_text", scriptText) || !scriptText)
+              return fail("markup");
+            nestedText_ = true;
+          } else {
             return fail("markup");
-          nestedText_ = true;
+          }
         } else {
           hasText_ = true; textDepth_ = depth_ + 1; text_ = TextPolicy{};
         }
@@ -464,8 +500,8 @@ class BasicParser {
         // Telegram also uses <time> for video duration, without a datetime.
         // Ignore only that known metadata shape; publication dates stay mandatory.
         bool duration, durationScript;
-        if (!detail::classToken(tag.classes, "message_video_duration", duration) ||
-            !detail::classToken(tag.classes, "js-message_video_duration", durationScript)) return fail("markup");
+        if (!tokens.hasClass(tag.classes, "message_video_duration", duration) ||
+            !tokens.hasClass(tag.classes, "js-message_video_duration", durationScript)) return fail("markup");
         if (!(duration && durationScript && !tag.date.data)) {
           if (hasTime_ || !detail::timestamp(tag.date, time_) || tag.empty) return fail("markup");
           hasTime_ = true;
@@ -487,6 +523,7 @@ class BasicParser {
       stack_[depth_++] = {uint32_t(tag.name.data - body), uint8_t(tag.name.size), uint8_t(excluded ? 1 : 0)};
       if (detail::nameEqual(tag.name, "svg")) svgDepth_ = depth_;
     }
+    if (!budget.check()) return fail("deadline");
     if (depth_ || postDepth_ || !closedHtml_ || !closedBody_ || !closedHistory_ || !page_.posts) return fail("markup");
     out = page_;
     if (diagnostics) {
@@ -552,9 +589,10 @@ using Parser = BasicParser<detail::Text, true>;
 
 static_assert(sizeof(Parser) <= 1536, "Keep parser scratch below the firmware task stack budget");
 
-inline bool parsePage(const char *body, size_t length, Page &out, Diagnostics *diagnostics = nullptr) {
+inline bool parsePage(const char *body, size_t length, Page &out, Diagnostics *diagnostics = nullptr,
+                      bool (*beforeDeadline)(int64_t) = nullptr, int64_t deadline = 0) {
   Parser parser;
-  return parser.parse(body, length, out, diagnostics);
+  return parser.parse(body, length, out, diagnostics, "vmroficial/", {beforeDeadline, deadline});
 }
 
 }  // namespace telegram

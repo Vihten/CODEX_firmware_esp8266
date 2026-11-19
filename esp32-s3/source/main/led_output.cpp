@@ -9,6 +9,8 @@ static_assert(uint64_t(PROJECT_PIXELS) == uint64_t(PROJECT_WIDTH) * PROJECT_HEIG
               "PROJECT_PIXELS must match the matrix dimensions");
 static_assert(uint64_t(PROJECT_PIXELS) <= UINT32_MAX / 3,
               "Pixel storage must fit the driver's 32-bit byte offsets");
+static_assert(uint64_t(PROJECT_PIXELS) * 3 * 255 <= UINT32_MAX,
+              "A full frame's channel sum must fit in 32 bits");
 
 namespace {
 constexpr uint32_t kResolutionHz = 10000000;
@@ -26,14 +28,21 @@ size_t IRAM_ATTR encodeWs2812(const void *data, size_t bytes, size_t offset,
   const size_t bitCount = bytes * 8;
   size_t written = 0;
   // Match the previous WS2812 timings at 10 MHz. No flash data is read in the ISR.
+  rmt_symbol_word_t zero = {}, one = {};
+  zero.level0 = one.level0 = 1;
+  zero.duration0 = 3;
+  zero.duration1 = 9;
+  one.duration0 = 9;
+  one.duration1 = 6;
   while (written < available && offset < bitCount) {
-    const bool one = (grb[offset / 8] >> (7 - offset % 8)) & 1;
-    rmt_symbol_word_t symbol = {};
-    symbol.level0 = 1;
-    symbol.duration0 = one ? 9 : 3;
-    symbol.duration1 = one ? 6 : 9;
-    symbols[written++] = symbol;
-    ++offset;
+    const uint8_t byte = grb[offset / 8];
+    unsigned mask = 0x80U >> (offset % 8);
+    // The callback may resume partway through a byte. Load that byte once.
+    do {
+      symbols[written++] = (byte & mask) ? one : zero;
+      ++offset;
+      mask >>= 1;
+    } while (mask && written < available);
   }
   *done = written < available;
   if (*done) {
@@ -230,25 +239,37 @@ bool LedOutput::wait() {
   return true;
 }
 
-bool LedOutput::show(bool synchronous) {
-  if (!ready_ || !wait()) return false;
+void LedOutput::prepareCorrection() {
   const uint8_t effectiveBrightness = getBrightness();
-  // Estimate the exact corrected frame, including raw renderer overlays. Two
-  // passes avoid a temporary frame allocation and leave staging/readback intact.
-  uint64_t channelSum = 0;
+  const int key = int(effectiveBrightness) | (int(nonzeroFloor_) << 8) | (int(gamma_) << 16);
+  if (correctionKey_ == key) return;
+  for (unsigned value = 0; value < 256; ++value)
+    correctedChannels_[value] = led_output_policy::correct(
+        uint8_t(value), gamma_, nonzeroFloor_, effectiveBrightness);
+  correctionKey_ = key;
+}
+
+bool LedOutput::show(bool synchronous) {
+  if (!ready_) return false;
+  if (!owned()) {
+    lastError_ = ESP_ERR_INVALID_STATE;
+    return false;
+  }
+  // The renderer owns the staging pixels. Estimate the next frame while DMA
+  // still owns txPixels_, then drain before touching the transmission buffer.
+  prepareCorrection();
+  uint32_t channelSum = 0;
   for (size_t i = 0; i < kPixelBytes; ++i)
-    channelSum += led_output_policy::correct(pixels_[i], gamma_, nonzeroFloor_, effectiveBrightness);
+    channelSum += correctedChannels_[pixels_[i]];
   // Commit temporal history only with a successfully submitted frame.
   auto nextEnvelope = envelope_;
   const uint32_t scale = nextEnvelope.update(
       led_output_policy::scaleFor(channelSum, numPixels()));
-  const auto output = [this, scale, effectiveBrightness](uint8_t value) {
-    return led_output_policy::scaled(
-        led_output_policy::correct(value, gamma_, nonzeroFloor_, effectiveBrightness), scale);
-  };
-  uint64_t outputSum = 0;
+  if (!wait()) return false;
+  uint32_t outputSum = 0;
   for (size_t i = 0; i < kPixelBytes; ++i) {
-    txPixels_[i] = output(pixels_[i]);
+    // Scale is at most unity, so the product fits the 32-bit hardware multiplier.
+    txPixels_[i] = uint8_t(uint32_t(correctedChannels_[pixels_[i]]) * scale / led_output_policy::kUnity);
     outputSum += txPixels_[i];
   }
 
@@ -268,9 +289,15 @@ bool LedOutput::show(bool synchronous) {
 
   envelope_ = nextEnvelope;
   outputScaleQ16_ = scale;
+  if (outputKey_ != correctionKey_ || mappedScaleQ16_ != scale) {
+    for (unsigned value = 0; value < 256; ++value)
+      outputChannels_[value] = led_output_policy::scaled(correctedChannels_[value], scale);
+    outputKey_ = correctionKey_;
+    mappedScaleQ16_ = scale;
+  }
   // Count the actual rounded payload bytes, not the unquantized scale estimate.
   const uint64_t matrixMa = uint64_t(numPixels()) * led_output_policy::kIdlePerPixelMa +
-      (outputSum * led_output_policy::kChannelMa + 254) / 255;
+      (uint64_t(outputSum) * led_output_policy::kChannelMa + 254) / 255;
   const uint64_t supplyMa = matrixMa + led_output_policy::kControllerMa + led_output_policy::kExternalMa;
   estimatedMatrixCurrentMa_ = matrixMa > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(matrixMa);
   estimatedSupplyCurrentMa_ = supplyMa > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(supplyMa);

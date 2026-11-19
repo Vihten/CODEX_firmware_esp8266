@@ -19,5 +19,5 @@ idf_component_register(
 )
 
 # The renderer must prepare the next 1000-LED frame inside a 37 ms transport budget (27 Hz).
-# Optimize this CPU-bound translation unit while retaining normal assertions.
-set_source_files_properties(renderer.cpp PROPERTIES COMPILE_OPTIONS "-O2")
+# Optimize rendering and the RMT encoder while retaining normal assertions.
+set_source_files_properties(renderer.cpp led_output.cpp PROPERTIES COMPILE_OPTIONS "-O2")

@@ -967,19 +967,22 @@ uint8_t calculateMemorialBrightnessGain() {
 
 void smoothMeteorPixel(float x, float y, const uint8_t *normal, const uint8_t *dark,
                        uint8_t opacity = 100, bool wake = false) {
+  if (!opacity || x <= -1 || x >= MATRIX_WIDTH || y <= -1 || y >= MATRIX_HEIGHT) return;
   const auto sample = subpixel::footprint(x, y);
   for (unsigned tap = 0; tap < 4; ++tap) {
     const int16_t px = sample.x + (tap & 1), py = sample.y + (tap >> 1);
     if (px < 0 || px >= MATRIX_WIDTH || py < 0 || py >= MATRIX_HEIGHT) continue;
     const uint16_t coverage = (sample.weight[tap] * opacity + 50) / 100;
-    if (!coverage || (wake && isLightObject(px, py))) continue;
+    if (!coverage) continue;
+    const bool lightObject = isLightObject(px, py);
+    if (wake && lightObject) continue;
     const uint16_t index = py * MATRIX_WIDTH + px;
     auto &pixel = meteorLayer[index];
     if (!pixel.alpha) {
       if (meteorTouchedCount == 128) continue;
       meteorTouched[meteorTouchedCount++] = index;
     }
-    const uint8_t *rgb = isLightObject(px, py) ? dark : normal;
+    const uint8_t *rgb = lightObject ? dark : normal;
     pixel.add(rgb[0], rgb[1], rgb[2], coverage);
   }
 }
@@ -1044,21 +1047,23 @@ void drawSmoothMeteor(const MeteorState &meteor) {
   const int span = max(1, (meteor.tailLength - 1) & ~1);
   for (int tail = meteor.tailLength - 1; tail >= -1; --tail) {
     if (tail >= 0 && !meteorTailPixelVisible(tail, meteor.tailLength)) continue;
+    const float step = age - (1 + tail);
+    const float x = MATRIX_WIDTH - step;
+    if (x <= -1 || x >= MATRIX_WIDTH) continue; // No subpixel tap can land on the matrix.
     const bool tip = tail == span;
     const uint8_t brightness = tail < 0 ? 100 : meteorTailBrightness(tail, meteor.tailLength, tick, meteor.sequence);
     if (!brightness) continue;
     uint8_t normal[3], dark[3];
     meteorGlowPalette(meteor.rgb, tip ? 18 : brightness, tail < 0 ? 100 : (span - tail) * 70 / span, normal, dark);
-    const float step = age - (1 + tail);
     const float y = subpixel::trajectory(step, total, meteor.sequence, meteor.attributed);
     const uint8_t opacity = tip ? (brightness * 100 + 9) / 18
         : meteor.claude && tail <= 0 ? meteor_style::headOpacity(age, meteor.sequence) : 100;
-    smoothMeteorPixel(MATRIX_WIDTH - step, y, normal, dark, opacity);
+    smoothMeteorPixel(x, y, normal, dark, opacity);
     if (meteor.claude && !tip) {
       const unsigned distance = tail < 0 ? 0 : unsigned(tail);
       const uint8_t wingOpacity = 32 * (unsigned(span) - distance) / unsigned(span);
-      smoothMeteorPixel(MATRIX_WIDTH - step, y - .32f, normal, dark, wingOpacity);
-      smoothMeteorPixel(MATRIX_WIDTH - step, y + .32f, normal, dark, wingOpacity);
+      smoothMeteorPixel(x, y - .32f, normal, dark, wingOpacity);
+      smoothMeteorPixel(x, y + .32f, normal, dark, wingOpacity);
     }
   }
   const unsigned cadence = meteor.level == LOAD_LOW ? 7 : meteor.level == LOAD_MEDIUM ? 6 : meteor.level == LOAD_HIGH ? 5 : 4;

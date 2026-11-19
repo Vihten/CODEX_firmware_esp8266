@@ -114,10 +114,7 @@ public:
   // include rounded-up PWM current and idle; zero before the first submission.
   // Same renderer-task ownership as other accessors; no cross-task synchronization.
   // Transform a staging byte exactly as the last successful submission did.
-  uint8_t submittedChannel(uint8_t value) const {
-    return led_output_policy::scaled(led_output_policy::correct(
-        value, gamma_, nonzeroFloor_, getBrightness()), outputScaleQ16_);
-  }
+  uint8_t submittedChannel(uint8_t value) const { return outputChannels_[value]; }
   uint8_t getOutputLimitPercent() const {
     return uint8_t(outputScaleQ16_ * 100U / led_output_policy::kUnity);
   }
@@ -146,6 +143,7 @@ private:
   bool destroyChannel();
   bool fail(esp_err_t error);
   bool owned() const;
+  void prepareCorrection();
 
   uint8_t *pixels_ = nullptr;
   uint8_t *txPixels_ = nullptr;
@@ -156,6 +154,11 @@ private:
   uint8_t brightness_ = 0; // Adafruit encoding: 0 means full brightness.
   bool gamma_ = false;
   uint8_t nonzeroFloor_ = 0;
+  uint8_t correctedChannels_[256] = {};
+  uint8_t outputChannels_[256] = {};
+  int correctionKey_ = -1;
+  int outputKey_ = -1;
+  uint32_t mappedScaleQ16_ = 0;
   led_output_policy::Envelope envelope_;
   uint32_t outputScaleQ16_ = led_output_policy::kUnity;
   uint32_t estimatedMatrixCurrentMa_ = 0;

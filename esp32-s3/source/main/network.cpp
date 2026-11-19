@@ -34,6 +34,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <sys/time.h>
 #include <cstring>
 #include <memory>
 #include <new>

@@ -524,7 +524,7 @@ void serviceMaintenance() {
     }
   }
   if (model.recoveryRestart && (model.connected || model.memorial.active ||
-      model.control.memorialActive || model.render.memorialTransition || model.wifiChanged)) {
+      model.control.memorialActive || model.control.memorialScheduled || model.render.memorialTransition || model.wifiChanged)) {
     model.restarting = model.recoveryRestart = false;
     if (model.control.maintenance == Maintenance::Restart) releaseMaintenance();
     return;
@@ -582,7 +582,7 @@ void serviceMaintenance() {
         model.persistRetryAt = uptimeMs() + (saved ? 0 : 5000); releaseMaintenance(); break;
       }
       case Maintenance::Ota:
-        if (model.dirty || model.weeklyDirty || model.lifetimeDirty || daily_runtime::dirty() || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || model.skyColorsDirty || web_auth::pendingSave() || web_auth::busy() || model.restarting || model.control.memorialActive || model.render.memorialTransition) { releaseMaintenance(); break; }
+        if (model.dirty || model.weeklyDirty || model.lifetimeDirty || daily_runtime::dirty() || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || model.skyColorsDirty || web_auth::pendingSave() || web_auth::busy() || model.restarting || model.control.memorialActive || model.control.memorialScheduled || model.render.memorialTransition) { releaseMaintenance(); break; }
         if (!model.render.assetsReady || model.render.ledError) {
           otaMessage("OTA refused: renderer unhealthy"); model.manifestReady = false; releaseMaintenance(); break;
         }
@@ -619,7 +619,8 @@ void serviceMaintenance() {
     releaseMaintenance();
     return;
   }
-  if (air_alert::busy()) return;
+  // Defer new flash barriers from the scheduled close through the memorial minute.
+  if (air_alert::busy() || model.control.memorialScheduled) return;
   if ((model.dirty && now - model.dirtyAt >= 300 && due(now, model.persistRetryAt)) ||
       (web_auth::pendingSave() && due(now, model.persistRetryAt)) ||
       (diagnostic_persistence::due(now, model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
@@ -638,7 +639,7 @@ void serviceMaintenance() {
     if (!model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !daily_runtime::dirty() && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !model.skyColorsDirty && !web_auth::pendingSave() && !web_auth::busy() && now - model.restartAt >= 1500 && !activeHandlers.load()) requestMaintenance(Maintenance::Restart);
     return;
   }
-  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !daily_runtime::dirty() && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !model.skyColorsDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
+  if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !daily_runtime::dirty() && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !model.skyColorsDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.control.memorialScheduled && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
   if (!model.connected || model.dirty || !model.render.assetsReady || model.render.ledError) return;
   if (due(now, model.otaAt) && (model.control.on || model.updateRequested)) queueManifestCheck();
 }

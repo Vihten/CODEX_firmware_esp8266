@@ -349,11 +349,14 @@ void fillAirAlertView(View &view) {
 }
 memorial::Clock memorialClock() {
   memorial::Clock clock;
-  const time_t now = std::time(nullptr);
+  timeval wall{};
+  if (gettimeofday(&wall, nullptr) != 0) return clock;
+  const time_t now = wall.tv_sec;
   if (now < 1700000000) return clock;
   tm local{}; localtime_r(&now, &local);
   clock.date = uint32_t((local.tm_year + 1900) * 10000 + (local.tm_mon + 1) * 100 + local.tm_mday);
   clock.hour = uint8_t(local.tm_hour); clock.minute = uint8_t(local.tm_min); clock.second = uint8_t(local.tm_sec);
+  clock.millisecond = uint16_t(wall.tv_usec / 1000);
   clock.valid = true;
   return clock;
 }

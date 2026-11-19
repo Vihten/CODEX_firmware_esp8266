@@ -391,8 +391,10 @@ void updateControl() {
   model.control.airAlertBlink = model.city.active() &&
       (model.airSettings.enabled || model.city.demo) &&
       air_alert::active(air_alert::Level(model.control.airAlertLevel));
-  model.memorial.update(now, memorialClock(), model.memorialEnabled, model.control.on);
+  const auto clock = memorialClock();
+  model.memorial.update(uptimeMs(), clock, model.memorialEnabled, model.control.on);
   model.control.memorialActive = model.memorial.active;
+  model.control.memorialScheduled = model.memorial.preparing || (model.memorial.active && !model.memorial.manual);
   model.control.memorialStartedAt = model.memorial.startedAt;
   model.control.memorialDurationMs = model.memorial.durationMs;
   if (model.blackHolePreview && uint32_t(now - model.blackHolePreviewStartedAt) >= 60000U)

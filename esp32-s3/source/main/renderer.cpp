@@ -1519,9 +1519,11 @@ void renderTask(void *) {
   bool parked = false;
   uint32_t ipParkedAt = 0;
   bool memorialWasActive = false;
+  bool memorialWasScheduled = false;
   bool memorialSceneVisible = false, memorialSceneTargetOn = false;
   uint32_t memorialSceneProgress = 0, memorialQuota = 0;
   uint32_t memorialStart = 0, memorialCloseMs = 0, memorialSlideMs = 0;
+  uint32_t memorialPreparationAt = 0;
   bool memorialExiting = false;
   uint32_t memorialPosition = 0, memorialForwardFrom = 0;
   uint32_t memorialExitAt = 0, memorialExitFrom = 0;
@@ -1617,15 +1619,22 @@ void renderTask(void *) {
         blackHolePreview.pause(now);
       }
       if (blackHoleActive()) stopMemorialMeteors();
-      const bool memorialActive = control.on && lightOpeningReady && control.memorialActive &&
+      const bool memorialScheduled = control.memorialScheduled;
+      const int32_t untilMemorial = int32_t(control.memorialStartedAt - now);
+      const bool memorialPreparing = control.on && lightOpeningReady && memorialScheduled &&
+          !control.memorialActive && untilMemorial > 0;
+      const bool memorialActive = control.on && lightOpeningReady &&
+          (control.memorialActive || (memorialScheduled && untilMemorial <= 0)) &&
           memorial::active(now, control.memorialStartedAt, control.memorialDurationMs);
+      const bool memorialEngaged = memorialPreparing || memorialActive;
       const bool previousMemorialTransition = status.memorialTransition;
       const bool memorialOff = !control.on && previousMemorialTransition;
       if (memorialOff) memorialForceOff = true;
       if (control.on) memorialForceOff = false;
-      const bool newMemorial = memorialActive &&
-          (!memorialWasActive || memorialStart != control.memorialStartedAt);
-      if (memorialWasActive && !memorialActive && control.on) {
+      const bool newMemorial = memorialEngaged &&
+          (!memorialWasActive || memorialWasScheduled != memorialScheduled ||
+          (!memorialScheduled && memorialStart != control.memorialStartedAt));
+      if (memorialWasActive && !memorialEngaged && control.on) {
         memorialExiting = true;
         memorialExitAt = now;
         memorialExitFrom = memorialPosition;
@@ -1633,6 +1642,7 @@ void renderTask(void *) {
       if (newMemorial) {
         stopMemorialMeteors();
         memorialStart = control.memorialStartedAt;
+        memorialPreparationAt = now;
         if (!previousMemorialTransition) {
           memorialSceneVisible = sceneVisible;
           memorialSceneTargetOn = sceneTargetOn;
@@ -1641,7 +1651,8 @@ void renderTask(void *) {
           memorialPaletteGain = calculateMemorialBrightnessGain();
           // Reserve at least half the remaining minute for the settled scene.
           memorialSlideMs = min(uint32_t(900), control.memorialDurationMs / 4);
-          const uint32_t closeBudget = control.memorialDurationMs / 2 - memorialSlideMs;
+          const uint32_t closeBudget = memorialScheduled ? (memorialPreparing ? uint32_t(untilMemorial) : sceneProgress) :
+              control.memorialDurationMs / 2 - memorialSlideMs;
           memorialCloseMs = sceneVisible && status.assetsReady
               ? min(sceneProgress, closeBudget) : 0;
           memorialPosition = 0;
@@ -1651,8 +1662,9 @@ void renderTask(void *) {
         memorialForwardFrom = memorialPosition;
         memorialExiting = false;
       }
+      if (memorialScheduled && memorialEngaged) memorialStart = control.memorialStartedAt;
       if (memorialOff) memorialExiting = false;
-      status.memorialTransition = memorialActive || memorialExiting;
+      status.memorialTransition = memorialEngaged || memorialExiting;
       const bool memorialTransition = status.memorialTransition || previousMemorialTransition;
       quotaRecovery.observe(control.quotaRecoveryEpoch,
           control.on && control.connected && control.accountLinked && sceneVisible &&
@@ -1703,6 +1715,11 @@ void renderTask(void *) {
         if (memorialExiting) {
           const uint32_t reversed = min(memorialExitFrom, uint32_t(now - memorialExitAt));
           memorialPosition = memorialExitFrom - reversed;
+        } else if (memorialPreparing) {
+          memorialPosition = min(memorialCloseMs, uint32_t(now - memorialPreparationAt));
+        } else if (memorialActive && memorialScheduled) {
+          // The first frame at the wall-clock deadline displays the full memorial.
+          memorialPosition = total;
         } else {
           memorialPosition = uint32_t(min(uint64_t(total), uint64_t(memorialForwardFrom) + elapsed));
         }
@@ -1720,6 +1737,10 @@ void renderTask(void *) {
             memorialCloseMs = memorialPosition;
             strip.clear();
           }
+        } else if (memorialPreparing) {
+          sceneProgress = 0;
+          sceneVisible = false;
+          strip.clear();
         } else {
           sceneProgress = 0;
           sceneVisible = false;
@@ -1805,7 +1826,8 @@ void renderTask(void *) {
           }
         }
       }
-      memorialWasActive = memorialActive;
+      memorialWasActive = memorialEngaged;
+      memorialWasScheduled = memorialScheduled;
     } else {
       if (fresh) applyControlAgents();
       const uint32_t now = millis();

@@ -56,6 +56,7 @@ struct ControlFrame {
   bool blackHolePreview = false;
   uint32_t blackHolePreviewStartedAt = 0;
   bool memorialActive = false;
+  bool memorialScheduled = false;
   uint32_t memorialStartedAt = 0;
   uint32_t memorialDurationMs = 60000;
   Maintenance maintenance = Maintenance::None;

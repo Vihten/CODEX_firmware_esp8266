@@ -206,6 +206,7 @@ const char *portalMatrixState(const View &view) {
   if (!view.render.assetsReady || view.render.ledError) return "Помилка відмальовування";
   if (!view.control.on) return view.render.sceneVisible && view.render.sceneProgress ? "Вимикається" : portal_strings::off;
   if (view.control.memorialActive) return "Хвилина мовчання";
+  if (view.control.memorialScheduled) return "Підготовка до хвилини мовчання";
   if (view.render.memorialTransition) return "Повернення до неба";
   if (!view.render.sceneVisible) return "Показ IP-адреси";
   return view.render.sceneProgress < PROJECT_SCENE_DURATION_MS ? "Запускається" : portal_strings::on;

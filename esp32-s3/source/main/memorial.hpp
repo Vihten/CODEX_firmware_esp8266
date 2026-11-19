@@ -2,22 +2,28 @@
 #include <cstdint>
 
 namespace memorial {
+constexpr uint32_t kPreparationMs = 5000; // Four-second scene close plus one second of margin.
+constexpr uint32_t kMinuteMs = 60000;
+
 struct Clock {
   uint32_t date = 0; // Sortable local Kyiv day key, e.g. YYYYMMDD.
   uint8_t hour = 0, minute = 0, second = 0;
   bool valid = false;
+  uint16_t millisecond = 0;
 };
 
 struct State {
-  bool active = false, manual = false;
-  uint32_t startedAt = 0, durationMs = 60000;
+  bool active = false, manual = false, preparing = false;
+  uint32_t startedAt = 0, durationMs = kMinuteMs;
   uint32_t consumedDate = 0, lastDate = 0;
 
   void update(uint32_t now, const Clock &clock, bool enabled, bool matrixOn) {
     const bool valid = clock.valid && clock.date && clock.hour < 24 &&
-                       clock.minute < 60 && clock.second < 60;
+                       clock.minute < 60 && clock.second < 60 && clock.millisecond < 1000;
     if (valid && clock.date > lastDate) lastDate = clock.date;
     windowDate_ = valid && clock.hour == 9 && clock.minute == 0 ? clock.date : 0;
+    const bool wasPreparing = preparing;
+    preparing = false;
     if (!matrixOn) {
       clear();
       return;
@@ -26,22 +32,30 @@ struct State {
     if (active && manual && windowDate_) consume(windowDate_);
     if (active && ((!manual && !enabled) || uint32_t(now - startedAt) >= durationMs))
       clear();
-    if (active || !enabled || !windowDate_ || windowDate_ < lastDate ||
-        windowDate_ <= consumedDate) return;
+    if (active || !enabled || !valid || clock.date < lastDate || clock.date <= consumedDate) return;
+    const uint32_t minuteMs = uint32_t(clock.second) * 1000 + clock.millisecond;
+    if (clock.hour == 8 && clock.minute == 59 && kMinuteMs - minuteMs <= kPreparationMs) {
+      preparing = true;
+      startedAt = now + kMinuteMs - minuteMs;
+      durationMs = kMinuteMs;
+      return;
+    }
+    if (!windowDate_) return;
     consume(windowDate_);
     active = true;
     manual = false;
-    startedAt = now;
-    durationMs = uint32_t(60 - clock.second) * 1000;
+    startedAt = wasPreparing ? now - minuteMs : now;
+    durationMs = wasPreparing ? kMinuteMs : kMinuteMs - minuteMs;
   }
 
   // The caller must freshly validate matrix power before requesting a preview.
   bool start(uint32_t now) {
     if (active) return false;
+    preparing = false;
     active = true;
     manual = true;
     startedAt = now;
-    durationMs = 60000;
+    durationMs = kMinuteMs;
     if (windowDate_) consume(windowDate_);
     return true;
   }
@@ -61,6 +75,7 @@ struct State {
   void clear() {
     active = false;
     manual = false;
+    preparing = false;
   }
 };
 } // namespace memorial

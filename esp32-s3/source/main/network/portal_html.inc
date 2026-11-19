@@ -102,7 +102,7 @@ void writeAgentUpgrade(Html &html, const View &view, uint32_t id, bool online) {
   });
 }
 void writeAgentControls(Html &html, const char *name, uint32_t id, uint32_t rgb,
-                        bool online, unsigned activity, int remaining, bool custom, const View *view = nullptr) {
+                        bool online, unsigned activity, bool custom, const View *view = nullptr) {
   html.render("templates/agent/heading-open.html", [&](unsigned token) {
     switch (token) {
       case 0: html.format("%08lX", (unsigned long)id); break;
@@ -131,10 +131,6 @@ void writeAgentControls(Html &html, const char *name, uint32_t id, uint32_t rgb,
       case 3: html.format("%06lX", (unsigned long)(rgb & 0xFFFFFFU)); break;
     }
   });
-  html.file("templates/agent/remaining-open.html");
-  if (online && remaining >= 0) html.format("%d%%", remaining);
-  else html.file("templates/agent/missing-value.html");
-  html.file("templates/agent/metrics-close.html");
   html.file("templates/agent/color-form-open.html");
   html.render("templates/agent/client-input.html", [&](unsigned token) {
     switch (token) {
@@ -142,10 +138,7 @@ void writeAgentControls(Html &html, const char *name, uint32_t id, uint32_t rgb,
     }
   });
   html.render("templates/agent/color-input-open.html", [&](unsigned token) {
-    switch (token) {
-      case 0: html.format("%08lX", (unsigned long)id); break;
-      case 1: html.format("%08lX", (unsigned long)id); break;
-    }
+    if (!token) html.format("%08lX", (unsigned long)id);
   });
   html.escaped(name);
   html.render("templates/agent/color-input-value.html", [&](unsigned token) {
@@ -176,8 +169,7 @@ void writeAgents(Html &html, const View &view) {
     if (agent.present != online || (!agent.present && !agent.name[0])) continue;
     ++known;
     writeAgentControls(html, agent.name, agent.clientId, agent.rgb,
-                       agent.present, agent.activity, agent.quotaForPairedAccount ? agent.remaining : -1,
-                       view.overrideColor[i], &view);
+                       agent.present, agent.activity, view.overrideColor[i], &view);
   }
   for (const auto &entry : view.savedColors) {
     if (!entry.used) continue;
@@ -187,13 +179,13 @@ void writeAgents(Html &html, const View &view) {
     if (listed) continue;
     char name[24]; std::snprintf(name, sizeof(name), "Агент %08lX", (unsigned long)entry.clientId);
     ++known;
-    writeAgentControls(html, name, entry.clientId, entry.rgb, false, 0, -1, true, &view);
+    writeAgentControls(html, name, entry.clientId, entry.rgb, false, 0, true, &view);
   }
   if (!known) html.file("templates/agents/empty.html");
   html.file("templates/agents/list-close.html");
   html.file("templates/agents/filter-footer.html");
   html.file("templates/agents/template-open.html");
-  writeAgentControls(html, "", 0, 0x56d39b, false, 0, -1, false, &view);
+  writeAgentControls(html, "", 0, 0x56d39b, false, 0, false, &view);
   html.file("templates/agents/template-close.html");
 }
 

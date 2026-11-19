@@ -938,7 +938,6 @@
         row.dataset.activity = String(activity);
         text('[data-agent-state]', online ? portalStrings.online : portalStrings.offline, row);
         text('[data-agent-activity]', percent(activity), row);
-        text('[data-agent-remaining]', online && agent.quota_source === true && finite(agent.remaining) && agent.remaining >= 0 && agent.remaining <= 100 ? percent(agent.remaining) : missing, row);
         if (agent && typeof agent.name === 'string') text('[data-agent-name]', agent.name, row);
         if (agent && typeof agent.custom_color === 'boolean')
           text('[data-agent-color-mode]', agent.custom_color ? 'Власний колір' : 'Автоматичний колір', row);

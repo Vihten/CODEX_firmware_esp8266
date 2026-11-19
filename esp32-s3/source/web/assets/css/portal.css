@@ -132,15 +132,14 @@ progress::-webkit-progress-bar{background:#343d37}
 progress::-webkit-progress-value{background:var(--accent)}
 progress::-moz-progress-bar{background:var(--accent)}
 .agent-metrics meter{width:clamp(2rem,6vw,4rem)}
-.agent-color{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:.65rem;align-items:end;max-width:32rem}
-.color-field label{font-size:.875rem;margin-bottom:.5rem}
+.agent-color{display:flex;align-items:center;flex-wrap:wrap;gap:.45rem;padding-bottom:.35rem}
 .color-value{display:flex;align-items:center;gap:.65rem;min-width:0}
 .color-value output{font-family:ui-monospace,Consolas,monospace;font-size:.875rem;color:var(--text);overflow-wrap:anywhere}
 .agent-color input[type=color]{appearance:none;width:44px;height:44px;flex:none;margin:0;padding:4px;background:var(--surface);border:1px solid #78877c;border-radius:4px;cursor:pointer}
 input[type=color]::-webkit-color-swatch-wrapper{padding:0}
 input[type=color]::-webkit-color-swatch{border:0;border-radius:2px}
 input[type=color]::-moz-color-swatch{border:0;border-radius:2px}
-.agent-color button{margin:0;font-size:.875rem;padding:.65rem .85rem}
+
 .agent-summary{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:.5rem .65rem;align-items:center;padding:.9rem 0;border-bottom:1px solid var(--line);min-width:0}
 .agent-name{display:flex;align-items:center;gap:.65rem;min-width:0}
 .agent-name strong{min-width:0;overflow-wrap:anywhere}
@@ -152,21 +151,22 @@ table.agent-summary{display:table;width:100%;border-collapse:collapse}
 table.agent-summary th,table.agent-summary td{padding:.75rem .4rem;text-align:left;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
 table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
 .weekly-scroll{overflow-x:auto}
-.agent-update-panel{margin-top:1rem;max-width:32rem}
-.agent-upgrade{display:grid;gap:.5rem;max-width:28rem}
-.agent-upgrade button{justify-self:start}
-.agent-management{margin-top:1rem;max-width:32rem}
+.agent-update-panel,.agent-uninstall{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.35rem .5rem}
+.agent-management{display:grid;gap:.4rem;margin-top:.5rem}
+.agent-update-panel>p{flex:1 1 9rem}
+.agent-uninstall>.checkbox-label{flex:1 1 9rem;font-size:.8125rem;min-height:36px}
+.agent-tools p{font-size:.8125rem;line-height:1.35}
+.agent-color button,.agent-tools button{min-height:36px;margin:0;font-size:.8125rem;padding:.35rem .65rem}
 .agent-tools,.agent-color-disclosure{margin:0;padding:0;border:0;min-width:0}
 .agent-tools>summary,.agent-color-disclosure>summary{align-content:center;min-height:2rem;font-size:.8125rem;color:var(--muted);width:fit-content}
 .agent-tools[open]>summary,.agent-color-disclosure[open]>summary{color:var(--text)}
-.agent-color-disclosure[open]>summary{margin-bottom:.5rem}
-.agent-tools .agent-update-panel{margin-top:.5rem}
 .agent-tools [data-agent-management-state]:empty{display:none}
-.agent-tools .agent-uninstall{border-top:1px solid var(--line);padding-top:1rem}
+.agent-tools .agent-uninstall{border-top:1px solid var(--line);padding-top:.4rem}
+.agent-uninstall>.checkbox-label{margin:0}
 .stat-capacity{font-size:.875rem;color:var(--muted);white-space:nowrap}
-.agent-name-row{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
-.agent-name-row input{flex:1 1 12rem;min-width:0}
-.agent-uninstall{margin-top:1rem}
+.agent-name-row{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap}
+.agent-name-row label{font-size:.8125rem}
+.agent-name-row input[name=name]{width:auto;flex:1 1 6rem;min-height:36px;padding:.35rem .55rem;font-size:.875rem}
 .weekly-refresh{display:inline-flex;align-items:center;gap:.5rem}
 [data-weekly-pending],[data-lifetime-pending]{overflow-wrap:anywhere}
 .weekly-table{width:100%;min-width:36rem;border-collapse:collapse;font-variant-numeric:tabular-nums}
@@ -200,7 +200,7 @@ table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
 .pill{display:inline-block;color:var(--muted);font-size:.8125rem}
 @media(hover:hover) and (pointer:fine){button:not(:disabled):hover{filter:brightness(1.08)}.secondary:not(:disabled):hover,.quickbuttons button:hover,.filter button:hover,.button:hover{border-color:var(--accent)}a:hover{color:var(--text)}}
 @media(max-width:760px){.shell{padding-inline:1.25rem}.workspace{grid-template-columns:minmax(0,1fr);gap:0}.stats{grid-template-columns:repeat(3,minmax(0,1fr))}.section{padding-block:1.5rem}}
-@media(max-width:440px){.shell{padding-inline:1rem}.topbar{padding-top:1.25rem;gap:1rem}.header-status{width:100%;justify-content:space-between}.tabs{gap:1.25rem}.stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.form-grid{grid-template-columns:minmax(0,1fr)}.agent-color{grid-template-columns:repeat(2,minmax(0,1fr))}.color-field{grid-column:1/-1;margin-bottom:.3rem}.agent-metrics{gap:1rem}.agent-summary{grid-template-columns:minmax(0,1fr) auto}.agent-summary [data-agent-state]{grid-column:1;grid-row:2}.agent-summary [data-agent-activity]{grid-column:2;grid-row:1/3}.actions>button,.actions>form{flex:1 1 auto}.actions>form>button{width:100%}.system-list>div{gap:.5rem}.days{gap:.35rem}.days label{padding:.4rem .5rem}}
+@media(max-width:440px){.shell{padding-inline:1rem}.topbar{padding-top:1.25rem;gap:1rem}.header-status{width:100%;justify-content:space-between}.tabs{gap:1.25rem}.stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.form-grid{grid-template-columns:minmax(0,1fr)}.agent-summary{grid-template-columns:minmax(0,1fr) auto}.agent-summary [data-agent-state]{grid-column:1;grid-row:2}.agent-summary [data-agent-activity]{grid-column:2;grid-row:1/3}.actions>button,.actions>form{flex:1 1 auto}.actions>form>button{width:100%}.system-list>div{gap:.5rem}.days{gap:.35rem}.days label{padding:.4rem .5rem}}
 
 /* Token history: seven Kyiv calendar dates, with details on demand. */
 .token-history{--history-zero:#172438;--history-1:#21466e;--history-2:#347fc1;--history-3:#92c9ec;--history-4:#edf7ff}
@@ -393,11 +393,10 @@ form[action='/air-alert'] .actions>button{min-width:0;max-width:100%;white-space
 .matrix-quick-controls>.overview-advanced-actions{grid-column:1;grid-row:4;margin:0;align-self:start}
 .matrix-quick-controls>form[action='/brightness']{grid-row:2/5}
 .power-limit-note{font-size:.75rem;line-height:1.5;margin-top:.35rem;color:var(--muted)}
-.agent-color{max-width:none}
 [data-agent-list]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 2rem}
 .agent:not(:has(>details[open])){display:grid;grid-template-columns:max-content minmax(0,1fr);column-gap:.9rem}
 .agent:not(:has(>details[open]))>:not(details){grid-column:1/-1}
-@media(pointer:coarse){.agent-tools>summary,.agent-color-disclosure>summary{min-height:44px}}
+@media(any-pointer:coarse){.agent-tools>summary,.agent-color-disclosure>summary,.agent-color button,.agent-tools button,.agent-name-row input[name=name],.agent-uninstall>.checkbox-label{min-height:44px}}
 .agent-page-nav a:focus-visible{outline-offset:2px}
 [data-weekly-state],[data-weekly-incomplete],[data-lifetime-state]{font-size:.8125rem;color:var(--muted);margin-top:.65rem}
 @media(hover:hover) and (pointer:fine){.agent-page-nav a:hover{border-color:var(--accent)}}

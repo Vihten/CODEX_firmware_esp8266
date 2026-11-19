@@ -1,16 +1,16 @@
 {
-  "version": 1795174000000,
+  "version": 1795175000000,
   "board": "esp32-s3-n16r8",
   "appProject": "led_forge_s3",
   "firmwareUrl": "https://api.github.com/repos/Vihten/CODEX_firmware_esp8266/contents/esp32-s3/firmware.bin?ref=main",
   "compression": "none",
-  "sha256": "44fc533fb09bc2fcc4d0eaae67ca91a7ef9a56d712a1735500e86a134393c66e",
-  "size": 3353136,
+  "sha256": "62e6e1dc3b99c28efad53c93a164dad904d28e9c1560fc7cd8dbd2378de8b086",
+  "size": 3352608,
   "ledDataPin": 18,
   "ledTransport": "rmt-dma",
   "targetFps": 30,
   "outputFps": 27,
   "maximumAgents": 12,
   "accountCredentialsIncluded": false,
-  "publishedAt": "2026-11-19T11:48:57.874930Z"
+  "publishedAt": "2026-11-19T12:02:44.356954Z"
 }

@@ -936,38 +936,6 @@ void stopMemorialMeteors() {
   meteorTouchedCount = 0;
 }
 
-uint8_t calculateMemorialBrightnessGain() {
-  if (!status.assetsReady) return 255;
-  const unsigned referenceFrame = min(unsigned(FRAME_COUNT - 1), unsigned(100 - min(control.remainingPercent, uint8_t(100))));
-  const uint8_t *reference = sceneVisible && sceneProgress == SCENE_DURATION_MS
-      ? entrancePixels : assets.animation + referenceFrame * FRAME_BYTES;
-  const auto colors = memorial::palette(4000, 10000);
-  const auto holeFrame = black_hole::frame(blackHole.animationTime());
-  uint32_t referenceLight = 0, memorialLight = 0;
-  for (int y = 0; y < MATRIX_HEIGHT; ++y) {
-    for (int x = 0; x < MATRIX_WIDTH; ++x) {
-      const unsigned index = y * MATRIX_WIDTH + x;
-      uint8_t rgb[3];
-      std::memcpy(rgb, reference + index * 3, 3);
-      const uint8_t type = reference == entrancePixels ? effectMask[index] :
-          assets.effects[referenceFrame * EFFECT_BYTES + index];
-      preserveNightSkyPixel(rgb, index, type, control.brightness);
-      if (blackHoleAmount()) {
-        const auto hole = black_hole::pixel(x, y, MATRIX_WIDTH, MATRIX_HEIGHT, holeFrame);
-        const uint8_t amount = blackHoleAmount();
-        rgb[0] = (uint16_t(rgb[0]) * (255 - amount) + uint16_t(hole.red) * amount + 127) / 255;
-        rgb[1] = (uint16_t(rgb[1]) * (255 - amount) + uint16_t(hole.green) * amount + 127) / 255;
-        rgb[2] = (uint16_t(rgb[2]) * (255 - amount) + uint16_t(hole.blue) * amount + 127) / 255;
-      }
-      referenceLight += memorial::luminance({rgb[0], rgb[1], rgb[2]});
-      memorialLight += memorial::luminance(memorial::pixel(x, y, MATRIX_WIDTH, MATRIX_HEIGHT, colors));
-    }
-  }
-  // Match the base scene, excluding meteor overlays and the user's global
-  // brightness. Capture once so twinkling or new telemetry cannot pump the gain.
-  return memorial::matchingGain(referenceLight, memorialLight);
-}
-
 void smoothMeteorPixel(float x, float y, const uint8_t *normal, const uint8_t *dark,
                        uint8_t opacity = 100, bool wake = false) {
   if (!opacity || x <= -1 || x >= MATRIX_WIDTH || y <= -1 || y >= MATRIX_HEIGHT) return;
@@ -1226,9 +1194,10 @@ void drawIpLine(const char *text, int16_t y, uint8_t alpha = 255) {
   const int16_t origin = max(0, (MATRIX_WIDTH - width) / 2);
   for (size_t character = 0; character < length; ++character) {
     const uint8_t glyph = ipGlyphIndex(text[character]);
+    // The cyan digits and amber dots share the quota sky's corrected highlight level.
     const uint32_t color = text[character] == '.'
-        ? strip.Color(alpha, uint16_t(118) * alpha / 255, uint16_t(24) * alpha / 255)
-        : strip.Color(uint16_t(54) * alpha / 255, uint16_t(214) * alpha / 255, alpha);
+        ? strip.Color(uint16_t(232) * alpha / 255, uint16_t(160) * alpha / 255, uint16_t(35) * alpha / 255)
+        : strip.Color(uint16_t(48) * alpha / 255, uint16_t(188) * alpha / 255, uint16_t(226) * alpha / 255);
     for (uint8_t column = 0; column < 5; ++column) {
       for (uint8_t row = 0; row < 7; ++row) {
         const int16_t x = origin + character * 6 + column;
@@ -1531,7 +1500,6 @@ void renderTask(void *) {
   uint32_t memorialExitAt = 0, memorialExitFrom = 0;
   uint32_t memorialParkedAt = 0;
   bool memorialForceOff = false;
-  uint8_t memorialPaletteGain = 255;
   uint32_t previousRenderAt = millis();
   int64_t effectOrigin = esp_timer_get_time();
   int64_t deadline = effectOrigin;
@@ -1650,7 +1618,6 @@ void renderTask(void *) {
           memorialSceneTargetOn = sceneTargetOn;
           memorialSceneProgress = sceneProgress;
           memorialQuota = quotaFrameMilli;
-          memorialPaletteGain = calculateMemorialBrightnessGain();
           // Reserve at least half the remaining minute for the settled scene.
           memorialSlideMs = min(uint32_t(900), control.memorialDurationMs / 4);
           const uint32_t closeBudget = memorialScheduled ? (memorialPreparing ? uint32_t(untilMemorial) : sceneProgress) :
@@ -1750,7 +1717,7 @@ void renderTask(void *) {
           const float offset = memorial::slideOffset(slide, memorialSlideMs, MATRIX_HEIGHT);
           // Movement now owns disappearance. Keep the palette fully lit, with
           // its original flame phase, instead of fading to black before exit.
-          const uint8_t paletteGain = memorial::readableGain(memorialPaletteGain, control.brightness);
+          const uint8_t paletteGain = memorial::readableGain(memorial::kPaletteGain, control.brightness);
           memorial::drawSliding(MATRIX_WIDTH, MATRIX_HEIGHT, 4000 + elapsed % 4000,
                                10000, offset, [paletteGain](int x, int y, memorial::Pixel color) {
             color = memorial::scalePixel(color, paletteGain);

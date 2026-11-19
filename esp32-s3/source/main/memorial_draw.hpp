@@ -7,6 +7,8 @@ namespace memorial {
 constexpr int kTextWidth = 20;
 constexpr int kTextHeight = 5;
 constexpr uint8_t kTextBlue = 190;
+// Calibrate the ivory digits to the quota sky's highlights after LED gamma.
+constexpr uint8_t kPaletteGain = 201;
 
 // Ukraine including Crimea, rasterized for the physical 7 mm x 12 mm LED pitch.
 // Outline reference: johan/world.geo.json, countries/UKR.geo.json (Unlicense).
@@ -65,15 +67,6 @@ inline Pixel blend(Pixel under, Pixel over, float coverage) {
   };
   return {channel(under.red, over.red), channel(under.green, over.green),
           channel(under.blue, over.blue)};
-}
-
-inline uint32_t luminance(Pixel color) {
-  return uint32_t(color.red) * 54 + uint32_t(color.green) * 183 + uint32_t(color.blue) * 19;
-}
-
-inline uint8_t matchingGain(uint32_t reference, uint32_t scene) {
-  if (!scene || reference >= scene) return 255;
-  return uint8_t((uint64_t(reference) * 255 + scene / 2) / scene);
 }
 
 inline Pixel scalePixel(Pixel color, uint8_t gain) {

@@ -85,17 +85,18 @@ inline Pixel pixel(unsigned x, unsigned y, unsigned width, unsigned height,
   if (index < 0) return {};
   const unsigned count = perimeter(width, height);
   const unsigned progress = percent > 100 ? 100 : percent;
-  if (progress == 100) return {24, 190, 92};
-  Pixel color{uint8_t(uint32_t(12) * coverage / 65535),
-              uint8_t(uint32_t(128) * coverage / 65535),
-              uint8_t(uint32_t(190) * coverage / 65535)};
+  // Match the corrected brightness of the quota highlights in both states.
+  if (progress == 100) return {23, 202, 100};
+  Pixel color{uint8_t(uint32_t(20) * coverage / 65535),
+              uint8_t(uint32_t(191) * coverage / 65535),
+              uint8_t(uint32_t(222) * coverage / 65535)};
   const unsigned head = (now / 65) % count;
   const unsigned distance = (head + count - unsigned(index)) % count;
   if (distance < 5) {
-    const unsigned strength = 5 - distance;
-    color.red = uint8_t(color.red + strength * 8);
-    color.green = uint8_t(color.green + strength * 10);
-    color.blue = uint8_t(color.blue + strength * 10);
+    const auto highlight = [distance](uint8_t base, unsigned peak) {
+      return uint8_t((base * distance + peak * (5 - distance)) / 5);
+    };
+    color = {highlight(color.red, 44), highlight(color.green, 193), highlight(color.blue, 229)};
   }
   return color;
 }

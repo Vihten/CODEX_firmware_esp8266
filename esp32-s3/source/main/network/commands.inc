@@ -138,7 +138,7 @@ void serviceCommands() {
         if (!model.restarting) { model.restarting = true; model.restartAt = uptimeMs(); message("Restart queued."); }
         break;
       case CommandKind::Update:
-        if (!model.manifestBusy) { model.updateRequested = true; model.otaAt = uptimeMs(); otaMessage("Update check queued"); }
+        if (!model.manifestBusy) { model.updateRequested = true; model.otaAt = maintenanceClockMs(); otaMessage("Update check queued"); }
         else message("Update check already running.");
         break;
     }

@@ -2,7 +2,8 @@
 #include <cstdint>
 
 namespace memorial {
-constexpr uint32_t kPreparationMs = 5000; // Four-second scene close plus one second of margin.
+constexpr uint32_t kSettledBeforeMinuteMs = 2000;
+constexpr uint32_t kPreparationMs = 5000 + kSettledBeforeMinuteMs;
 constexpr uint32_t kMinuteMs = 60000;
 
 struct Clock {

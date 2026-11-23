@@ -203,21 +203,21 @@ void serviceManifestResults() {
   if (!result.newer && !result.upToDate)
     reportOtaFailure(OtaPhase::Manifest, result.reason, result.elapsed, result.retries);
   if (result.newer) { model.manifest = result.manifest; model.manifestReady = true; }
-  else model.otaAt = uptimeMs() + (result.upToDate ? kOtaInterval : 60000);
+  else model.otaAt = maintenanceClockMs() + (result.upToDate ? kOtaInterval : 60000);
 }
 void queueManifestCheck() {
   if (model.manifestBusy || model.manifestReady || model.restarting ||
       model.control.maintenance != Maintenance::None) return;
-  if (air_alert::busy() || !backgroundTlsReady()) { model.otaAt = uptimeMs() + 5000; return; }
-  if (!model.manifestWorkerReady) { otaMessage("Manifest worker unavailable"); model.otaAt = uptimeMs() + 60000; return; }
+  if (air_alert::busy() || !backgroundTlsReady()) { model.otaAt = maintenanceClockMs() + 5000; return; }
+  if (!model.manifestWorkerReady) { otaMessage("Manifest worker unavailable"); model.otaAt = maintenanceClockMs() + 60000; return; }
   const esp_partition_t *partition = esp_ota_get_next_update_partition(nullptr);
-  if (!partition) { otaMessage("No OTA partition available"); model.otaAt = uptimeMs() + 60000; return; }
+  if (!partition) { otaMessage("No OTA partition available"); model.otaAt = maintenanceClockMs() + 60000; return; }
   ManifestJob job; copy(job.url, PROJECT_OTA_MANIFEST_URL); job.partitionSize = partition->size;
   const uint32_t started = uptimeMs();
   job.deadline = started + kManifestBudgetMs;
   if (xQueueSend(manifestJobs, &job, 0) != pdTRUE) { otaMessage("Manifest worker busy"); return; }
   model.otaDeadline = started + kOtaCycleMs;
-  model.manifestBusy = true; model.updateRequested = false; model.otaAt = started + kOtaInterval;
+  model.manifestBusy = true; model.updateRequested = false; model.otaAt = maintenanceClockMs() + kOtaInterval;
   otaMessage("Checking S3 firmware manifest");
 }
 bool imageDescriptor(const uint8_t *data, size_t size) {
@@ -438,7 +438,7 @@ void refreshStationAfterSave() {
   if (!model.wifiChanged) return;
   model.wifiChanged = false;
   model.wifiRecovery.manual(uptimeMs());
-  recoveryManualAt.store(uptimeMs()); recoveryManualGrace.store(true);
+  recoveryManualUntil.store(maintenanceClockMs() + recovery::manualGraceMs);
   esp_wifi_disconnect(); model.connected = false; model.stationConnecting = false; model.stationAttempts = 0;
   copy(model.control.ip, "192.168.4.1");
   if (!stationConfig()) message("Wi-Fi settings saved; radio configuration failed.");
@@ -504,7 +504,7 @@ void serviceMaintenance() {
     if (model.otaBootSelected) { restartForOta(); return; }
     model.otaVisualTimedOut = false;
     otaMessage("OTA cancelled after renderer acknowledged stop");
-    model.manifestReady = false; model.otaAt = uptimeMs() + 60000;
+    model.manifestReady = false; model.otaAt = maintenanceClockMs() + 60000;
     releaseMaintenance(); return;
   }
   if (model.releasePending) {
@@ -531,7 +531,7 @@ void serviceMaintenance() {
   }
   if (model.manifestReady && due(now, model.otaDeadline)) {
     reportOtaDeadline();
-    model.manifestReady = false; model.otaAt = now + 60000;
+    model.manifestReady = false; model.otaAt = maintenanceClockMs() + 60000;
     if (model.control.maintenance == Maintenance::Ota) releaseMaintenance();
     return;
   }
@@ -541,7 +541,7 @@ void serviceMaintenance() {
         ++model.maintenanceTimeouts; message("Renderer/preview maintenance was not acknowledged; no flash write occurred.");
         diagnostic_log::Snapshot failure; failure.elapsed_ms = now - model.maintenanceAt;
         diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::System, uint16_t(0x0102), failure);
-        model.persistRetryAt = now + 5000; model.otaAt = now + 60000;
+        model.persistRetryAt = maintenanceClockMs() + 5000; model.otaAt = maintenanceClockMs() + 60000;
         model.manifestReady = false;
         if (model.control.maintenance == Maintenance::Restart) model.restarting = false;
         releaseMaintenance();
@@ -560,8 +560,9 @@ void serviceMaintenance() {
         saved = saveBuzzerVolume() && saved;
         saved = saveSkyColors() && saved;
         saved = web_auth::persist() && saved;
-        if (diagnostic_persistence::due(now, model.restarting || model.manifestReady))
-          diagnostic_persistence::flush(now);
+        const int64_t archiveNow = maintenanceClockMs();
+        if (diagnostic_persistence::due(archiveNow, model.restarting || model.manifestReady))
+          diagnostic_persistence::flush(archiveNow);
         if (!saved) diagnostics::event(diagnostics::Level::Error, diagnostics::Module::System, uint16_t(0x0101));
         if (model.confirmationPending && due(uptimeMs(), model.confirmationDeadline)) {
           rejectPendingBoot("OTA boot confirmation timed out; restarting for rollback", ESP_ERR_TIMEOUT);
@@ -579,7 +580,7 @@ void serviceMaintenance() {
             saved = false;
           }
         }
-        model.persistRetryAt = uptimeMs() + (saved ? 0 : 5000); releaseMaintenance(); break;
+        model.persistRetryAt = saved ? 0 : maintenanceClockMs() + 5000; releaseMaintenance(); break;
       }
       case Maintenance::Ota:
         if (model.dirty || model.weeklyDirty || model.lifetimeDirty || daily_runtime::dirty() || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || model.skyColorsDirty || web_auth::pendingSave() || web_auth::busy() || model.restarting || model.control.memorialActive || model.control.memorialScheduled || model.render.memorialTransition) { releaseMaintenance(); break; }
@@ -591,7 +592,7 @@ void serviceMaintenance() {
           if (now - model.maintenanceAt >= kMaintenanceTimeout) {
             otaMessage("OTA cancelled: commands or HTTP requests did not drain");
             reportOtaFailure(OtaPhase::Image, ESP_ERR_TIMEOUT, otaElapsed());
-            model.manifestReady = false; model.otaAt = now + 60000;
+            model.manifestReady = false; model.otaAt = maintenanceClockMs() + 60000;
             releaseMaintenance();
           }
           return;
@@ -599,7 +600,7 @@ void serviceMaintenance() {
         installFirmware();
         discardBlockedTelemetry();
         if (model.otaVisualTimedOut) return;
-        model.manifestReady = false; model.otaAt = uptimeMs() + 60000; releaseMaintenance(); break;
+        model.manifestReady = false; model.otaAt = maintenanceClockMs() + 60000; releaseMaintenance(); break;
       case Maintenance::Restart:
         if (model.dirty || model.weeklyDirty || model.lifetimeDirty || daily_runtime::dirty() || model.memorialDirty || model.airDirty || model.lightDirty || model.buzzerDirty || model.skyColorsDirty || web_auth::pendingSave()) { releaseMaintenance(); break; }
         if (!activeHandlers.load() && !web_auth::busy() && !uxQueueMessagesWaiting(commandQueue)) esp_restart();
@@ -621,17 +622,15 @@ void serviceMaintenance() {
   }
   // Defer new flash barriers from the scheduled close through the memorial minute.
   if (air_alert::busy() || model.control.memorialScheduled) return;
-  if ((model.dirty && now - model.dirtyAt >= 300 && due(now, model.persistRetryAt)) ||
-      (web_auth::pendingSave() && due(now, model.persistRetryAt)) ||
-      (diagnostic_persistence::due(now, model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
-      (daily_runtime::due(now, model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
-      (model.memorialDirty && due(now, model.persistRetryAt)) ||
-      (model.skyColorsDirty && due(now, model.persistRetryAt)) ||
-      (model.airDirty && due(now, model.persistRetryAt)) ||
-      (model.lightDirty && due(now, model.persistRetryAt)) ||
-      (model.buzzerDirty && now - model.buzzerDirtyAt >= 300 && due(now, model.persistRetryAt)) ||
-      ((model.weeklyDirty || model.lifetimeDirty) && (now - model.weeklySavedAt >= 300000 || model.restarting || model.manifestReady) && due(now, model.persistRetryAt)) ||
-      (model.confirmationPending && bootConfirmationHealthy() && due(now, model.persistRetryAt))) {
+  const int64_t maintenanceNow = maintenanceClockMs();
+  if (maintenanceNow >= model.persistRetryAt && (
+      (model.dirty && now - model.dirtyAt >= 300) || web_auth::pendingSave() ||
+      diagnostic_persistence::due(maintenanceNow, model.restarting || model.manifestReady) ||
+      daily_runtime::due(now, model.restarting || model.manifestReady) ||
+      model.memorialDirty || model.skyColorsDirty || model.airDirty || model.lightDirty ||
+      (model.buzzerDirty && now - model.buzzerDirtyAt >= 300) ||
+      ((model.weeklyDirty || model.lifetimeDirty) && (now - model.weeklySavedAt >= 300000 || model.restarting || model.manifestReady)) ||
+      (model.confirmationPending && bootConfirmationHealthy()))) {
     requestMaintenance(Maintenance::Persist); return;
   }
   if (model.confirmationPending) return;
@@ -641,6 +640,6 @@ void serviceMaintenance() {
   }
   if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !daily_runtime::dirty() && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !model.skyColorsDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.control.memorialScheduled && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
   if (!model.connected || model.dirty || !model.render.assetsReady || model.render.ledError) return;
-  if (due(now, model.otaAt) && (model.control.on || model.updateRequested)) queueManifestCheck();
+  if (maintenanceNow >= model.otaAt && (model.control.on || model.updateRequested)) queueManifestCheck();
 }
 } // namespace

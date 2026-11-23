@@ -7,6 +7,7 @@
 #include "sky_palette.hpp"
 #include "meteor_style.hpp"
 #include "preview.hpp"
+#include "memorial.hpp"
 #include "memorial_draw.hpp"
 #include "air_alert_visual.hpp"
 #include "quota_recovery.hpp"
@@ -778,8 +779,13 @@ uint32_t updateSkySample(uint16_t target, bool frozen) {
   const uint8_t tintTarget = control.quotaProvider == quota_provider::Provider::Claude ? 255 : 0;
   if (status.memorialTransition) return quotaFrameMilli;
   const uint32_t wanted = uint32_t(target) * 1000;
-  if (skySampleReady && !sceneTargetOn && sceneProgress < SCENE_DURATION_MS)
-    return quotaFrameMilli;
+  if (skySampleReady && sceneProgress < SCENE_DURATION_MS) {
+    if (!sceneTargetOn) return quotaFrameMilli;
+    // A new entrance seeds at zero. Once visible, keep a provider handoff
+    // at its last sample until the authored entrance reaches its endpoint.
+    if (sceneProgress && (skyProvider != control.quotaProvider || providerTransition.active()))
+      return quotaFrameMilli;
+  }
   if (!skySampleReady || sceneProgress < SCENE_DURATION_MS) {
     skySampleReady = true; quotaFrameMilli = wanted;
     claudeTint = tintTarget;
@@ -1115,7 +1121,7 @@ struct IpAddressTransition {
   enum class Phase : uint8_t { Stable, Out, In, Leaving } phase = Phase::Stable;
 
   static void address(char (&out)[16], const char *value) {
-    std::strncpy(out, value, sizeof(out) - 1);
+    std::strncpy(out, value, sizeof(out));
     out[sizeof(out) - 1] = 0;
   }
   uint8_t alpha(uint32_t now) const {
@@ -1140,7 +1146,8 @@ struct IpAddressTransition {
     if (!shown[0]) {
       address(shown, value); address(target, value);
       from = 0; started = now; phase = Phase::In;
-    } else if (phase == Phase::Leaving && std::strncmp(shown, value, sizeof(shown)) == 0) {
+    } else if ((phase == Phase::Out || phase == Phase::Leaving) &&
+               std::strncmp(shown, value, sizeof(shown)) == 0) {
       from = alpha(now); started = now; phase = Phase::In;
       address(target, value);
     } else if (std::strncmp(target, value, sizeof(target)) != 0 || phase == Phase::Leaving) {
@@ -1225,13 +1232,13 @@ void drawBlackHole() {
   // Keep power sequencing and the existing closing ACK. The procedural scene
   // darkens with the scene envelope, never revealing an unknown full-quota sky.
   const unsigned visible = min(uint32_t(SCENE_DURATION_MS), sceneProgress);
+  const unsigned gain = unsigned(strip.getBrightness()) + 1;
   for (unsigned y = 0; y < MATRIX_HEIGHT; ++y)
     for (unsigned x = 0; x < MATRIX_WIDTH; ++x) {
       const auto color = black_hole::pixel(x, y, MATRIX_WIDTH, MATRIX_HEIGHT, view);
       uint8_t *grb = pixels + physicalIndex(x, y) * 3;
-      const auto mix = [amount, visible](uint8_t background, uint8_t foreground) {
-        const uint32_t gain = strip.getBrightness() == 255 ? 256 : strip.getBrightness() + 1;
-        const uint32_t source = uint32_t(foreground) * gain * visible / (256U * SCENE_DURATION_MS);
+        const auto mix = [amount, visible, gain](uint8_t background, uint8_t foreground) {
+          const uint32_t source = uint32_t(foreground) * gain * visible / (256U * SCENE_DURATION_MS);
         return uint8_t((uint32_t(background) * (255 - amount) + source * amount + 127) / 255);
       };
       grb[0] = mix(grb[0], color.green);
@@ -1419,7 +1426,7 @@ void renderOtaProgress() {
     otaFill.reset(now);
     otaFillEpoch = control.maintenanceEpoch;
   }
-  otaFill.update(control.otaVisualPercent, now);
+  const uint32_t presentedMs = otaFill.update(control.otaVisualPercent, now);
   strip.setBrightness(control.brightness);
   strip.clear();
   if (control.on) {
@@ -1427,7 +1434,7 @@ void renderOtaProgress() {
       for (unsigned x = 0; x < MATRIX_WIDTH; ++x) {
         const int edge = ota_visual::position(x, y, MATRIX_WIDTH, MATRIX_HEIGHT);
         const auto color = ota_visual::pixel(x, y, MATRIX_WIDTH, MATRIX_HEIGHT,
-            control.otaVisualPercent, now, edge < 0 ? 0 : otaFill.coverage(unsigned(edge)));
+            control.otaVisualPercent, presentedMs, edge < 0 ? 0 : otaFill.coverage(unsigned(edge)));
         strip.setPixelColor(physicalIndex(x, y), strip.Color(color.red, color.green, color.blue));
       }
   }
@@ -1485,7 +1492,7 @@ void renderTask(void *) {
   bool memorialSceneVisible = false, memorialSceneTargetOn = false;
   uint32_t memorialSceneProgress = 0, memorialQuota = 0;
   uint32_t memorialStart = 0, memorialCloseMs = 0, memorialSlideMs = 0;
-  uint32_t memorialPreparationAt = 0;
+  uint32_t memorialForwardAt = 0, memorialScheduledEndAt = 0;
   bool memorialExiting = false;
   uint32_t memorialPosition = 0, memorialForwardFrom = 0;
   uint32_t memorialExitAt = 0, memorialExitFrom = 0;
@@ -1599,20 +1606,31 @@ void renderTask(void *) {
         memorialExiting = true;
         memorialExitAt = now;
         memorialExitFrom = memorialPosition;
+        if (memorialWasScheduled && int32_t(now - memorialScheduledEndAt) >= 0)
+          memorialExitFrom = 0; // The scheduled return reaches the sky at 09:01.
       }
       if (newMemorial) {
         stopMemorialMeteors();
         memorialStart = control.memorialStartedAt;
-        memorialPreparationAt = now;
+        const uint32_t lead = memorialPreparing
+            ? uint32_t(max(int32_t(0), untilMemorial - int32_t(memorial::kSettledBeforeMinuteMs))) : 0;
         if (!previousMemorialTransition) {
           memorialSceneVisible = sceneVisible;
           memorialSceneTargetOn = sceneTargetOn;
           memorialSceneProgress = sceneProgress;
           memorialQuota = quotaFrameMilli;
-          // Reserve at least half the remaining minute for the settled scene.
-          memorialSlideMs = min(uint32_t(900), control.memorialDurationMs / 4);
-          const uint32_t closeBudget = memorialScheduled ? (memorialPreparing ? uint32_t(untilMemorial) : sceneProgress) :
-              control.memorialDurationMs / 2 - memorialSlideMs;
+          // A late boot can enter partway through the minute. Leave time to
+          // actually see the settled scene, even in a short remaining window.
+          const uint32_t remainingMs = memorialScheduled && memorialActive
+              ? control.memorialDurationMs - uint32_t(now - memorialStart) : control.memorialDurationMs;
+          const uint32_t travelBudget = remainingMs / (memorialScheduled && memorialActive ? 3 : 2);
+          memorialSlideMs = min(uint32_t(900), travelBudget / 2);
+          uint32_t closeBudget = travelBudget - memorialSlideMs;
+          if (memorialPreparing) {
+            // If notice is unusually late, allow the entrance to cross 09:00
+            // instead of snapping a fully visible sky shut in a single frame.
+            closeBudget = max(uint32_t(500), lead - min(lead, memorialSlideMs));
+          }
           memorialCloseMs = sceneVisible && status.assetsReady
               ? min(sceneProgress, closeBudget) : 0;
           memorialPosition = 0;
@@ -1620,9 +1638,15 @@ void renderTask(void *) {
         // A play request during the return reverses direction at the last
         // displayed position rather than replacing it with a different frame.
         memorialForwardFrom = memorialPosition;
+        memorialForwardAt = memorialScheduled ? now : memorialStart;
+        if (memorialPreparing) {
+          const uint32_t travel = memorialCloseMs + memorialSlideMs - memorialPosition;
+          if (lead > travel) memorialForwardAt = now + lead - travel;
+        }
         memorialExiting = false;
       }
-      if (memorialScheduled && memorialEngaged) memorialStart = control.memorialStartedAt;
+      if (memorialScheduled && memorialEngaged)
+        memorialScheduledEndAt = control.memorialStartedAt + control.memorialDurationMs;
       if (memorialOff) memorialExiting = false;
       status.memorialTransition = memorialEngaged || memorialExiting;
       const bool memorialTransition = status.memorialTransition || previousMemorialTransition;
@@ -1670,23 +1694,24 @@ void renderTask(void *) {
         }
       } else if (status.memorialTransition && !maintenance) {
         strip.setBrightness(control.brightness);
-        const uint32_t elapsed = uint32_t(now - memorialStart);
+        // Both preparation and the minute itself sample the same clock. At
+        // 09:00 only the scheduler's status changes, never the visual position.
+        const uint32_t elapsed = uint32_t(max(int32_t(0), int32_t(now - memorialForwardAt)));
         const uint32_t total = memorialCloseMs + memorialSlideMs;
+        const uint32_t untilEnd = memorialScheduledEndAt - now;
+        const bool scheduledReturn = memorialScheduled && memorialActive && untilEnd <= total;
         if (memorialExiting) {
           const uint32_t reversed = min(memorialExitFrom, uint32_t(now - memorialExitAt));
           memorialPosition = memorialExitFrom - reversed;
-        } else if (memorialPreparing) {
-          memorialPosition = min(memorialCloseMs, uint32_t(now - memorialPreparationAt));
-        } else if (memorialActive && memorialScheduled) {
-          // The first frame at the wall-clock deadline displays the full memorial.
-          memorialPosition = total;
         } else {
           memorialPosition = uint32_t(min(uint64_t(total), uint64_t(memorialForwardFrom) + elapsed));
+          if (scheduledReturn) memorialPosition = min(memorialPosition, untilEnd);
         }
-        if ((memorialPosition < memorialCloseMs || (memorialExiting && memorialPosition == 0)) &&
+        const bool returning = memorialExiting || scheduledReturn;
+        if ((memorialPosition < memorialCloseMs || (returning && memorialPosition == 0)) &&
             memorialSceneVisible && status.assetsReady) {
           sceneVisible = true;
-          sceneTargetOn = memorialExiting;
+          sceneTargetOn = returning;
           sceneProgress = memorialCloseMs ? memorialSceneProgress -
               uint64_t(memorialSceneProgress) * memorialPosition / memorialCloseMs : memorialSceneProgress;
           const bool complete = renderScene(animationFile, effectMaskFile, frame, false);
@@ -1697,10 +1722,6 @@ void renderTask(void *) {
             memorialCloseMs = memorialPosition;
             strip.clear();
           }
-        } else if (memorialPreparing) {
-          sceneProgress = 0;
-          sceneVisible = false;
-          strip.clear();
         } else {
           sceneProgress = 0;
           sceneVisible = false;
@@ -1750,7 +1771,11 @@ void renderTask(void *) {
         if (!requestedOn && (!sceneVisible || sceneProgress == 0)) {
           sceneVisible = false;
           strip.clear();
-          if (showFrame(true)) ipTransition.reset();
+          if (showFrame(true)) {
+            sceneProgress = 0;
+            sceneTargetOn = false;
+            ipTransition.reset();
+          }
         } else if (!flying && requestedOn && (wantsIp || ipTransition.visible())) {
           sceneVisible = false;
           const uint32_t ipNow = millis();

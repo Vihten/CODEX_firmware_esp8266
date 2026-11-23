@@ -9,7 +9,7 @@
     if (!details || !canvas || !state || !normalize) return;
     // Initial desktop convenience only. Resizing and page restore never reopen
     // a preview the user has collapsed, and phones keep the native closed state.
-    if (window.innerWidth > 600) details.open = true;
+    if (window.innerWidth > 600 && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) details.open = true;
     const context = canvas.getContext('2d');
     const label = (text, kind = '') => {
       if (state.textContent !== text) state.textContent = text;
@@ -19,6 +19,7 @@
       label('Живий перегляд недоступний у цьому браузері', 'error');
       return;
     }
+    normalize.parentElement.hidden = false;
     canvas.width = 696;
     canvas.height = 466;
     let timer = null;

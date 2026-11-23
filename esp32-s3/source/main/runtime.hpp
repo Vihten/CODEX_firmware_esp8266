@@ -128,7 +128,7 @@ extern AssetStore assets;
 bool initializeRuntime();
 bool loadAssets();
 void renderTask(void *argument);
-void networkTask(void *argument);
+void networkTask(bool confirmationPending);
 
 inline uint32_t uptimeMs() {
   return static_cast<uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS);

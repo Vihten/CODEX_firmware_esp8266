@@ -20,7 +20,7 @@ diagnostic_archive::Store* store = nullptr;
 std::atomic<bool> available{false}, failed{false};
 std::atomic<bool> bootPending{false};
 std::atomic<uint32_t> revision{0}, savedRevision{0}, lastSavedAt{0};
-uint32_t nextFlushAt = 0, retryAt = 0;
+int64_t nextFlushAt = 0, retryAt = 0;
 uint64_t firmwareVersion = 0, savedSequence = 0;
 uint32_t bootId = 0, resetCause = 0, savedRepeats = 0, savedLastMs = 0;
 char archiveDirectory[384]{};
@@ -28,11 +28,11 @@ char archiveDirectory[384]{};
 bool take() {
   return mutex && xSemaphoreTake(mutex, pdMS_TO_TICKS(5)) == pdTRUE;
 }
-bool write(diagnostic_archive::Record record, uint32_t now) {
+bool write(diagnostic_archive::Record record, int64_t now) {
   if (!take()) return false;
   const bool result = store->append(record);
   xSemaphoreGive(mutex);
-  if (result) lastSavedAt.store(now, std::memory_order_relaxed);
+  if (result) lastSavedAt.store(static_cast<uint32_t>(now), std::memory_order_relaxed);
   return result;
 }
 diagnostic_archive::Record bootRecord() {
@@ -45,7 +45,7 @@ diagnostic_archive::Record bootRecord() {
   diagnostic_log::copyAscii(start.entry.text, "Controller started", 18);
   return start;
 }
-void retryLater(uint32_t now) {
+void retryLater(int64_t now) {
   failed.store(true, std::memory_order_relaxed);
   retryAt = now + kRetryIntervalMs;
 }
@@ -79,14 +79,14 @@ bool initialize(const char* directory, uint64_t firmware, uint32_t boot,
   return true;
 }
 
-bool due(uint32_t now, bool urgent) noexcept {
+bool due(int64_t now, bool urgent) noexcept {
   if (!store || (!bootPending.load(std::memory_order_relaxed) &&
       revision.load(std::memory_order_relaxed) == savedRevision.load(std::memory_order_relaxed))) return false;
-  if (failed.load(std::memory_order_relaxed) && int32_t(now - retryAt) < 0) return false;
-  return urgent || int32_t(now - nextFlushAt) >= 0;
+  if (failed.load(std::memory_order_relaxed) && now < retryAt) return false;
+  return urgent || now >= nextFlushAt;
 }
 
-bool flush(uint32_t now) noexcept {
+bool flush(int64_t now) noexcept {
   if (!store) return false;
   if (!available.load(std::memory_order_acquire)) {
     if (!take()) return false;

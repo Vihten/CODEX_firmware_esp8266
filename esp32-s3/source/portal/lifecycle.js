@@ -97,6 +97,7 @@
     all('[data-live=connection]').forEach(node => { node.setAttribute('role', 'status'); node.setAttribute('aria-live', 'polite'); });
     if (!('fetch' in window) || !('AbortController' in window)) {
       connection('Доступний статичний перегляд');
+      text('[data-history-status]', 'Жива історія недоступна у цьому браузері.');
       all('[data-refresh],[data-poll-toggle]').forEach(control => { control.disabled = true; });
       return;
     }

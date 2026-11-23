@@ -75,13 +75,13 @@ class Wifi {
   uint8_t faults() const { return faults_; }
   uint32_t offlineAge(uint32_t now) const { return offline_ ? uint32_t(now - offlineAt_) : 0; }
   Action step(uint32_t now, Input in) {
+    if (grace_ && uint32_t(now - graceAt_) >= manualGraceMs) grace_ = false;
     if (!in.configured || in.connected) {
       offline_ = false; stacks_ = faults_ = 0; fallback_ = false;
       return Action::None;
     }
     if (!offline_) { offline_ = true; offlineAt_ = now; }
-    if (grace_ && uint32_t(now - graceAt_) < manualGraceMs) return Action::None;
-    grace_ = false;
+    if (grace_) return Action::None;
     if (in.protectedWork || fallback_) return Action::None;
     const uint32_t age = now - offlineAt_;
     if (stacks_ < 3 && age >= stackAfterMs &&
@@ -138,9 +138,8 @@ class Gate {
  private:
   std::atomic<uint32_t> state_{2}; // Boot is protected until the first owner release.
 };
-inline bool stalled(bool started, uint32_t stageAge, uint32_t uptime,
-                    bool priorHealthy, bool safeView) {
-  return started && priorHealthy && safeView && uptime >= stallAfterMs && stageAge >= stallAfterMs;
+inline bool stalled(bool started, uint32_t stageAge, bool priorHealthy, bool safeView) {
+  return started && priorHealthy && safeView && stageAge >= stallAfterMs;
 }
 // Revalidate after claiming, using a synchronized snapshot followed by the clock.
 // Any intervening progress cancels this attempt; a new stall gets a new sample.
@@ -149,6 +148,6 @@ inline bool stillStalled(const Heartbeat &sample, const Heartbeat &current, uint
   return current.started && current.stage != decltype(current.stage)::Starting &&
       current.heartbeat == sample.heartbeat && current.stage == sample.stage &&
       current.enteredAtMs == sample.enteredAtMs && current.completedLoops == sample.completedLoops &&
-      stalled(current.started, uint32_t(now - current.enteredAtMs), now, true, true);
+      stalled(current.started, uint32_t(now - current.enteredAtMs), true, true);
 }
 } // namespace recovery

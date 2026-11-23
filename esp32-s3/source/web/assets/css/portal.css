@@ -275,7 +275,7 @@ table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
 .header-status-ancillary{display:none}
 .connection-indicator{display:inline-block;flex:none;width:8px;height:8px;overflow:hidden;border-radius:50%;background:var(--muted);font-size:0;line-height:0}
 .connection-indicator[data-state=ok]{background:var(--accent)}
-.connection-indicator[data-state=error]{background:var(--warning)}
+.connection-indicator[data-state=error]:not(:empty){flex:0 1 auto;width:auto;height:auto;overflow:visible;border-radius:0;background:transparent;font-size:.8125rem;font-weight:500;line-height:1.4;overflow-wrap:anywhere}
 .quota-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem;margin-block:.75rem}
 .quota-card{--quota-color:var(--accent);min-width:0;display:flex;flex-direction:column;align-items:stretch;gap:.45rem;padding:.8rem 1rem;background:var(--surface);border:1px solid var(--line);border-radius:8px}
 .quota-card[data-quota-card=claude],.quota-card:has([data-live=claude-remaining]){--quota-color:#e8bc92}
@@ -346,7 +346,7 @@ table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
 .quota-card .quota-meta,.quota-card .quota-empty{margin:0}
 .quota-meta{font-variant-numeric:tabular-nums}
 .tabs a svg{width:1em;height:1em;flex:none;vertical-align:-.12em;margin-inline-end:.35em;stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
-@media(max-width:380px){.tabs{gap:.75rem}.tabs a{font-size:.875rem}}
+@media(max-width:380px){.tabs{gap:.5rem}.tabs a{font-size:.875rem}.tabs a svg{margin-inline-end:.2em}}
 #session-banner{position:static;margin-block:.75rem 1rem;overflow-wrap:anywhere}
 #session-banner:empty{display:none}
 @media(max-width:440px){

@@ -22,8 +22,13 @@
     const render = () => {
       const seconds = Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000));
       button.disabled = busy || seconds > 0;
-      button.textContent = busy ? 'Перевірка…' : seconds ? `Повторити через ${seconds} с` : label;
-      feedback.textContent = seconds && !busy ? `${message} Повторна спроба через ${seconds} с.` : message;
+      const caption = busy ? 'Перевірка…' : seconds ? `Повторити через ${seconds} с` : label;
+      if (button.textContent !== caption) button.textContent = caption;
+      if (cooldownUntil && !seconds && !busy) {
+        cooldownUntil = 0;
+        message = 'Можна спробувати ввійти знову.';
+      }
+      if (feedback.textContent !== message) feedback.textContent = message;
       if (!seconds && countdown !== null) { clearInterval(countdown); countdown = null; }
     };
     const secondsValue = value => {

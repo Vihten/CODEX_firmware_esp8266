@@ -13,6 +13,7 @@ class Fill {
  public:
   void reset(uint32_t now) {
     previous_ = now;
+    presentedMs_ = 0;
     percent_ = 0;
     for (unsigned i = 0; i < Count; ++i) {
       levels_[i] = starts_[i] = 0;
@@ -20,11 +21,12 @@ class Fill {
     }
   }
 
-  void update(uint8_t percent, uint32_t now) {
+  uint32_t update(uint8_t percent, uint32_t now) {
     const unsigned progress = percent > 100 ? 100 : percent;
     const uint32_t elapsed = now - previous_;  // Unsigned subtraction survives wrap.
     const unsigned dt = elapsed > 34 ? 34 : unsigned(elapsed);
     previous_ = now;
+    presentedMs_ += dt;
     for (unsigned i = 0; i < Count; ++i) {
       const uint16_t target = targetAt(i, progress);
       if (progress == 100) {
@@ -43,6 +45,7 @@ class Fill {
       }
     }
     percent_ = uint8_t(progress);
+    return presentedMs_;
   }
 
   uint16_t coverage(unsigned index) const {
@@ -61,7 +64,7 @@ class Fill {
   uint16_t levels_[Count] = {};
   uint16_t starts_[Count] = {};
   uint8_t ages_[Count] = {};
-  uint32_t previous_ = 0;
+  uint32_t previous_ = 0, presentedMs_ = 0;
   uint8_t percent_ = 0;
 };
 

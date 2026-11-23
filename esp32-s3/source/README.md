@@ -171,10 +171,18 @@ A fresh report from an already live source changing its remaining quota from
 below 100 percent to 100 percent triggers recovery once the combined minimum
 also reaches 100 percent. First reports, expired sources, unknown quota and
 source disappearance do not count as resets. The visible sky returns to noon
-with a small damped overshoot over 2.6 seconds, using the existing fractional
+with a small damped overshoot over 1.733 seconds, using the existing fractional
 frame sampling; the pyramid and brightness remain unchanged. An existing
 meteor flight finishes first. Startup, off, memorial and maintenance suppress
 new recovery events; an in-progress recovery pauses during maintenance.
+
+## Scheduled memorial
+
+With the matrix on and Kyiv time synchronized, the renderer prepares from
+08:59:53. It closes the sky and slides the memorial down from the top over
+900 ms, settling at 08:59:58. It reverses the transition before 09:01 so the
+previous scene is back at the end of the minute. A late start uses the time
+still available. Manual playback uses its own 60-second timer.
 
 ## OTA Matrix Progress
 
@@ -199,8 +207,10 @@ stop after two seconds, the controller restarts without further OTA flash writes
 The OTA cycle has a 180-second budget from the manifest request, and a transient
 HTTPS connection or header failure gets one retry within that budget. The HTTP
 server pauses for firmware installation and restarts after renderer release.
-An updated boot has 60 seconds to confirm service health and successful settings
-persistence. If confirmation fails, a restart lets the bootloader roll back.
+A trial image restarts for rollback if a required boot check fails before the
+network owner starts. Once the owner starts, its 60-second confirmation window
+includes storage and network initialization. It confirms the image after service
+health checks and successful persistence.
 The new indicator is available for updates performed by this firmware, not
 while an older installed version is still downloading it.
 

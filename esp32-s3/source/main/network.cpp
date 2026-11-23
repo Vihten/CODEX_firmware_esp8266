@@ -231,8 +231,9 @@ struct Model {
   esp_netif_t *sta = nullptr, *ap = nullptr;
   httpd_handle_t http = nullptr;
   int udp = -1, rssi = -127;
-  uint32_t deviceId = 0, maintenanceAt = 0, persistRetryAt = 0, dirtyAt = 0;
-  uint32_t restartAt = 0, otaAt = 0, stationAt = 0, stationRetryAt = 0, discoveryAt = 0;
+  int64_t persistRetryAt = 0, otaAt = 0;
+  uint32_t deviceId = 0, maintenanceAt = 0, dirtyAt = 0;
+  uint32_t restartAt = 0, stationAt = 0, stationRetryAt = 0, discoveryAt = 0, udpRetryAt = 0;
   uint32_t legacyAt = 0, maintenanceTimeouts = 0, udpPackets = 0, disconnects = 0, loops = 0;
   uint32_t otaDone = 0, otaTotal = 0, requestedRgb[kAgentCapacity] = {};
   uint32_t otaDeadline = 0, otaRecoveryAt = 0, releaseAt = 0;
@@ -266,8 +267,7 @@ recovery::Budget recoveryBudget;
 portMUX_TYPE recoveryBudgetMux = portMUX_INITIALIZER_UNLOCKED;
 std::atomic<bool> recoveryBudgetAvailable{false};
 std::atomic<uint32_t> recoveryBudgetStatus{0};
-std::atomic<uint32_t> recoveryManualAt{0};
-std::atomic<bool> recoveryManualGrace{false};
+std::atomic<int64_t> recoveryManualUntil{0};
 
 bool reserveRecoveryRestart(uint16_t reason = recovery::queuedCode) {
   portENTER_CRITICAL(&recoveryBudgetMux);
@@ -315,6 +315,8 @@ template<size_t N> void copy(char (&target)[N], const char *text) {
   std::snprintf(target, N, "%s", text ? text : "");
 }
 bool due(uint32_t now, uint32_t deadline) { return static_cast<int32_t>(now - deadline) >= 0; }
+// Save and update deadlines can lie dormant for months while offline or in standby.
+int64_t maintenanceClockMs() { return esp_timer_get_time() / 1000; }
 void message(const char *text) { copy(model.message, text); }
 void otaMessage(const char *text) { copy(model.ota, text); ESP_LOGI(kTag, "%s", text); }
 #include "network/settings_store.inc"
@@ -372,15 +374,13 @@ void serviceHttpRetry() {
     startHttpServer(true);
 }
 
-void networkTask(void *) {
+void networkTask(bool confirmationPending) {
   markNetworkProgress(network_progress::Stage::Starting);
   model.confirmationDeadline = uptimeMs() + kBootConfirmationMs;
-  esp_ota_img_states_t state;
-  const esp_err_t stateResult = esp_ota_get_state_partition(esp_ota_get_running_partition(), &state);
-  model.confirmationPending = stateResult == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY;
+  model.confirmationPending = confirmationPending;
   if (model.confirmationPending) otaMessage("Waiting for OTA boot confirmation");
-  else if (stateResult != ESP_OK && stateResult != ESP_ERR_NOT_FOUND && stateResult != ESP_ERR_NOT_SUPPORTED)
-    ESP_LOGE(kTag, "Could not read running OTA state: %s", esp_err_to_name(stateResult));
+  setenv("TZ", "EET-2EEST,M3.5.0/3,M10.5.0/4", 1);
+  tzset();
   viewMutex = xSemaphoreCreateMutexStatic(&viewMutexStorage);
   wifiEvents = xQueueCreateStatic(16, sizeof(WifiEvent), wifiEventBytes, &wifiEventStorage);
   telemetryQueue = xQueueCreateStatic(4, sizeof(TelemetryRequest), telemetryBytes, &telemetryStorage);
@@ -416,6 +416,13 @@ void networkTask(void *) {
     ESP_LOGW(kTag, "Persistent diagnostic archive startup incomplete; RAM journal available");
   recoveryBudget.boot(retainedRecovery, esp_reset_reason() == ESP_RST_SW);
   recoveryBudgetStatus.store(1U | (retainedRecovery.used << 1) | (retainedRecovery.reason << 16));
+  // No socket, SNTP or HTTP calls are valid until lwIP has its TCP/IP thread.
+  while (esp_netif_init() != ESP_OK) {
+    if (model.confirmationPending && due(uptimeMs(), model.confirmationDeadline))
+      rejectPendingBoot("OTA boot failed: TCP/IP initialization timed out", ESP_ERR_TIMEOUT);
+    ESP_LOGE(kTag, "TCP/IP initialization failed; retrying");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  }
   model.wifiReady = initializeWifi();
   if (!model.wifiReady) {
     diagnostics::event(diagnostics::Level::Error, diagnostics::Module::Wifi, uint16_t(0x0202));
@@ -425,7 +432,7 @@ void networkTask(void *) {
   model.airWorkerReady = air_alert::startPolling();
   if (model.confirmationPending && due(uptimeMs(), model.confirmationDeadline))
     rejectPendingBoot("OTA boot confirmation timed out during startup", ESP_ERR_TIMEOUT);
-  model.otaAt = uptimeMs() + 30000;
+  model.otaAt = maintenanceClockMs() + 30000;
   updateControl(); serviceExternalLight(); publishView();
   startHttpServer(false);
   if (xTaskCreatePinnedToCore(diagnosticMonitorTask, "diagnostics", 4096, nullptr, 1, nullptr, 0) != pdPASS) {
@@ -457,6 +464,7 @@ void networkTask(void *) {
     markNetworkProgress(network_progress::Stage::Weekly);
     serviceWeekly();
     markNetworkProgress(network_progress::Stage::Telemetry);
+    serviceUdpRetry();
     serviceTelemetry();
     markNetworkProgress(network_progress::Stage::Discovery);
     discover();
@@ -475,9 +483,11 @@ void networkTask(void *) {
     markNetworkProgress(network_progress::Stage::Maintenance);
     serviceMaintenance();
     serviceHttpRetry();
-    // A blocking flash transfer must not leave thousands of overdue polling ticks.
-    if (xTaskGetTickCount() - wake > pdMS_TO_TICKS(100)) wake = xTaskGetTickCount();
     completeNetworkProgress();
-    vTaskDelayUntil(&wake, pdMS_TO_TICKS(model.control.on ? 20 : 50));
+    if (xTaskDelayUntil(&wake, pdMS_TO_TICKS(model.control.on ? 20 : 50)) == pdFALSE) {
+      // A missed wake does not block. Give IDLE0 a tick and drop the missed periods.
+      vTaskDelay(1);
+      wake = xTaskGetTickCount();
+    }
   }
 }

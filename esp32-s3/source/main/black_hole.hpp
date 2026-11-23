@@ -131,8 +131,9 @@ inline Pixel pixel(unsigned x, unsigned y, unsigned w, unsigned h,
   const float glow = detail::band(disk_r - 0.36f, 0.25f) * 0.07f;
   const uint32_t star_hash = detail::hash(uint32_t(x) +
                                          detail::hash(uint32_t(y) + 917u));
+  // Sparse background stars need one visible PWM step after brightness and gamma.
   const float stars = radius > 0.32f && star_hash % 113u == 0u
-                         ? (0.05f + float((star_hash >> 16) & 7u) * 0.003f)
+                         ? (0.160f + float((star_hash >> 16) & 7u) * 0.0015f)
                          : 0.0f;
   float captured_light = 0;
   for (const auto& light : f.light) {

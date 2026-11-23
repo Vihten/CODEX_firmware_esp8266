@@ -566,9 +566,8 @@ void diagnosticMonitorTask(void *) {
     recoveryBudgetStatus.store((recovery::valid(retainedRecovery) ? 1U : 0U) |
         (retainedRecovery.used << 1) | (retainedRecovery.reason << 16));
     portEXIT_CRITICAL(&recoveryBudgetMux);
-    const bool manualGrace = recoveryManualGrace.load() &&
-        uint32_t(context.summary.uptime_ms - recoveryManualAt.load()) < recovery::manualGraceMs;
-    if (recovery::stalled(context.network_started, context.network_age_ms, context.summary.uptime_ms,
+    const bool manualGrace = maintenanceClockMs() < recoveryManualUntil.load();
+    if (recovery::stalled(context.network_started, context.network_age_ms,
           recoveryBudgetAvailable.load(), recoverySafeView && !manualGrace) && recoveryGate.claim()) {
       // The gate prevents a concurrently resumed owner from starting flash or commands.
       // A stale decision must not reset an owner that resumed before the claim.

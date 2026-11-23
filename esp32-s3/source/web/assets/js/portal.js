@@ -884,7 +884,17 @@
         });
         if (compact) {
           ordered.forEach(row => { row.hidden = !online(row); });
-          all('[data-agents-empty]', root).forEach(node => { node.hidden = ordered.some(online); });
+          const hasOnline = ordered.some(online);
+          let empty = one('[data-agents-empty]', root);
+          if (!hasOnline && !empty) {
+            // A populated server-rendered summary has no empty message yet.
+            empty = document.createElement('p');
+            empty.className = 'muted';
+            empty.dataset.agentsEmpty = '';
+            empty.textContent = 'Немає агентів на зв’язку.';
+            root.append(empty);
+          }
+          if (empty) empty.hidden = hasOnline;
         }
       });
       if (focused && focused.isConnected && !focused.disabled && document.activeElement !== focused) {
@@ -917,7 +927,9 @@
           text('[data-agent-id]', id, row);
           root.append(row); rows.set(id, row);
         });
-        all('[data-agents-empty]', root).forEach(node => { node.hidden = rows.size > 0; });
+        if (!root.closest('.agent-summary-compact')) {
+          all('[data-agents-empty]', root).forEach(node => { node.hidden = rows.size > 0; });
+        }
       });
     };
     const updateAgents = incoming => {
@@ -1164,6 +1176,7 @@
     all('[data-live=connection]').forEach(node => { node.setAttribute('role', 'status'); node.setAttribute('aria-live', 'polite'); });
     if (!('fetch' in window) || !('AbortController' in window)) {
       connection('Доступний статичний перегляд');
+      text('[data-history-status]', 'Жива історія недоступна у цьому браузері.');
       all('[data-refresh],[data-poll-toggle]').forEach(control => { control.disabled = true; });
       return;
     }

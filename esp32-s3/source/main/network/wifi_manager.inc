@@ -18,7 +18,7 @@ bool stationConfig() {
   return esp_wifi_set_config(WIFI_IF_STA, &station) == ESP_OK;
 }
 bool initializeWifi() {
-  if (esp_netif_init() != ESP_OK || esp_event_loop_create_default() != ESP_OK) return false;
+  if (esp_event_loop_create_default() != ESP_OK) return false;
   model.sta = esp_netif_create_default_wifi_sta(); model.ap = esp_netif_create_default_wifi_ap();
   if (!model.sta || !model.ap) return false;
   wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT(); config.nvs_enable = false;
@@ -42,7 +42,6 @@ bool initializeWifi() {
   if (!stationConfig()) return false;
   model.wifiDriverStarted = esp_wifi_start() == ESP_OK;
   if (!model.wifiDriverStarted || esp_wifi_set_ps(WIFI_PS_NONE) != ESP_OK) return false;
-  setenv("TZ", "EET-2EEST,M3.5.0/3,M10.5.0/4", 1); tzset();
   model.stationRetryAt = uptimeMs();
   return true;
 }
@@ -197,13 +196,20 @@ void serviceWifiRecovery() {
   }
 }
 void initializeUdp() {
+  model.udpRetryAt = uptimeMs() + 5000;
   model.udp = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
   if (model.udp < 0) {
     diagnostic_log::Snapshot failure; failure.reason = errno;
     diagnostics::event(diagnostics::Level::Error, diagnostics::Module::System, uint16_t(0x0103), failure);
     message("UDP socket unavailable."); return;
   }
-  int enabled = 1; setsockopt(model.udp, SOL_SOCKET, SO_BROADCAST, &enabled, sizeof(enabled));
+  int enabled = 1;
+  if (setsockopt(model.udp, SOL_SOCKET, SO_BROADCAST, &enabled, sizeof(enabled)) < 0) {
+    diagnostic_log::Snapshot failure; failure.reason = errno; failure.detail = 3;
+    diagnostics::event(diagnostics::Level::Error, diagnostics::Module::System, uint16_t(0x0103), failure);
+    close(model.udp); model.udp = -1; message("UDP broadcast setup failed.");
+    return;
+  }
   if (fcntl(model.udp, F_SETFL, O_NONBLOCK) < 0) {
     diagnostic_log::Snapshot failure; failure.reason = errno;
     failure.detail = 1;
@@ -219,6 +225,9 @@ void initializeUdp() {
     diagnostics::event(diagnostics::Level::Error, diagnostics::Module::System, uint16_t(0x0103), failure);
     close(model.udp); model.udp = -1; message("UDP port 4210 is unavailable.");
   }
+}
+void serviceUdpRetry() {
+  if (model.udp < 0 && due(uptimeMs(), model.udpRetryAt)) initializeUdp();
 }
 void discover() {
   const uint32_t now = uptimeMs();

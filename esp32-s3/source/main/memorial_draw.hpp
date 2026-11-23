@@ -140,9 +140,13 @@ inline float slideOffset(uint32_t elapsedMs, uint32_t slideDurationMs, int heigh
 // nonfinite offsets hide the scene. The caller owns both animation clocks.
 template <typename SetPixel>
 inline void drawSliding(int width, int height, uint32_t elapsedMs, uint32_t durationMs,
-                        float offsetY, SetPixel setPixel) {
+                        float offsetY, SetPixel setPixel, uint8_t brightness = 255) {
   if (width <= 0 || height <= 0) return;
-  const Palette colors = palette(elapsedMs, durationMs);
+  Palette colors = palette(elapsedMs, durationMs);
+  // Preserve both yellow channels at the lowest settings, before subpixel
+  // coverage and palette gain. At gain 201, green 162 stages to 1 at B1.
+  if (brightness <= 3)
+    colors.borderLower.green = uint8_t((unsigned(colors.borderLower.green) * 162 + 70) / 141);
   // Double keeps the clamped shift representable as int even at INT_MAX height.
   const double shift = !std::isfinite(offsetY) ? double(height) :
       offsetY >= 0 ? 0.0 : offsetY <= -double(height) ? double(height) : -double(offsetY);

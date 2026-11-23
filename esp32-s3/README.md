@@ -11,9 +11,12 @@ on a five-minute cycle. Claude shows the five-hour quota with an orange sky.
 Switches smoothly move the existing sky level. A single available provider
 remains displayed when the other source is missing or stale.
 
-Use [agent 20261111170000](Codex-LAN-Agent-20261111170000.zip) and run
-`update_codex_lan_agent.cmd` for an existing installation. Its name, settings
-and token history are retained. Claude must be signed in locally as
+Download and extract the [current agent bootstrap](agent/bootstrap.zip).
+For a first installation, run `install_codex_lan_agent.cmd`. On a PC that still
+trusts the historical publisher, run `update_codex_lan_agent.cmd` once to enroll
+the current publisher and preserve the agent's name, settings and token history.
+Agents already enrolled with the current publisher can use the controller's
+signed web update. Claude must be signed in locally as
 `marketing@tiras.ua`. Credentials remain on the PC, with no manual API key.
 
 ## Token Rankings
@@ -34,9 +37,10 @@ Agent V2 checkpoints rebuild from local logs and preserve the old checkpoint as
 `weekly-token-state.json.pre-v2.bak`. Forked sessions seed inherited counters
 using lineage/predecessor evidence instead of counting their full first snapshot.
 Names, colors, controller discovery settings and account binding are preserved.
-The current signing key differs from the historical agent release. Existing
-agents must run the new bootstrap archive's update command once to enroll the
-current public key; trust is never replaced by an unauthenticated network reply.
+The current signing key differs from the historical agent release. Agents that
+still trust the historical key must run the bootstrap archive's update command
+once to enroll the current public key. The updater verifies each subsequent signature
+against the enrolled key.
 After that, the existing signed web-update workflow remains available.
 
 Telegram publication timestamps are distinguished from video-duration `time`

@@ -96,7 +96,7 @@ inline uint32_t hash(uint32_t v) {
 }  // namespace detail
 
 inline Pixel pixel(unsigned x, unsigned y, unsigned w, unsigned h,
-                   const Frame& f) {
+                   const Frame& f, float diskGain = 1.0f) {
   if (!w || !h || x >= w || y >= h) return {0, 0, 0};
   // Normalize in physical space, with 7 mm horizontal and 12 mm vertical pitch.
   const float physical_h = float(h) * (12.0f / 7.0f);
@@ -122,12 +122,12 @@ inline Pixel pixel(unsigned x, unsigned y, unsigned w, unsigned h,
   const float angular = direction_x * f.orbit_x + direction_y * f.orbit_y;
   const float front_mix = detail::clamp(0.5f + plane / 0.04f);
   const float foreground = 0.55f + 0.45f * front_mix * front_mix * (3 - 2 * front_mix);
-  const float heat = (disk * 0.55f + filament * 0.40f) *
+  const float heat = diskGain * (disk * 0.55f + filament * 0.40f) *
                      (0.80f + 0.17f * angular) * foreground;
   const float upper = detail::clamp(0.5f - plane / 0.07f);
   const float rear_arc = detail::band(radius - (0.203f + 0.005f * ripple), 0.047f) * upper;
-  const float lens = detail::band(radius - (0.163f + f.feeding * 0.008f), 0.018f) * 0.65f;
-  const float arc = rear_arc * (0.75f + 0.12f * angular);
+  const float lens = detail::band(radius - (0.163f + f.feeding * 0.008f), 0.018f) * 0.65f * diskGain;
+  const float arc = diskGain * rear_arc * (0.75f + 0.12f * angular);
   const float glow = detail::band(disk_r - 0.36f, 0.25f) * 0.07f;
   const uint32_t star_hash = detail::hash(uint32_t(x) +
                                          detail::hash(uint32_t(y) + 917u));

@@ -130,6 +130,46 @@ bool jsonEquals(cJSON *root, const char *key, const char *expected) {
   const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
   return cJSON_IsString(item) && item->valuestring && !std::strcmp(item->valuestring, expected);
 }
+// Only reads the inactive slot. The bootloader's INVALID/ABORTED decision
+// survives reset and power loss, even if the rejected app never ran its code.
+esp_err_t checkAutomaticCandidate(uint64_t version, bool &rejected) {
+  rejected = false;
+  const esp_partition_t *target = esp_ota_get_next_update_partition(nullptr);
+  if (!target) return ESP_ERR_NOT_FOUND;
+  esp_ota_img_states_t state;
+  const esp_err_t lookup = esp_ota_get_state_partition(target, &state);
+  if (lookup == ESP_ERR_NOT_FOUND) return ESP_OK; // A fresh slot has no otadata entry.
+  if (lookup != ESP_OK) return lookup;
+  if (state != ESP_OTA_IMG_INVALID && state != ESP_OTA_IMG_ABORTED) return ESP_OK;
+  esp_app_desc_t previous{};
+  const esp_err_t read = esp_ota_get_partition_description(target, &previous);
+  if (read != ESP_OK) return read;
+  uint64_t previousVersion = 0;
+  if (!std::memchr(previous.version, 0, sizeof(previous.version)) ||
+      !unsignedValue(previous.version, 9007199254740991ULL, previousVersion))
+    return ESP_ERR_INVALID_RESPONSE;
+  rejected = previousVersion == version;
+  return ESP_OK;
+}
+const char *compareManifest(const ManifestJob &job, const Manifest &manifest,
+                            time_t checkedAt, ManifestResult &result) {
+  result.compared = true;
+  result.comparedEpoch = checkedAt >= 1700000000 ? checkedAt : 0;
+  if (manifest.version < job.currentVersion) {
+    result.reason = ESP_ERR_INVALID_RESPONSE;
+    return "GitHub manifest older than installed firmware";
+  }
+  result.reason = ESP_OK;
+  if (manifest.version == job.currentVersion) { result.upToDate = true; return "Up to date"; }
+  if (!job.manual) {
+    result.reason = checkAutomaticCandidate(manifest.version, result.rejected);
+    if (result.reason != ESP_OK) return "Rejected OTA slot could not be checked";
+    if (result.rejected) return "Previously rejected firmware; manual check required to retry";
+  }
+  result.manifest = manifest;
+  result.newer = true;
+  return "New firmware verified; waiting for LEDs";
+}
 ManifestResult fetchManifest(const ManifestJob &job) {
   ManifestResult result;
   Download download(job.deadline);
@@ -182,11 +222,9 @@ ManifestResult fetchManifest(const ManifestJob &job) {
   cJSON_Delete(json);
   if (download.expired()) return finish("Manifest timed out", ESP_ERR_TIMEOUT);
   if (!valid) return finish("Manifest does not match this S3 image");
-  if (version < job.currentVersion) return finish("GitHub manifest older than installed firmware");
-  if (version == job.currentVersion) { result.upToDate = true; return finish("Up to date", ESP_OK); }
   manifest.version = version; manifest.size = size;
-  result.manifest = manifest; result.newer = true;
-  return finish("New firmware verified; waiting for LEDs", ESP_OK);
+  const char *status = compareManifest(job, manifest, std::time(nullptr), result);
+  return finish(status, result.reason);
 }
 void manifestTask(void *) {
   ManifestJob job;
@@ -200,24 +238,34 @@ void serviceManifestResults() {
   ManifestResult result;
   if (xQueueReceive(manifestResults, &result, 0) != pdTRUE) return;
   model.manifestBusy = false; otaMessage(result.status);
-  if (!result.newer && !result.upToDate)
+  if (result.compared) model.otaCheckedAt = result.comparedEpoch;
+  if (!result.newer && !result.upToDate && !result.rejected)
     reportOtaFailure(OtaPhase::Manifest, result.reason, result.elapsed, result.retries);
   if (result.newer) { model.manifest = result.manifest; model.manifestReady = true; }
-  else model.otaAt = maintenanceClockMs() + (result.upToDate ? kOtaInterval : 60000);
+  else model.otaAt = maintenanceClockMs() + (result.upToDate || result.rejected ? kOtaInterval : 60000);
+}
+bool startManifestWorker() {
+  return xTaskCreatePinnedToCore(manifestTask, "manifest", 16384, nullptr, 2, nullptr, 0) == pdPASS;
 }
 void queueManifestCheck() {
   if (model.manifestBusy || model.manifestReady || model.restarting ||
       model.control.maintenance != Maintenance::None) return;
   if (air_alert::busy() || !backgroundTlsReady()) { model.otaAt = maintenanceClockMs() + 5000; return; }
-  if (!model.manifestWorkerReady) { otaMessage("Manifest worker unavailable"); model.otaAt = maintenanceClockMs() + 60000; return; }
+  if (!model.manifestWorkerReady) model.manifestWorkerReady = startManifestWorker();
+  const bool manual = model.manualCheckUntil != 0;
+  model.updateRequested = false;
+  model.manualCheckUntil = 0;
+  model.otaAt = maintenanceClockMs() + 60000;
+  if (!model.manifestWorkerReady) { otaMessage("Manifest worker unavailable"); return; }
   const esp_partition_t *partition = esp_ota_get_next_update_partition(nullptr);
-  if (!partition) { otaMessage("No OTA partition available"); model.otaAt = maintenanceClockMs() + 60000; return; }
+  if (!partition) { otaMessage("No OTA partition available"); return; }
   ManifestJob job; copy(job.url, PROJECT_OTA_MANIFEST_URL); job.partitionSize = partition->size;
+  job.manual = manual;
   const uint32_t started = uptimeMs();
   job.deadline = started + kManifestBudgetMs;
   if (xQueueSend(manifestJobs, &job, 0) != pdTRUE) { otaMessage("Manifest worker busy"); return; }
   model.otaDeadline = started + kOtaCycleMs;
-  model.manifestBusy = true; model.updateRequested = false; model.otaAt = maintenanceClockMs() + kOtaInterval;
+  model.manifestBusy = true; model.otaAt = maintenanceClockMs() + kOtaInterval;
   otaMessage("Checking S3 firmware manifest");
 }
 bool imageDescriptor(const uint8_t *data, size_t size) {
@@ -440,6 +488,7 @@ void refreshStationAfterSave() {
   model.wifiRecovery.manual(uptimeMs());
   recoveryManualUntil.store(maintenanceClockMs() + recovery::manualGraceMs);
   esp_wifi_disconnect(); model.connected = false; model.stationConnecting = false; model.stationAttempts = 0;
+  model.setupApCheckAt = uptimeMs();
   copy(model.control.ip, "192.168.4.1");
   if (!stationConfig()) message("Wi-Fi settings saved; radio configuration failed.");
   model.stationRetryAt = uptimeMs() + 500;
@@ -464,13 +513,67 @@ void discardBlockedTelemetry() {
   // A sustained flood cannot prolong the handoff; recreating the socket drops its queue.
   close(model.udp); model.udp = -1; initializeUdp();
 }
+const char *bootConfirmationBlocker() {
+  if (!model.nvsReady) return "OTA confirmation: NVS unavailable";
+  if (!std::strcmp(webFilesVersion(), "unavailable")) return "OTA confirmation: web files unavailable";
+  if (!model.wifiReady) return "OTA confirmation: Wi-Fi initialization failed";
+  if (!model.httpReady) return "OTA confirmation: HTTP server unavailable";
+  if (model.udp < 0) return "OTA confirmation: UDP socket unavailable";
+  if (!model.render.watchdogReady) return "OTA confirmation: renderer watchdog unavailable";
+  if (!model.render.assetsReady) return "OTA confirmation: render assets unavailable";
+  if (model.render.ledError) return "OTA confirmation: LED output failed";
+  if (!model.render.frames) return "OTA confirmation: no rendered frame";
+  return nullptr;
+}
 bool bootConfirmationHealthy() {
-  return model.nvsReady && std::strcmp(webFilesVersion(), "unavailable") &&
-      model.wifiReady && model.httpReady && model.udp >= 0 && model.render.watchdogReady &&
-      model.render.assetsReady && model.render.frames && model.render.ledError == 0;
+  return bootConfirmationBlocker() == nullptr;
+}
+void observeConfirmationMemorial(uint32_t now) {
+  if (!model.confirmationPending || model.confirmationSawMemorial || !model.control.memorialScheduled ||
+      due(now, model.confirmationDeadline) || !bootConfirmationHealthy() ||
+      model.confirmationSettingsFailed || model.confirmationSaveError) return;
+  // Freeze the monotonic end on first observation. Wall-clock corrections,
+  // repeated schedule events and a stuck renderer cannot renew this grace.
+  const uint32_t scheduledEnd = model.control.memorialStartedAt + model.control.memorialDurationMs;
+  const int32_t remaining = int32_t(scheduledEnd - now);
+  const uint32_t hold = remaining > 0 ? std::min(uint32_t(remaining),
+      memorial::kPreparationMs + memorial::kMinuteMs) : 0;
+  model.confirmationSawMemorial = true;
+  model.confirmationAfterMemorial = now + hold + kMaintenanceTimeout;
+}
+bool confirmationExpired(uint32_t now) {
+  return due(now, model.confirmationDeadline) && (!model.confirmationSawMemorial ||
+      due(now, model.confirmationAfterMemorial) || !bootConfirmationHealthy());
 }
 void rejectPendingBoot(const char *status, esp_err_t reason) {
-  otaMessage(status);
+  const char *cause = status;
+  int32_t detail = reason;
+  if (!status) {
+    if (const char *blocked = bootConfirmationBlocker()) {
+      cause = blocked;
+      if (model.render.ledError) detail = model.render.ledError;
+    } else if (model.confirmationSettingsFailed) {
+      cause = "OTA confirmation: settings persistence failed";
+      detail = ESP_FAIL;
+    } else if (model.confirmationSaveError) {
+      cause = "OTA confirmation: OTA metadata commit failed";
+      detail = model.confirmationSaveError;
+    } else if (previewStreamBusy.load()) {
+      cause = "OTA confirmation: preview did not drain before deadline";
+    } else if (model.control.maintenance == Maintenance::Persist && !acknowledged()) {
+      cause = "OTA confirmation: renderer did not acknowledge maintenance";
+    } else {
+      cause = "OTA confirmation: maintenance window did not complete before deadline";
+    }
+  }
+  diagnostic_persistence::retainOtaRejection(PROJECT_FIRMWARE_VERSION, cause, reason, detail);
+  // Older fallback images can already read the archive. Otherwise leave the
+  // RTC copy intact for the next image that knows the mailbox layout.
+  if (!model.loops || (!model.control.memorialScheduled && !model.render.memorialTransition &&
+      model.control.maintenance != Maintenance::None &&
+      acknowledged() && !model.render.ledError && !previewStreamBusy.load()))
+    diagnostic_persistence::archiveOtaRejection(maintenanceClockMs());
+  otaMessage(cause);
   reportOtaFailure(OtaPhase::BootConfirmation, reason,
                    uptimeMs() - (model.confirmationDeadline - kBootConfirmationMs));
   ESP_LOGE(kTag, "Pending OTA boot rejected: nvs=%d wifi=%d http=%d udp=%d watchdog=%d assets=%d frames=%lu led_error=%ld",
@@ -483,10 +586,19 @@ void rejectPendingBoot(const char *status, esp_err_t reason) {
 }
 
 void serviceMaintenance() {
-  RecoveryOwner recoveryOwner; if (!recoveryOwner) return;
   const uint32_t now = uptimeMs();
-  if (model.confirmationPending && due(now, model.confirmationDeadline)) {
-    rejectPendingBoot("OTA boot confirmation timed out; restarting for rollback", ESP_ERR_TIMEOUT);
+  // A click gets first chance at TLS this loop. While admission is deferred,
+  // the existing poller runs normally, including in low-memory conditions.
+  model.updateRequested = false;
+  if (model.manualCheckUntil && maintenanceClockMs() >= model.manualCheckUntil) {
+    model.manualCheckUntil = 0;
+    model.otaAt = maintenanceClockMs() + 60000;
+    otaMessage("Manual update check expired before it could start");
+  }
+  RecoveryOwner recoveryOwner; if (!recoveryOwner) return;
+  observeConfirmationMemorial(now);
+  if (model.confirmationPending && confirmationExpired(now)) {
+    rejectPendingBoot(nullptr, ESP_ERR_TIMEOUT);
     return;
   }
   if (model.otaVisualTimedOut) {
@@ -518,7 +630,9 @@ void serviceMaintenance() {
         failure.reason = model.render.ledError ? model.render.ledError : ESP_ERR_TIMEOUT;
         diagnostics::event(diagnostics::Level::Error, diagnostics::Module::System, uint16_t(0x0102), failure);
         ESP_LOGE(kTag, "Renderer did not acknowledge maintenance release; restarting");
-        esp_restart();
+        if (model.confirmationPending)
+          rejectPendingBoot("OTA confirmation: renderer did not acknowledge maintenance release", failure.reason);
+        else esp_restart();
       }
       return;
     }
@@ -533,6 +647,14 @@ void serviceMaintenance() {
     reportOtaDeadline();
     model.manifestReady = false; model.otaAt = maintenanceClockMs() + 60000;
     if (model.control.maintenance == Maintenance::Ota) releaseMaintenance();
+    return;
+  }
+  const bool memorialFlashHold = model.control.memorialScheduled || (model.confirmationPending &&
+      model.confirmationSawMemorial && !model.memorial.manual && model.render.memorialTransition);
+  if (model.confirmationPending && memorialFlashHold && model.control.maintenance == Maintenance::Persist) {
+    // The previous loop may have admitted a barrier just before preparation.
+    // Release it even if the acknowledgment arrived in this loop.
+    releaseMaintenance();
     return;
   }
   if (model.control.maintenance != Maintenance::None) {
@@ -563,9 +685,10 @@ void serviceMaintenance() {
         const int64_t archiveNow = maintenanceClockMs();
         if (diagnostic_persistence::due(archiveNow, model.restarting || model.manifestReady))
           diagnostic_persistence::flush(archiveNow);
+        if (model.confirmationPending) model.confirmationSettingsFailed = !saved;
         if (!saved) diagnostics::event(diagnostics::Level::Error, diagnostics::Module::System, uint16_t(0x0101));
-        if (model.confirmationPending && due(uptimeMs(), model.confirmationDeadline)) {
-          rejectPendingBoot("OTA boot confirmation timed out; restarting for rollback", ESP_ERR_TIMEOUT);
+        if (model.confirmationPending && confirmationExpired(uptimeMs())) {
+          rejectPendingBoot(nullptr, ESP_ERR_TIMEOUT);
           return;
         }
         if (model.confirmationPending && saved && bootConfirmationHealthy()) {
@@ -574,6 +697,7 @@ void serviceMaintenance() {
             model.confirmationPending = false;
             otaMessage("OTA boot confirmed");
           } else {
+            model.confirmationSaveError = result;
             message("Boot confirmation could not be persisted.");
             reportOtaFailure(OtaPhase::BootConfirmation, result,
                              uptimeMs() - (model.confirmationDeadline - kBootConfirmationMs));
@@ -621,7 +745,7 @@ void serviceMaintenance() {
     return;
   }
   // Defer new flash barriers from the scheduled close through the memorial minute.
-  if (air_alert::busy() || model.control.memorialScheduled) return;
+  if (air_alert::busy() || memorialFlashHold) return;
   const int64_t maintenanceNow = maintenanceClockMs();
   if (maintenanceNow >= model.persistRetryAt && (
       (model.dirty && now - model.dirtyAt >= 300) || web_auth::pendingSave() ||
@@ -640,6 +764,6 @@ void serviceMaintenance() {
   }
   if (model.manifestReady && !model.dirty && !model.weeklyDirty && !model.lifetimeDirty && !daily_runtime::dirty() && !model.memorialDirty && !model.airDirty && !model.lightDirty && !model.buzzerDirty && !model.skyColorsDirty && !web_auth::pendingSave() && !web_auth::busy() && !model.control.memorialActive && !model.control.memorialScheduled && !model.render.memorialTransition) { requestMaintenance(Maintenance::Ota); return; }
   if (!model.connected || model.dirty || !model.render.assetsReady || model.render.ledError) return;
-  if (maintenanceNow >= model.otaAt && (model.control.on || model.updateRequested)) queueManifestCheck();
+  if (maintenanceNow >= model.otaAt && (model.control.on || model.manualCheckUntil)) queueManifestCheck();
 }
 } // namespace

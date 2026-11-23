@@ -4,7 +4,8 @@ The Agents page keeps the weekly agent ranking and shows exactly seven token
 activity bars for the current Monday–Sunday calendar week, using the
 controller's Kyiv date. The heading shows the full week range and the summary
 adds only known daily totals. There is no year grid, aggregation-mode switch,
-or weekly details table. The underlying history still retains 366 dates.
+or weekly details table. The underlying Codex history retains 366 dates. Claude usage appears in the
+weekly rating column and has independent 28-day retention on the controller.
 
 Unknown days are distinct from a reported zero; future days stay unknown.
 Older weekly/lifetime totals are never distributed across invented daily buckets.

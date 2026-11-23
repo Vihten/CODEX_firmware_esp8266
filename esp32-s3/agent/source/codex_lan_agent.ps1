@@ -37,15 +37,14 @@ if ([string]::IsNullOrWhiteSpace($TokenStatePath)) {
 $weeklyTokens = $null
 $nextTokenScan = [DateTime]::MinValue
 $weeklyTokensReady = $false
-$dailyTokens = @()
-$dailyTokenIdentity = ''
-$dailyTokenIndex = 0
+$codexDailyTokens = $null
 $nextDailyReportAt = [DateTime]::MinValue
 $tokenScanner = $null
 $claudeDailyScanner = $null
 $claudeDailyTokens = $null
 $nextClaudeDailyScan = [DateTime]::MinValue
 $preferClaudeDaily = $false
+$lastTokenSendWasWeekly = $false
 $claudePoller = $null
 $claudeHttpSender = $null
 $originHttpSender = $null
@@ -339,8 +338,7 @@ function Get-RemainingPercent {
         if ($null -eq $maximumUsed) { return -1 }
         $remaining = [Math]::Max(0.0, [Math]::Min(100.0, 100.0 - $maximumUsed))
         $script:quotaFingerprint = $AccountFingerprint.ToUpperInvariant()
-        # Copy only the selected window's reset. Missing/invalid timestamps are
-        # omitted by New-QuotaResetPacket, never replaced by now + five hours.
+        # A missing or invalid reset clears the previous window on the controller.
         $reset = $resetWindow.resetsAt
         if ($null -eq $reset) { $reset = $resetWindow.resets_at }
         if ($null -eq $reset) { $reset = $resetWindow.reset_at }
@@ -1318,25 +1316,24 @@ function New-ClaudeQuotaPacket($State, [string]$Account, [string]$Client,
 }
 
 # LFR1 is supplemental metadata only; receivers must not refresh quota TTL.
-# Unknown/invalid metadata is omitted. Age is measured from the observation,
+# Reset zero explicitly clears the previous window. Age is measured from the observation,
 # never from the heartbeat or HTTP enqueue time.
 function New-QuotaResetPacket([string]$Account, [string]$Client, [string]$Provider,
     $Quota, [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow) {
     if ($Account -cnotmatch '\A[0-9A-Fa-f]{8}\z' -or $Client -cnotmatch '\A[0-9A-Fa-f]{8}\z' -or
         $Provider -cnotin @('codex', 'claude') -or $null -eq $Quota -or
-        $Quota.Fingerprint -ine (Get-AccountFingerprint 'marketing@tiras.ua')) { return }
+        $Quota.Fingerprint -ine $Account -or $Quota.Fingerprint -ine (Get-AccountFingerprint 'marketing@tiras.ua')) { return }
     try {
         if ($Quota.FetchedAt -isnot [DateTimeOffset]) { return }
         $age = ($Now - $Quota.FetchedAt).TotalSeconds
         if ($age -lt 0 -or $age -gt 86400) { return }
-        if ($Provider -ceq 'claude') {
-            if ($Quota.ResetAt -isnot [DateTimeOffset]) { return }
-            $epochText = $Quota.ResetAt.ToUnixTimeSeconds().ToString([Globalization.CultureInfo]::InvariantCulture)
-        } else { $epochText = [string]$Quota.ResetEpoch }
-        # Decimal integer only: reject booleans, fractions, exponents and overflow.
         [long]$epoch = 0
-        if ($epochText -cnotmatch '\A[0-9]{10}\z' -or -not [long]::TryParse($epochText, [ref]$epoch) -or
-            $epoch -lt 1700000000 -or $epoch -gt 4102444800) { return }
+        if ($Provider -ceq 'claude') {
+            if ($Quota.ResetAt -is [DateTimeOffset]) { $epoch = $Quota.ResetAt.ToUnixTimeSeconds() }
+        } elseif ([string]$Quota.ResetEpoch -cmatch '\A[0-9]{10}\z') {
+            $epoch = [long]$Quota.ResetEpoch
+        }
+        if ($epoch -lt 1700000000 -or $epoch -gt 4102444800) { $epoch = 0 }
         $ageSeconds = [long][Math]::Floor($age)
         "LFR1,$Account,$Client,$Provider,$($Quota.Fingerprint),$epoch,$ageSeconds"
     } catch { return }
@@ -1429,46 +1426,62 @@ function Send-Heartbeat {
             Start-ClaudeHttpSend $script:resetHttpSenders[$provider] $resetBytes $DirectHost $DirectHttpPort
         }
     }
-    $sentWeekly = $false
     $reportIdentity = ("$AccountFingerprint,$clientHash,$($metadata.ColorHex6),$($metadata.NameUtf8Hex)").ToUpperInvariant()
-    if ($script:weeklyTokens.ReportIdentity -ceq $reportIdentity -and $now -ge $script:nextWeeklyReportAt -and $script:weeklyTokensReady -and
-        $script:weeklyTokens.Week -eq (Get-TokenWeek ([DateTimeOffset]::UtcNow))) {
-        $sentWeekly = $true
+    # Both providers share one dated slot. RAM acknowledgements leave the cyclic
+    # retry schedule intact so a reboot can recover all dates.
+    if ($script:codexDailyTokens -or $script:claudeDailyTokens) {
+        $today = Get-TokenDay ([DateTimeOffset]$now)
+        if ($script:codexDailyTokens -and $script:codexDailyTokens.Today -cne $today) {
+            $replay = $script:codexDailyTokens
+            $script:codexDailyTokens = Update-DailyReplay $replay $replay.Daily $replay.ReportIdentity 366 ([DateTimeOffset]$now)
+        }
+        if ($script:claudeDailyTokens -and $script:claudeDailyTokens.Today -cne $today) {
+            $replay = $script:claudeDailyTokens
+            $script:claudeDailyTokens = Update-DailyReplay $replay $replay.Daily $replay.ReportIdentity 28 ([DateTimeOffset]$now)
+        }
+    }
+    $codexDailyReady = $null -ne $script:codexDailyTokens -and
+        $script:codexDailyTokens.ReportIdentity -ceq $reportIdentity -and $script:codexDailyTokens.Daily.Count -gt 0
+    $claudeDailyReady = $null -ne $script:claudeDailyTokens -and
+        $script:claudeDailyTokens.ReportIdentity -ceq $reportIdentity -and $script:claudeDailyTokens.Daily.Count -gt 0
+    $dailyDue = ($codexDailyReady -or $claudeDailyReady) -and $now -ge $script:nextDailyReportAt
+    if ($script:weeklyTokensReady -and $script:weeklyTokens.ReportIdentity -ceq $reportIdentity -and
+        $now -ge $script:nextWeeklyReportAt -and $script:weeklyTokens.Week -eq (Get-TokenWeek ([DateTimeOffset]$now)) -and
+        -not ($dailyDue -and $script:lastTokenSendWasWeekly)) {
+        $script:lastTokenSendWasWeekly = $true
         $script:nextWeeklyReportAt = $now.AddSeconds(15)
         $tokenMessage = New-WeeklyTokenPacket $script:weeklyTokens $AccountFingerprint $clientHash $metadata.ColorHex6 $metadata.NameUtf8Hex
         $tokenBytes = [Text.Encoding]::ASCII.GetBytes($tokenMessage)
         try { [void]$udp.Send($tokenBytes, $tokenBytes.Length, $DirectHost, $DirectPort) }
         catch [Net.Sockets.SocketException] { }
-        # Retry the committed snapshot next interval even when UDP has no ACK or HTTP fails.
         $ack = Send-DirectHttpPacket $tokenBytes
         if ($null -ne $ack) { [void](Test-WeeklyTokenAcknowledgement $ack) }
-    }
-    # Both providers share one dated slot. RAM acknowledgements leave the cyclic
-    # retry schedule intact so a reboot can recover all dates.
-    $codexDailyReady = $script:dailyTokenIdentity -ceq $reportIdentity -and $script:dailyTokens.Count -gt 0
-    $claudeDailyReady = $null -ne $script:claudeDailyTokens -and
-        $script:claudeDailyTokens.ReportIdentity -ceq $reportIdentity -and $script:claudeDailyTokens.Daily.Count -gt 0
-    if (-not $sentWeekly -and ($codexDailyReady -or $claudeDailyReady) -and $now -ge $script:nextDailyReportAt) {
+    } elseif ($dailyDue) {
+        $script:lastTokenSendWasWeekly = $false
         $script:nextDailyReportAt = $now.AddSeconds(2)
         if ($claudeDailyReady -and ($script:preferClaudeDaily -or -not $codexDailyReady)) {
-            $report = $script:claudeDailyTokens
-            $day = $report.Daily[$report.Index]
-            $report.Index = ($report.Index + 1) % $report.Daily.Count
+            $replay = $script:claudeDailyTokens
             $protocol = 'LFD2'
             $script:preferClaudeDaily = $false
         } else {
-            if ($script:dailyTokenIndex -ge $script:dailyTokens.Count) { $script:dailyTokenIndex = 0 }
-            $day = $script:dailyTokens[$script:dailyTokenIndex]
-            $script:dailyTokenIndex = ($script:dailyTokenIndex + 1) % $script:dailyTokens.Count
+            $replay = $script:codexDailyTokens
             $protocol = 'LFD1'
             $script:preferClaudeDaily = $true
         }
+        $day = Get-NextDailyReplay $replay
         $dayMessage = New-DailyTokenPacket $day $AccountFingerprint $clientHash $metadata.ColorHex6 $metadata.NameUtf8Hex $protocol
         $dayBytes = [Text.Encoding]::ASCII.GetBytes($dayMessage)
         try { [void]$udp.Send($dayBytes, $dayBytes.Length, $DirectHost, $DirectPort) }
         catch [Net.Sockets.SocketException] { }
         $ack = Send-DirectHttpPacket $dayBytes
-        if ($null -ne $ack) { [void](Test-DailyTokenAcknowledgement $ack $day $protocol) }
+        $key = [string]$day.Day
+        if ($replay.Pending.Contains($key)) {
+            $replay.Pending.Remove($key)
+            # Retry an unconfirmed correction behind other changed dates.
+            if ($null -eq $ack -or -not (Test-DailyTokenAcknowledgement $ack $day $protocol)) {
+                $replay.Pending[$key] = $true
+            }
+        }
     }
 }
 
@@ -1788,11 +1801,9 @@ try {
                 $weeklyTokens = $committedTokens
                 $weeklyTokensReady = $true
                 if ($null -ne $committedTokens.Daily) {
-                    $dailyTokens = @($committedTokens.Daily)
-                    $dailyTokenIdentity = $committedTokens.ReportIdentity
-                    if ($dailyTokenIndex -ge $dailyTokens.Count) { $dailyTokenIndex = 0 }
+                    $codexDailyTokens = Update-DailyReplay $codexDailyTokens $committedTokens.Daily $committedTokens.ReportIdentity 366 ([DateTimeOffset]$now)
                 } else {
-                    $dailyTokens = @(); $dailyTokenIdentity = ''
+                    $codexDailyTokens = $null
                 }
                 if ($committedTokens.DailyError) { Write-AgentStatus "Daily token checkpoint unavailable; retrying: $($committedTokens.DailyError)" }
             }
@@ -1805,9 +1816,7 @@ try {
         try {
             $committed = Receive-WeeklyTokenScan $claudeDailyScanner
             if ($null -ne $committed) {
-                $index = if ($null -ne $claudeDailyTokens) { $claudeDailyTokens.Index } else { 0 }
-                if ($index -ge $committed.Daily.Count) { $index = 0 }
-                $claudeDailyTokens = @{ Daily = $committed.Daily; ReportIdentity = $committed.ReportIdentity; Index = $index }
+                $claudeDailyTokens = Update-DailyReplay $claudeDailyTokens $committed.Daily $committed.ReportIdentity 28 ([DateTimeOffset]$now)
             }
             if ($null -eq $claudeDailyScanner.Pending -and $now -ge $nextClaudeDailyScan) {
                 $nextClaudeDailyScan = $now.AddSeconds(15)

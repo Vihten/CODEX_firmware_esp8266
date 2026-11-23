@@ -5,7 +5,7 @@
       if (input.matches('[data-agent-name-input]')) input.setCustomValidity?.('');
       if (input.id === 'brightness') {
         const output = one('#brightnessValue');
-        if (output) output.textContent = `${Math.round(Number(input.value) * 100 / 255)}%`;
+        if (output) output.textContent = brightnessPercent(input.value);
       }
       if (input.matches('[data-light-range]')) text(`#${input.id}-value`, `${input.value}%`);
       if (input.id === 'buzzer-volume') text('#buzzer-volume-value', `${input.value}%`);
@@ -61,7 +61,7 @@
         if (row) agentStates.delete(row);
         const range = one('#brightness', form);
         const output = one('#brightnessValue');
-        if (range && output) output.textContent = `${Math.round(Number(range.value) * 100 / 255)}%`;
+        if (range && output) output.textContent = brightnessPercent(range.value);
         const volume = one('#buzzer-volume', form);
         if (volume) text('#buzzer-volume-value', `${volume.value}%`);
       }, 0);

@@ -17,36 +17,99 @@ bool stationConfig() {
   station.sta.pmf_cfg.capable = true; station.sta.pmf_cfg.required = false;
   return esp_wifi_set_config(WIFI_IF_STA, &station) == ESP_OK;
 }
+// The IDF default constructors abort on allocation failure. Keep ownership only
+// after attachment succeeds so a failed startup can resume without duplicating a netif.
+bool attachWifiNetif(esp_netif_t *&target, const esp_netif_config_t &config,
+                     esp_err_t (*attach)(esp_netif_t *)) {
+  if (target) return true;
+  esp_netif_t *netif = esp_netif_new(&config);
+  if (!netif) return false;
+  if (attach(netif) != ESP_OK) {
+    esp_netif_destroy_default_wifi(netif);
+    return false;
+  }
+  target = netif;
+  return true;
+}
 bool initializeWifi() {
-  if (esp_event_loop_create_default() != ESP_OK) return false;
-  model.sta = esp_netif_create_default_wifi_sta(); model.ap = esp_netif_create_default_wifi_ap();
-  if (!model.sta || !model.ap) return false;
-  wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT(); config.nvs_enable = false;
-  if (esp_wifi_init(&config) != ESP_OK || esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) return false;
-  if (esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifiEvent, nullptr) != ESP_OK ||
-      esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifiEvent, nullptr) != ESP_OK) return false;
-  uint8_t mac[6]; if (esp_wifi_get_mac(WIFI_IF_STA, mac) != ESP_OK) return false;
-  model.deviceId = (uint32_t(mac[3]) << 16) | (uint32_t(mac[4]) << 8) | mac[5];
-  std::snprintf(model.apName, sizeof(model.apName), "LED-Forge-%06lX", (unsigned long)model.deviceId);
-  esp_netif_ip_info_t address{};
-  IP4_ADDR(&address.ip, 192, 168, 4, 1); IP4_ADDR(&address.gw, 192, 168, 4, 1); IP4_ADDR(&address.netmask, 255, 255, 255, 0);
-  esp_netif_dhcps_stop(model.ap);
-  if (esp_netif_set_ip_info(model.ap, &address) != ESP_OK) return false;
-  esp_netif_dhcps_start(model.ap);
-  wifi_config_t ap{};
-  std::memcpy(ap.ap.ssid, model.apName, std::strlen(model.apName)); ap.ap.ssid_len = std::strlen(model.apName);
-  std::memcpy(ap.ap.password, "ledforge", 8); ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
-  ap.ap.max_connection = 4; ap.ap.channel = 1;
-  if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK || esp_wifi_set_config(WIFI_IF_AP, &ap) != ESP_OK) return false;
-  model.wifiInitialized = true;
-  if (!stationConfig()) return false;
-  model.wifiDriverStarted = esp_wifi_start() == ESP_OK;
+  // Only the network owner runs this function. The driver has one lifetime per boot.
+  static bool loopReady = false, driverReady = false, wifiHandler = false, ipHandler = false;
+  model.wifiInitRetryAt = uptimeMs() + 5000;
+  if (!loopReady) {
+    const esp_err_t loop = esp_event_loop_create_default();
+    if (loop != ESP_OK && loop != ESP_ERR_INVALID_STATE) return false;
+    loopReady = true;
+  }
+  const esp_netif_config_t stationNetif = ESP_NETIF_DEFAULT_WIFI_STA();
+  const esp_netif_config_t apNetif = ESP_NETIF_DEFAULT_WIFI_AP();
+  if (!attachWifiNetif(model.sta, stationNetif, esp_netif_attach_wifi_station) ||
+      !attachWifiNetif(model.ap, apNetif, esp_netif_attach_wifi_ap) ||
+      esp_wifi_set_default_wifi_sta_handlers() != ESP_OK) return false;
+  if (!driverReady) {
+    wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT(); config.nvs_enable = false;
+    if (esp_wifi_init(&config) != ESP_OK) return false;
+    driverReady = true;
+  }
+  if (!wifiHandler)
+    wifiHandler = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifiEvent, nullptr) == ESP_OK;
+  if (!wifiHandler) return false;
+  if (!ipHandler)
+    ipHandler = esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifiEvent, nullptr) == ESP_OK;
+  if (!ipHandler) return false;
+  if (!model.wifiDriverStarted) {
+    if (esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) return false;
+    uint8_t mac[6];
+    if (esp_wifi_get_mac(WIFI_IF_STA, mac) != ESP_OK) return false;
+    model.deviceId = (uint32_t(mac[3]) << 16) | (uint32_t(mac[4]) << 8) | mac[5];
+    std::snprintf(model.apName, sizeof(model.apName), "LED-Forge-%06lX", (unsigned long)model.deviceId);
+    esp_netif_ip_info_t address{};
+    IP4_ADDR(&address.ip, 192, 168, 4, 1); IP4_ADDR(&address.gw, 192, 168, 4, 1); IP4_ADDR(&address.netmask, 255, 255, 255, 0);
+    esp_netif_dhcps_stop(model.ap);
+    if (esp_netif_set_ip_info(model.ap, &address) != ESP_OK) return false;
+    const esp_err_t dhcp = esp_netif_dhcps_start(model.ap);
+    if (dhcp != ESP_OK && dhcp != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) return false;
+    wifi_config_t ap{};
+    std::memcpy(ap.ap.ssid, model.apName, std::strlen(model.apName)); ap.ap.ssid_len = std::strlen(model.apName);
+    std::memcpy(ap.ap.password, "ledforge", 8); ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    ap.ap.max_connection = 4; ap.ap.channel = 1;
+    if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK || esp_wifi_set_config(WIFI_IF_AP, &ap) != ESP_OK) return false;
+    if (!stationConfig()) return false;
+    model.wifiDriverStarted = esp_wifi_start() == ESP_OK;
+  }
   if (!model.wifiDriverStarted || esp_wifi_set_ps(WIFI_PS_NONE) != ESP_OK) return false;
+  model.wifiInitialized = true;
   model.stationRetryAt = uptimeMs();
   return true;
 }
+void serviceSetupAp(bool wasConnected, uint32_t now) {
+  if (wasConnected != model.connected)
+    model.setupApCheckAt = model.connected ? now + 120000 : now;
+  if (model.control.maintenance != Maintenance::None || !due(now, model.setupApCheckAt)) return;
+  if (model.connected && model.setupApOpen) {
+    model.setupApCheckAt = now + 30000;
+    wifi_sta_list_t clients{};
+    if (esp_wifi_ap_get_sta_list(&clients) == ESP_OK && clients.num == 0 &&
+        esp_wifi_set_mode(WIFI_MODE_STA) == ESP_OK) model.setupApOpen = false;
+  } else if (!model.connected) {
+    model.setupApCheckAt = now + 5000;
+    if (!model.setupApOpen) {
+      model.setupApOpen = esp_wifi_set_mode(WIFI_MODE_APSTA) == ESP_OK;
+    } else if (model.ap && esp_netif_is_netif_up(model.ap)) {
+      esp_netif_dhcp_status_t status;
+      if (esp_netif_dhcps_get_status(model.ap, &status) == ESP_OK && status != ESP_NETIF_DHCP_STARTED)
+        esp_netif_dhcps_start(model.ap);
+    }
+  }
+}
 void serviceWifi() {
   const uint32_t now = uptimeMs();
+  if (!model.wifiInitialized) {
+    if (!due(now, model.wifiInitRetryAt) || model.control.maintenance != Maintenance::None) return;
+    model.wifiReady = initializeWifi();
+    if (!model.wifiReady) return;
+    message("Wi-Fi initialized after retry.");
+  }
+  const bool wasConnected = model.connected;
   const uint32_t dropped = wifiEventDrops.load(std::memory_order_relaxed);
   if (dropped != model.wifiEventsDropped) {
     model.wifiEventsDropped = dropped;
@@ -108,6 +171,7 @@ void serviceWifi() {
       }
     }
   }
+  serviceSetupAp(wasConnected, now);
   if (model.stationConnecting && now - model.stationAt >= 20000) {
     diagnostic_log::Snapshot failure; failure.elapsed_ms = now - model.stationAt;
     failure.attempts = model.stationAttempts;
@@ -171,6 +235,7 @@ void serviceWifiRecovery() {
     // Do not deinit the driver/netifs or erase RAM/NVS configuration.
     esp_err_t result = esp_wifi_set_mode(WIFI_MODE_AP);
     if (result == ESP_OK) result = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (result == ESP_OK) model.setupApOpen = true;
     if (result == ESP_OK && !stationConfig()) result = ESP_FAIL;
     if (result == ESP_OK && !model.wifiDriverStarted) {
       result = esp_wifi_start(); model.wifiDriverStarted = result == ESP_OK;

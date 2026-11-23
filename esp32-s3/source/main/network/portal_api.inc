@@ -82,7 +82,9 @@ void previewStreamTask(void *) {
     const uint32_t started = uptimeMs();
     const uint32_t authRevision = previewSessionRevision.load();
     char authToken[65]; std::memcpy(authToken, previewSessionToken, sizeof(authToken));
-    TickType_t wake = xTaskGetTickCount();
+    constexpr TickType_t framePeriod = pdMS_TO_TICKS(66);
+    const TickType_t firstPoll = xTaskGetTickCount();
+    TickType_t wake = firstPoll;
     while (writable && uint32_t(uptimeMs() - started) < 30000 &&
            authRevision == web_auth::sessionRevision() && web_auth::sessionActive(authToken) && previewStreamAllowed()) {
       if (copyPreview(bytes, sizeof(bytes), uptimeMs())) {
@@ -95,8 +97,15 @@ void previewStreamTask(void *) {
       }
       // No view/preview mutex is held during network I/O. Never queue old frames.
       previewStreamStack.store(uxTaskGetStackHighWaterMark(nullptr), std::memory_order_relaxed);
-      if (xTaskGetTickCount() - wake >= pdMS_TO_TICKS(66)) wake = xTaskGetTickCount();
-      vTaskDelayUntil(&wake, pdMS_TO_TICKS(66));
+      const TickType_t tick = xTaskGetTickCount();
+      TickType_t interval = framePeriod;
+      if (writable && !sent && tick - firstPoll < framePeriod) {
+        // A cold copy starts renderer demand. Add one probe halfway to the
+        // normal deadline. The loop rechecks session and maintenance each time.
+        wake = firstPoll;
+        if (tick - firstPoll < framePeriod / 2) interval = framePeriod / 2;
+      } else if (tick - wake >= framePeriod) wake = tick;
+      vTaskDelayUntil(&wake, interval);
     }
     if (writable && sent) writable = httpd_resp_send_chunk(request, nullptr, 0) == ESP_OK;
     if (!writable) ++previewStreamSendErrors;
@@ -187,6 +196,8 @@ esp_err_t portalStatus(httpd_req_t *request) {
   number(root, "preview_stream_stack", previewStreamStack.load(std::memory_order_relaxed));
   number(root, "preview_stream_send_errors", previewStreamSendErrors.load(std::memory_order_relaxed));
   number(root, "ota_done", view.otaDone); number(root, "ota_total", view.otaTotal);
+  if (view.otaCheckedAt) number(root, "ota_checked_at", double(view.otaCheckedAt));
+  else if (!cJSON_AddNullToObject(root, "ota_checked_at")) okay = false;
   const time_t epoch = std::time(nullptr); number(root, "time_epoch", epoch >= 1700000000 ? double(epoch) : 0);
   boolean(root, "standby", !view.control.on);
   boolean(root, "clock_ready", epoch >= 1700000000);
@@ -370,6 +381,7 @@ esp_err_t portalStatus(httpd_req_t *request) {
     number(week, "week", codex.week ? codex.week : claude.week);
     string(week, "source", "daily");
     boolean(week, "available", snapshot.codexReady || snapshot.claudeReady);
+    boolean(week, "coverage_complete", rating.coverageComplete);
     boolean(week, "dirty", codex.saving || claude.saving);
     boolean(week, "save_failed", codex.saveFailed || claude.saveFailed);
     boolean(week, "codex_available", snapshot.codexReady);
@@ -401,6 +413,8 @@ esp_err_t portalStatus(httpd_req_t *request) {
       tokenValue(item, "tokens", row.codex, row.codexDays);
       tokenValue(item, "claude_tokens", row.claude, row.claudeDays);
       number(item, "observed_days", row.codexDays);
+      number(item, "codex_observed_days", row.codexDays);
+      number(item, "claude_observed_days", row.claudeDays);
       for (const auto &reported : view.weekly.entries) if (reported.clientId == row.clientId) {
         number(item, "reported_tokens", double(reported.tokens));
         string(item, "reported_protocol", weekly::v2(reported) ? "LFT2" : "LFT1"); break;
@@ -438,7 +452,7 @@ esp_err_t health(httpd_req_t *request) {
   unsigned agents = 0; for (const auto &agent : view.control.agents) agents += agent.present;
   char body[3072];
   const int count = std::snprintf(body, sizeof(body),
-      "firmware=%llu board=esp32-s3-n16r8 controllerId=%06lX network_core=0 http_core=0 render_core=1 led_transport=rmt-dma led_pin=%d fps=%d uptime_ms=%lu render_frames=%lu render_missed=%lu render_last_us=%lu render_stack=%lu render_watchdog=%u network_stack=%lu network_loops=%lu assets_ready=%u led_error=%ld heap=%u largest_block=%u psram=%u psram_free=%u wifi_connected=%u wifi_rssi=%d wifi_sleep=none wifi_disconnects=%lu wifi_disconnect_reason=%u agent_count=%u activity=%u remaining=%u maintenance=%u maintenance_epoch=%lu render_epoch=%lu quiescent=%u maintenance_timeouts=%lu settings_dirty=%u nvs_ready=%u udp_packets=%lu ota_done=%lu ota_total=%lu reset_reason=%u\n",
+      "firmware=%llu board=esp32-s3-n16r8 controllerId=%06lX network_core=0 http_core=0 render_core=1 led_transport=rmt-dma led_pin=%d fps=%d uptime_ms=%lu render_frames=%lu render_missed=%lu render_last_us=%lu render_stack=%lu render_watchdog=%u network_stack=%lu network_loops=%lu assets_ready=%u led_error=%ld heap=%u largest_block=%u psram=%u psram_free=%u wifi_connected=%u wifi_rssi=%d wifi_sleep=none wifi_disconnects=%lu wifi_disconnect_reason=%u agent_count=%u activity=%u remaining=%d quota_known=%u quota_fresh=%u maintenance=%u maintenance_epoch=%lu render_epoch=%lu quiescent=%u maintenance_timeouts=%lu settings_dirty=%u nvs_ready=%u udp_packets=%lu ota_done=%lu ota_total=%lu reset_reason=%u\n",
       (unsigned long long)PROJECT_FIRMWARE_VERSION, (unsigned long)view.deviceId, PROJECT_DATA_PIN, PROJECT_FPS,
       (unsigned long)uptimeMs(), (unsigned long)view.render.frames, (unsigned long)view.render.missedDeadlines,
       (unsigned long)view.render.lastFrameUs, (unsigned long)view.render.stackFreeBytes, view.render.watchdogReady, (unsigned long)view.netStack,
@@ -447,7 +461,9 @@ esp_err_t health(httpd_req_t *request) {
       unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
       unsigned(esp_psram_get_size()), unsigned(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)), view.control.connected,
       view.rssi, (unsigned long)view.disconnects, view.disconnectReason, agents, view.control.activityPercent,
-      view.control.remainingPercent, unsigned(view.control.maintenance), (unsigned long)view.control.maintenanceEpoch,
+      view.control.quotaKnown ? int(view.control.remainingPercent) : -1,
+      unsigned(view.control.quotaKnown), unsigned(view.control.quotaFresh),
+      unsigned(view.control.maintenance), (unsigned long)view.control.maintenanceEpoch,
       (unsigned long)view.render.maintenanceEpoch, view.render.quiescent, (unsigned long)view.maintenanceTimeouts,
       view.dirty, view.nvsReady, (unsigned long)view.udpPackets, (unsigned long)view.otaDone,
       (unsigned long)view.otaTotal, unsigned(esp_reset_reason()));

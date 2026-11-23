@@ -43,8 +43,9 @@ inline bool parse(const char *text, uint32_t pairedAccount, Packet &out) {
   out = value; return true;
 }
 struct Entry {
-  uint32_t clientId = 0, resetAt = 0, ageSeconds = 0, receivedAt = 0;
-  void observe(const Packet &packet, uint32_t now) {
+  uint32_t clientId = 0, resetAt = 0, ageSeconds = 0;
+  uint64_t receivedAt = 0;
+  void observe(const Packet &packet, uint64_t now) {
     clientId = packet.clientId; resetAt = packet.resetAt;
     ageSeconds = packet.ageSeconds; receivedAt = now;
   }
@@ -53,7 +54,7 @@ struct Entry {
 // Select the same minimum fresh sample used for this provider's balance.
 inline void apply(quota_provider::Snapshot &snapshot,
                   const quota_provider::Sample *samples, const Entry *entries,
-                  size_t count, uint32_t now, uint32_t ttl) {
+                  size_t count, uint64_t now, uint32_t ttl) {
   size_t selected = count;
   for (size_t i = 0; i < count; ++i) {
     if (!samples[i].fresh(now, ttl)) continue;
@@ -68,17 +69,19 @@ inline void apply(quota_provider::Snapshot &snapshot,
     selected = count;
     for (size_t i = 0; i < count; ++i) {
       if (!samples[i].clientId || samples[i].remaining != snapshot.remaining) continue;
-      if (selected == count || uint32_t(now - samples[i].seenAt) < uint32_t(now - samples[selected].seenAt))
+      if (selected == count || samples[i].seenAt > samples[selected].seenAt)
         selected = i;
     }
   }
   if (selected == count) { snapshot.resetAt = 0; snapshot.ageSeconds = UINT32_MAX; return; }
   const auto &sample = samples[selected]; const auto &meta = entries[selected];
   snapshot.resetAt = 0;
-  snapshot.ageSeconds = uint32_t(now - sample.seenAt) / 1000;
-  if (meta.clientId == sample.clientId) {
+  uint64_t age = (now - sample.seenAt) / 1000;
+  if (meta.clientId == sample.clientId && (sample.seenAt <= meta.receivedAt ||
+      sample.seenAt - meta.receivedAt < ttl)) {
     snapshot.resetAt = meta.resetAt;
-    snapshot.ageSeconds = meta.ageSeconds + uint32_t(now - meta.receivedAt) / 1000;
+    age = meta.ageSeconds + (now - meta.receivedAt) / 1000;
   }
+  snapshot.ageSeconds = age < UINT32_MAX ? uint32_t(age) : UINT32_MAX - 1;
 }
 }  // namespace quota_metadata

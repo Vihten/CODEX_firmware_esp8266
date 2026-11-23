@@ -211,19 +211,23 @@ bool acceptWeeklyTelemetry(const char *packet, char (&ack)[64]) {
   return true;
 }
 bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
+  // Queue latency is bounded; keep long-lived quota ages on the 64-bit boot clock.
+  const uint32_t now = uptimeMs();
+  const uint64_t quotaNow = uint64_t(esp_timer_get_time() / 1000);
+  const uint64_t quotaAt = quotaNow - std::min<uint64_t>(quotaNow, uint32_t(now - receivedAt));
   if (!std::strncmp(packet, "LFR1,", 5)) {
     quota_metadata::Packet incoming;
     if (!quota_metadata::parse(packet, PROJECT_ACCOUNT_FINGERPRINT, incoming)) return false;
-    const uint32_t now = uptimeMs();
     for (size_t i = 0; i < kAgentCapacity; ++i) {
       const auto &agent = model.control.agents[i];
       if (!agent.present || agent.clientId != incoming.clientId || now - agent.seenAt >= kAgentTimeout) continue;
       const bool codex = incoming.provider == quota_provider::Provider::Codex;
       const auto &sample = codex ? model.codexSamples[i] : model.claudeSamples[i];
-      if (sample.clientId != incoming.clientId || sample.remaining < 0 ||
+      if (sample.clientId != incoming.clientId || !sample.fresh(quotaNow, codex ?
+          quota_provider::codexFreshMs : quota_provider::claudeFreshMs) ||
           (codex && !agent.quotaForPairedAccount)) return false;
       auto &metadata = codex ? model.codexMetadata[i] : model.claudeMetadata[i];
-      metadata.observe(incoming, receivedAt);
+      metadata.observe(incoming, quotaAt);
       std::snprintf(ack, sizeof(ack), "LFR1_ACK,%06lX,%08lX", (unsigned long)model.deviceId,
           (unsigned long)incoming.clientId);
       return true;
@@ -241,8 +245,10 @@ bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
     for (size_t i = 0; i < kAgentCapacity; ++i) {
       const auto &agent = model.control.agents[i];
       if (!agent.clientId || agent.clientId != incoming.clientId) continue;
-      model.claudeSamples[i] = {incoming.clientId, receivedAt, incoming.remaining, incoming.validForMs};
-      ++model.udpPackets;
+      auto &sample = model.claudeSamples[i];
+      if (sample.remaining != incoming.remaining || !sample.fresh(quotaNow, quota_provider::claudeFreshMs))
+        model.claudeMetadata[i] = {};
+      sample = {incoming.clientId, quotaAt, incoming.remaining, incoming.validForMs};
       std::snprintf(ack, sizeof(ack), "LFC1_ACK,%06lX,%08lX", (unsigned long)model.deviceId,
           (unsigned long)incoming.clientId);
       return true;
@@ -251,7 +257,6 @@ bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
   }
   AgentInput incoming; bool legacy = false; uint8_t remaining = 100, activity = 0;
   if (!parseTelemetry(packet, incoming, legacy, remaining, activity)) return false;
-  const uint32_t now = uptimeMs();
   if (incoming.sourceActivityKnown) {
     for (auto &agent : model.control.agents) {
       if (!agent.present || agent.clientId != incoming.clientId || now - agent.seenAt >= kAgentTimeout) continue;
@@ -308,15 +313,16 @@ bool acceptTelemetry(const char *packet, char (&ack)[64], uint32_t receivedAt) {
       model.codexMetadata[slot] = {};
       model.claudeMetadata[slot] = {};
     }
-    if (!incoming.quotaForPairedAccount) model.codexMetadata[slot] = {};
-    model.codexSamples[slot] = {incoming.clientId, receivedAt,
+    if (!incoming.quotaForPairedAccount || model.codexSamples[slot].remaining != incoming.remaining ||
+        !model.codexSamples[slot].fresh(quotaNow, quota_provider::codexFreshMs)) model.codexMetadata[slot] = {};
+    model.codexSamples[slot] = {incoming.clientId, quotaAt,
         incoming.quotaForPairedAccount ? incoming.remaining : int16_t(-1)};
     model.control.agents[slot] = incoming;
     model.directSeen = true;
     std::snprintf(ack, sizeof(ack), "LFA2_ACK,%06lX,%08lX,%06lX", (unsigned long)model.deviceId,
                   (unsigned long)incoming.clientId, (unsigned long)incoming.rgb);
   }
-  model.linked = true; ++model.udpPackets;
+  model.linked = true;
   return true;
 }
 void serviceTelemetry() {
@@ -333,7 +339,10 @@ void serviceTelemetry() {
     if (received < 0) break;
     if (!received || received >= 200 || std::memchr(packet, 0, received)) continue;
     packet[received] = 0; char ack[64] = {};
-    if (acceptTelemetry(packet, ack, uptimeMs())) sendto(model.udp, ack, std::strlen(ack), 0, reinterpret_cast<sockaddr *>(&peer), size);
+    if (acceptTelemetry(packet, ack, uptimeMs())) {
+      ++model.udpPackets;
+      sendto(model.udp, ack, std::strlen(ack), 0, reinterpret_cast<sockaddr *>(&peer), size);
+    }
   }
 }
 void updateControl() {
@@ -351,12 +360,13 @@ void updateControl() {
   const bool legacy = model.legacySeen && now - model.legacyAt < 8000;
   model.control.activityPercent = direct ? uint8_t(std::min(combined, 100U)) : legacy && !model.directSeen ? model.legacyActivity : 0;
   int claudeRemaining = 101;
+  const uint64_t quotaNow = uint64_t(esp_timer_get_time() / 1000);
   for (size_t i = 0; i < kAgentCapacity; ++i) {
     if (model.codexSamples[i].clientId != model.control.agents[i].clientId) model.codexSamples[i] = {};
     if (model.claudeSamples[i].clientId != model.control.agents[i].clientId) model.claudeSamples[i] = {};
-    if (model.codexSamples[i].fresh(now, quota_provider::codexFreshMs))
+    if (model.codexSamples[i].fresh(quotaNow, quota_provider::codexFreshMs))
       remaining = std::min(remaining, int(model.codexSamples[i].remaining));
-    if (model.claudeSamples[i].fresh(now, quota_provider::claudeFreshMs))
+    if (model.claudeSamples[i].fresh(quotaNow, quota_provider::claudeFreshMs))
       claudeRemaining = std::min(claudeRemaining, int(model.claudeSamples[i].remaining));
   }
   const bool codexRecovered = model.codexQuota.observe(remaining, model.quotaResetReported, now);
@@ -369,9 +379,9 @@ void updateControl() {
   if (codexRecovered && previousProvider == model.control.quotaProvider &&
       previousProvider == quota_provider::Provider::Codex) ++model.control.quotaRecoveryEpoch;
   quota_metadata::apply(model.codexQuota.snapshot, model.codexSamples, model.codexMetadata,
-      kAgentCapacity, now, quota_provider::codexFreshMs);
+      kAgentCapacity, quotaNow, quota_provider::codexFreshMs);
   quota_metadata::apply(model.claudeQuota.snapshot, model.claudeSamples, model.claudeMetadata,
-      kAgentCapacity, now, quota_provider::claudeFreshMs);
+      kAgentCapacity, quotaNow, quota_provider::claudeFreshMs);
   model.control.codexQuota = model.codexQuota.snapshot;
   model.control.claudeQuota = model.claudeQuota.snapshot;
   const auto &selected = model.control.quotaProvider == quota_provider::Provider::Claude
@@ -464,6 +474,7 @@ void publishView() {
   view.memorialSaveFailed = model.memorialSaveFailed; view.dirty = view.dirty || model.memorialDirty;
   fillAirAlertView(view); view.dirty = view.dirty || model.airDirty;
   view.otaDone = model.otaDone; view.otaTotal = model.otaTotal; view.netStack = uxTaskGetStackHighWaterMark(nullptr);
+  view.otaCheckedAt = model.otaCheckedAt;
   view.recoveryOfflineMs = model.wifiRecovery.offlineAge(uptimeMs());
   view.recoveryStage = model.wifiRecovery.stage(); view.recoveryStacks = model.wifiRecovery.stacks();
   view.recoveryFaults = model.wifiRecovery.faults(); view.recoveryCode = model.recoveryCode;

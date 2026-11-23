@@ -22,6 +22,7 @@ void loadSettings() {
   // The renderer has not received its first frame yet; no RMT DMA exists at boot.
   const esp_err_t initialized = nvs_flash_init();
   if (initialized != ESP_OK) {
+    model.settings.power = 2;
     message("Settings unavailable; existing NVS was not erased.");
     ESP_LOGE(kTag, "NVS init: %s; refusing automatic erase", esp_err_to_name(initialized));
     return;
@@ -30,14 +31,23 @@ void loadSettings() {
   nvs_handle_t handle;
   esp_err_t result = nvs_open("led_forge_s3", NVS_READONLY, &handle);
   if (result == ESP_ERR_NVS_NOT_FOUND) return;
-  if (result != ESP_OK) { model.nvsReady = false; message("Settings namespace could not be read."); return; }
+  if (result != ESP_OK) {
+    model.nvsReady = false;
+    model.settings.power = 2;
+    message("Settings namespace could not be read.");
+    return;
+  }
   Settings stored;
   size_t size = sizeof(stored);
   result = nvs_get_blob(handle, "settings", &stored, &size);
   nvs_close(handle);
   if (result == ESP_ERR_NVS_NOT_FOUND) return;
   if (result == ESP_OK && size == sizeof(stored) && validSettings(stored)) model.settings = stored;
-  else { model.nvsReady = false; message("Settings are invalid; existing NVS was preserved."); }
+  else {
+    model.nvsReady = false;
+    model.settings.power = 2;
+    message("Settings are invalid; existing NVS was preserved.");
+  }
 }
 void loadAgentUpdateKey() {
   if (!model.nvsReady) return;
@@ -69,7 +79,10 @@ bool uninstallAcknowledgmentWindow(const agent_update::Table &table, uint32_t id
       entry->actionState <= 3 && now - entry->actionAt < agent_update::requestMs;
 }
 void loadWeekly() {
-  if (!model.nvsReady) return;
+  if (!model.nvsReady) {
+    model.weeklySaveFailed = model.lifetimeSaveFailed = model.rankingReadFailed = true;
+    return;
+  }
   nvs_handle_t handle;
   const esp_err_t opened = nvs_open("led_forge_s3", NVS_READONLY, &handle);
   if (opened == ESP_ERR_NVS_NOT_FOUND) return;
@@ -238,6 +251,7 @@ bool scheduledOn() {
 }
 void serviceAirAlert() {
   const uint32_t now = uptimeMs();
+  const int64_t pollNow = maintenanceClockMs();
   model.air.expire(now);
   model.city.expire(now, int64_t(std::time(nullptr)));
   // A completion published during this drain must be applied before a new job.
@@ -277,19 +291,19 @@ void serviceAirAlert() {
       diagnostics::event(diagnostics::Level::Warning, diagnostics::Module::Alert,
                          diagnostics::Code::AlertSourceFailed, failure);
     }
-    model.airNextAt = now + std::min(uint32_t(86400000), std::max(kAirPollIntervalMs, result.retryAfterMs));
+    model.airNextAt = pollNow + std::min(uint32_t(86400000), std::max(kAirPollIntervalMs, result.retryAfterMs));
   }
   if (!scheduledOn() || !model.airWorkerReady || !model.airSettings.enabled ||
       !model.connected || model.restarting || model.manifestBusy || model.manifestReady || model.updateRequested ||
       model.control.maintenance != Maintenance::None || workerWasBusy) return;
-  const bool municipalDue = due(now, model.airNextAt);
+  const bool municipalDue = pollNow >= model.airNextAt;
   const bool secondaryDue = due(now, model.cityNextAt);
   if (!municipalDue && !secondaryDue) return;
   // Give an overdue municipal poll the worker first. Admit secondary work
   // only after persistence and with enough time before the next municipal poll.
-  if (!municipalDue && (model.airDirty || model.airNextAt - now <= air_alert::kPollBudgetMs)) return;
+  if (!municipalDue && (model.airDirty || model.airNextAt - pollNow <= air_alert::kPollBudgetMs)) return;
   if (!backgroundTlsReady()) {
-    if (municipalDue) model.airNextAt = now + 5000;
+    if (municipalDue) model.airNextAt = pollNow + 5000;
     if (secondaryDue) model.cityNextAt = now + 5000;
     return;
   }
@@ -300,7 +314,7 @@ void serviceAirAlert() {
   job.knownLevel = model.air.last; job.knownEventTime = model.air.telegramMessageTime;
   if (air_alert::submit(job)) {
     if (job.cityThreat) model.cityNextAt = now + kAirPollIntervalMs;
-    else model.airNextAt = now + kAirPollIntervalMs;
+    else model.airNextAt = pollNow + kAirPollIntervalMs;
   }
 }
 const char *airLevelName(uint8_t level) {
@@ -371,6 +385,7 @@ uint32_t currentWeek() {
   return uint32_t((local.tm_year + 1900) * 10000 + (local.tm_mon + 1) * 100 + local.tm_mday);
 }
 void serviceWeekly() {
+  if (model.rankingReadFailed) return;
   if (weekly::advance(model.weekly, currentWeek())) model.weeklyDirty = true;
 }
 bool saveSettings() {

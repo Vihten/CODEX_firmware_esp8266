@@ -18,6 +18,7 @@ idf_component_register(
           esp_https_ota nvs_flash espressif__cjson mbedtls esp-tls http_parser esp_driver_gpio esp_driver_ledc esp_driver_rmt esp_psram joltwallet__littlefs
 )
 
+target_linker_script(${COMPONENT_LIB} INTERFACE "${CMAKE_CURRENT_LIST_DIR}/ota_rejection.ld")
 # The renderer must prepare the next 1000-LED frame inside a 37 ms transport budget (27 Hz).
 # Optimize rendering and the RMT encoder while retaining normal assertions.
 set_source_files_properties(renderer.cpp led_output.cpp PROPERTIES COMPILE_OPTIONS "-O2")

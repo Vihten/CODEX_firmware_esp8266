@@ -19,7 +19,10 @@ $dailyTokens=@(
     @{Day='20261105';Tokens=120L;Revision=100L},
     @{Day='20261104';Tokens=0L;Revision=101L},
     @{Day='20261103';Tokens=9L;Revision=102L})
-$dailyTokenIndex=0; $weeklyTokensReady=$false; $weeklyTokens=$null
+$fixtureInstant=[DateTimeOffset]::Parse('2026-11-05T12:00:00Z')
+function Get-Date { $fixtureInstant.LocalDateTime }
+$codexDailyTokens=Update-DailyReplay $null $dailyTokens $dailyTokenIdentity 366 $fixtureInstant
+$weeklyTokensReady=$false; $weeklyTokens=$null
 $nextDailyReportAt=[DateTime]::MinValue; $nextDirectHttpAt=[DateTime]::MaxValue; $nextWeeklyReportAt=[DateTime]::MaxValue
 $claudeDailyTokens=$null; $preferClaudeDaily=$false
 $nextOriginHttpAt=[DateTime]::MaxValue # This fixture isolates daily statistics; origin HTTP has its own tests.
@@ -65,19 +68,23 @@ Check ($httpPackets[2] -clike 'LFD1,*,20261103,9,102,*') $true 'Next oldest boun
 $nextDailyReportAt=[DateTime]::MinValue; $replyMode='valid'; Send-Heartbeat
 Check $httpPackets[3] $httpPackets[0] 'Cyclic idempotent resend after loss/reboot'
 Check @($udpPackets | Where-Object { $_ -clike 'LFD1,*' }).Count 4 'Same daily UDP retry count'
-$dailyTokenIdentity='different'; $nextDailyReportAt=[DateTime]::MinValue; Send-Heartbeat
+$codexDailyTokens.ReportIdentity='different'; $nextDailyReportAt=[DateTime]::MinValue; Send-Heartbeat
 Check $httpPackets.Count 4 'Never send persisted stats under changed identity'
-$dailyTokenIdentity='12345678,87654321,ABCDEF,74657374'
+$codexDailyTokens.ReportIdentity=$dailyTokenIdentity
 # Never stack a daily HTTP request on a scheduled weekly HTTP transfer.
 $weeklyTokensReady=$true
-$weeklyTokens=@{ReportIdentity=$dailyTokenIdentity;Week=(Get-TokenWeek ([DateTimeOffset]::UtcNow));Total=1L;LifetimeTotal=2L;Revision=200L}
+$weeklyTokens=@{ReportIdentity=$dailyTokenIdentity;Week=(Get-TokenWeek $fixtureInstant);Total=1L;LifetimeTotal=2L;Revision=200L}
 $nextWeeklyReportAt=[DateTime]::MinValue; $nextDailyReportAt=[DateTime]::MinValue
 Send-Heartbeat
 Check $httpPackets.Count 5 'Single HTTP token transfer when weekly due'
 Check ($httpPackets[4] -clike 'LFT2,*') $true 'Weekly existing reporting preserved'
+$nextWeeklyReportAt=[DateTime]::MinValue; Send-Heartbeat
+Check ($httpPackets[5] -clike 'LFD1,*') $true 'Slow heartbeat cadence cannot starve dated reports'
+$nextDailyReportAt=[DateTime]::MinValue; Send-Heartbeat
+Check ($httpPackets[6] -clike 'LFT2,*') $true 'Weekly reports retain their next turn'
 # Verify weekly and daily are published from one durable checkpoint.
 $weeklyTokensReady=$false
-$dailyTokenIndex=0
+$codexDailyTokens.Index=0
 $cycleStart=$httpPackets.Count
 for($i=0;$i -lt 6;++$i) {
     $nextDailyReportAt=[DateTime]::MinValue
@@ -85,9 +92,9 @@ for($i=0;$i -lt 6;++$i) {
     Check $httpPackets[$cycleStart+$i] $httpPackets[$i%3] 'All RAM-ACKed dates replay cyclically'
 }
 $claudeDay = @{Day='20261105';Tokens=321L;Revision=500L}
-$claudeDailyTokens = @{Daily=@($claudeDay, @{Day='20261104';Tokens=0L;Revision=501L});ReportIdentity=$dailyTokenIdentity;Index=0}
+$claudeDailyTokens = Update-DailyReplay $null @($claudeDay, @{Day='20261104';Tokens=0L;Revision=501L}) $dailyTokenIdentity 28 $fixtureInstant
 $preferClaudeDaily=$false
-$dailyTokenIndex=0
+$codexDailyTokens.Index=0
 $lfd2='LFD2,12345678,87654321,20261105,321,500,ABCDEF,74657374'
 $lfd2Zero='LFD2,12345678,87654321,20261104,0,501,ABCDEF,74657374'
 $ack='LFD2_RAM_ACK,ABC123,87654321,20261105,500'
@@ -109,14 +116,45 @@ for ($i=0; $i -lt $expected.Count; ++$i) {
     Check $httpPackets[$mixedStart+$i] $expected[$i] 'Fair provider rotation with separate cyclic backlogs'
 }
 Check (@($udpPackets | Where-Object { $_ -clike 'LFD2,*' }) -join '|') "$lfd2|$lfd2Zero|$lfd2" 'Claude UDP and HTTP match byte for byte'
-$dailyTokenIdentity='different'
+$codexDailyTokens.ReportIdentity='different'
 $nextDailyReportAt=[DateTime]::MinValue; $replyMode='failure'; Send-Heartbeat
 Check $httpPackets[$httpPackets.Count-1] $lfd2Zero 'Claude-only transport sends after Codex identity mismatch'
 $claudeDailyTokens.ReportIdentity='different'
 $mixedEnd=$httpPackets.Count
 $nextDailyReportAt=[DateTime]::MinValue; Send-Heartbeat
 Check $httpPackets.Count $mixedEnd 'Never send Claude rows under changed identity'
-$dailyTokenIdentity='12345678,87654321,ABCDEF,74657374'
+$codexDailyTokens.ReportIdentity=$dailyTokenIdentity
+
+# Full retained history, correction after today's send, continuous updates and midnight.
+$year=@(for ($i=0; $i -lt 366; $i++) {
+    @{Day=(Get-TokenDay $fixtureInstant.AddDays(-$i)); Tokens=10L; Revision=1L}
+})
+$claudeDailyTokens=Update-DailyReplay $null $year $dailyTokenIdentity 28 $fixtureInstant
+Check $claudeDailyTokens.Daily.Count 28 'Only controller-retained Claude dates enter replay'
+$preferClaudeDaily=$true
+$nextDailyReportAt=[DateTime]::MinValue; Send-Heartbeat
+$cycles = $httpPackets.Count
+for ($i=0; $i -lt 6; $i++) {
+    $year[0]=@{Day='20261105';Tokens=0L;Revision=[long](2+$i)}
+    $claudeDailyTokens=Update-DailyReplay $claudeDailyTokens $year $dailyTokenIdentity 28 $fixtureInstant
+    foreach ($slot in 1..2) { $nextDailyReportAt=[DateTime]::MinValue; Send-Heartbeat }
+    Check ($httpPackets[$cycles+2*$i] -like 'LFD1,*') $true 'Codex keeps its turn under continuous Claude revisions'
+    $packet=$httpPackets[$cycles+2*$i+1] -split ','
+    Check $packet[0] 'LFD2' 'Claude keeps its turn'
+    if ($i%2 -eq 0) {
+        Check $packet[3] '20261105' 'Newest correction gets the priority turn'
+        Check $packet[4] 0 'A zero correction is sent'
+        Check $packet[5] (2+$i) 'Coalesce to current revision'
+    } else { Check $packet[3] $year[1+[int][Math]::Floor($i/2)].Day 'Older retained dates keep advancing' }
+}
+Check ($claudeDailyTokens.Pending.Contains('20261105')) $true 'Unacknowledged correction stays pending'
+$replyMode='valid'
+foreach ($slot in 1..2) { $nextDailyReportAt=[DateTime]::MinValue; Send-Heartbeat }
+Check ($claudeDailyTokens.Pending.Contains('20261105')) $false 'Matching RAM ACK clears only the priority retry'
+$fixtureInstant=$fixtureInstant.AddDays(1)
+$nextDailyReportAt=[DateTime]::MinValue; Send-Heartbeat
+Check $claudeDailyTokens.Daily.Count 27 'Kyiv day rollover prunes an expired row before the next scan'
+Remove-Item function:Get-Date
 $root=Join-Path ([IO.Path]::GetTempPath()) ('daily-http-'+[guid]::NewGuid().ToString('N'))
 $scanner=$null
 try {

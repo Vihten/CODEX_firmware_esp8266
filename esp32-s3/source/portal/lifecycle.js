@@ -22,7 +22,7 @@
         request.manual = true;
         all('[data-refresh]').forEach(button => { button.disabled = true; });
         connection('Оновлення…');
-        text('[data-weekly-state],[data-lifetime-state]', 'Оновлення рейтингу…');
+        setRankingFeedback('Оновлення рейтингу…');
       };
       if (active) {
         if (manual && feedback && !active.manual && !active.reason) manualFeedback(active);
@@ -59,9 +59,10 @@
           ++failures;
           baseline = null;
           setLightOutputs(null);
+          markSnapshotStale();
           live('fps', missing);
           live('output-limit', '');
-          text('[data-weekly-state],[data-lifetime-state]', 'Не вдалося оновити рейтинг. Спробуйте ще раз.');
+          setRankingFeedback('Не вдалося оновити рейтинг. Спробуйте ще раз.');
           updateTokenHistory(null);
           text('[data-air-alert-state]', 'Немає актуальних даних');
           text('[data-air-alert-updated]', 'Зв’язок із контролером втрачено');

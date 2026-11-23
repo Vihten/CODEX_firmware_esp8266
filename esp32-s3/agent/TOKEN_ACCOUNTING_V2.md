@@ -174,8 +174,9 @@ The background worker attempts a scan every 15 seconds. It skips reparse points,
 uses at most eight directory levels, and processes at most 128 changed
 transcripts and 8 MiB of transcript data per scan, plus small cursor samples.
 An individual file gets at most a 1 MiB slice per scan. Each slice checkpoints
-its progress, so initial backfill can span multiple scans. A record over 256 KiB
-is skipped, and an incomplete trailing record waits for its newline. The worker
+its progress, so initial backfill can span multiple scans. Unchanged scans keep
+the existing checkpoint and revisions. A record over 256 KiB is skipped, and
+an incomplete trailing record waits for its newline. The worker
 fails closed if the checkpoint is corrupt, a total overflows, or discovery or
 evidence exceeds the safety bounds of 65,536 directory entries, 8,192
 transcripts, 65,536 retained message IDs, and a 32 MiB checkpoint size. Codex's
@@ -190,8 +191,11 @@ LFD2 uses the same paired account, client, six-hex RGB and UTF-8 name hex as
 LFD1. DAY is `YYYYMMDD` in Europe/Kyiv, and TOKENS is the agent's absolute
 Claude total for that day. Each packet is ASCII and under 200 bytes. The agent
 sends identical bodies over UDP and HTTP `/agent`. The Claude and Codex daily
-backlogs alternate through one two-second daily send slot, with weekly reports
-taking priority. The ACK confirms RAM acceptance for the matching client,
+backlogs alternate through one two-second daily send slot. A due weekly report
+gets the first turn, and an overdue daily report gets the next. The sender uses
+the controller's 28 Kyiv dates for Claude and 366 for Codex. Within each
+provider, changed revisions and new dates get priority turns interleaved with
+chronological replay from newest to oldest. The ACK confirms RAM acceptance for the matching client,
 controller, day and revision. Both daily backlogs keep replaying cyclically to
 recover from loss or controller reboot. Claude totals require a receiver that
 supports LFD2.

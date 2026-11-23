@@ -15,11 +15,13 @@ struct Snapshot {
   uint32_t ageSeconds = UINT32_MAX;
 };
 struct Sample {
-  uint32_t clientId = 0, seenAt = 0;
+  uint32_t clientId = 0;
+  uint64_t seenAt = 0;
   int16_t remaining = -1;
   uint32_t validForMs = claudeFreshMs;
-  bool fresh(uint32_t now, uint32_t ttl) const {
-    return clientId && remaining >= 0 && remaining <= 100 && uint32_t(now - seenAt) < (ttl < validForMs ? ttl : validForMs);
+  bool fresh(uint64_t now, uint32_t ttl) const {
+    return clientId && remaining >= 0 && remaining <= 100 && now >= seenAt &&
+        now - seenAt < (ttl < validForMs ? ttl : validForMs);
   }
 };
 struct State {

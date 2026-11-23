@@ -309,6 +309,7 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
   settings.on_message_complete = messageComplete;
   bool parsed = sent == requestSize && beforeDeadline(phaseDeadline);
   size_t wireBytes = 0;
+  size_t municipalProgress = 0;
   unsigned readyReads = 0;
   const unsigned readsPerYield = job.cityThreat ? 1 : 32;
   // Failed/expired writes must retain their own phase, without attempting reads.
@@ -323,6 +324,14 @@ PollResult fetchPage(const PollJob &job, uint32_t before, telegram::Page &page, 
       if (wireBytes > kWireLimit) { parsed = false; break; }
       const size_t consumed = http_parser_execute(&parser, &settings, chunk, size_t(count));
       parsed = consumed == size_t(count) || (r.complete && HTTP_PARSER_ERRNO(&parser) == HPE_PAUSED);
+      // A municipal page that is still arriving can use the remaining page budget.
+      // A stalled body or trickle of headers keeps the ordinary read timeout.
+      if (!job.cityThreat && parsed && r.status == 200 && r.used >= municipalProgress + 4096) {
+        municipalProgress = r.used;
+        const int64_t now = esp_timer_get_time();
+        if (now < phaseDeadline)
+          phaseDeadline = std::max(phaseDeadline, std::min(pageDeadline - 100000, now + 750000));
+      }
     } else if (count == 0) {
       http_parser_execute(&parser, &settings, nullptr, 0);
       parsed = HTTP_PARSER_ERRNO(&parser) == HPE_OK || HTTP_PARSER_ERRNO(&parser) == HPE_PAUSED;

@@ -922,7 +922,7 @@ subpixel::Pixel meteorLayer[NUM_LEDS];
 uint16_t meteorTouched[128];
 uint16_t meteorTouchedCount = 0;
 
-void stopMemorialMeteors() {
+void clearMeteorFlights() {
   // Discard flights and pending bursts; nothing observed during silence is queued.
   for (auto &meteor : meteors) meteor = {};
   for (auto &agent : directAgents) agent.schedule = {};
@@ -1112,12 +1112,12 @@ void applyControlAgents() {
   activityPercent = min(control.activityPercent, uint8_t(100));
 }
 
-// Renderer-owned, fixed-storage fade-through-black. No pixel/frame snapshots.
+// The outgoing sky owns the otherwise idle entrance buffer until the digits take over.
 struct IpAddressTransition {
-  static constexpr uint32_t kHalfMs = 350;
+  static constexpr uint32_t kHalfMs = 180;
   char shown[16] = {}, target[16] = {};
   uint32_t started = 0;
-  uint8_t from = 255;
+  uint8_t from = 255, skyBrightness = 0;
   enum class Phase : uint8_t { Stable, Out, In, Leaving } phase = Phase::Stable;
 
   static void address(char (&out)[16], const char *value) {
@@ -1141,8 +1141,21 @@ struct IpAddressTransition {
     }
     if (phase == Phase::In && uint32_t(now - started) >= kHalfMs) phase = Phase::Stable;
   }
+  void beginSky(const char *value, uint32_t now, uint8_t brightness) {
+    reset();
+    address(target, value);
+    phase = Phase::Out;
+    started = now;
+    skyBrightness = brightness;
+  }
+  bool fadingSky() const { return !shown[0] && phase != Phase::Stable; }
   uint8_t sample(const char *value, uint32_t now) {
-    advance(now);
+    if (fadingSky()) {
+      address(target, value);
+      phase = Phase::Out;
+      advance(now);
+      if (fadingSky()) return alpha(now);
+    } else advance(now);
     if (!shown[0]) {
       address(shown, value); address(target, value);
       from = 0; started = now; phase = Phase::In;
@@ -1160,8 +1173,12 @@ struct IpAddressTransition {
     }
     return alpha(now);
   }
-  bool visible() const { return shown[0] != 0; }
+  bool visible() const { return shown[0] || fadingSky(); }
   uint8_t sampleHide(uint32_t now) {
+    if (fadingSky()) {
+      phase = Phase::Leaving;
+      return alpha(now);
+    }
     advance(now);
     if (phase != Phase::Leaving) {
       from = alpha(now); started = now; phase = Phase::Leaving;
@@ -1187,6 +1204,26 @@ void resumeIpPresentation(IpAddressTransition &transition, bool hold, bool prese
   previousRenderAt += elapsed;
 }
 
+// At one to three PWM steps, spread the threshold over four fixed LED sites.
+uint8_t ipPixelAlpha(int x, int y, uint8_t alpha, uint8_t brightness) {
+  if (brightness > 3) return alpha;
+  constexpr uint8_t order[2][2] = {{0, 2}, {3, 1}};
+  return uint8_t(std::clamp(4 * int(alpha) - 255 * order[y & 1][x & 1], 0, 255));
+}
+
+void fadeIpBackdrop(uint8_t alpha, uint8_t sourceBrightness) {
+  uint8_t *out = strip.getPixels();
+  const uint8_t brightness = strip.getBrightness();
+  const unsigned divisor = 255U * (unsigned(sourceBrightness) + 1);
+  for (int y = 0; y < MATRIX_HEIGHT; ++y) for (int x = 0; x < MATRIX_WIDTH; ++x) {
+    const unsigned gain = ipPixelAlpha(x, y, alpha, brightness) * (unsigned(brightness) + 1);
+    const unsigned i = 3U * physicalIndex(x, y);
+    for (unsigned c = 0; c < 3; ++c)
+      out[i + c] = uint8_t(std::min(unsigned(brightness),
+          (entrancePixels[i + c] * gain + divisor / 2) / divisor));
+  }
+}
+
 void drawIpLine(const char *text, int16_t y, uint8_t alpha = 255) {
   const size_t length = std::strlen(text);
   const int16_t width = length ? length * 6 - 1 : 0;
@@ -1194,15 +1231,18 @@ void drawIpLine(const char *text, int16_t y, uint8_t alpha = 255) {
   for (size_t character = 0; character < length; ++character) {
     const uint8_t glyph = ipGlyphIndex(text[character]);
     // The cyan digits and amber dots share the quota sky's corrected highlight level.
-    const uint32_t color = text[character] == '.'
-        ? strip.Color(uint16_t(232) * alpha / 255, uint16_t(160) * alpha / 255, uint16_t(35) * alpha / 255)
-        : strip.Color(uint16_t(48) * alpha / 255, uint16_t(188) * alpha / 255, uint16_t(226) * alpha / 255);
+    const bool dot = text[character] == '.';
     for (uint8_t column = 0; column < 5; ++column) {
       for (uint8_t row = 0; row < 7; ++row) {
         const int16_t x = origin + character * 6 + column;
         const int16_t pixelY = y + row;
         if ((IP_FONT[glyph][column] & (1 << row)) && x >= 0 && x < MATRIX_WIDTH &&
-            pixelY >= 0 && pixelY < MATRIX_HEIGHT) strip.setPixelColor(physicalIndex(x, pixelY), color);
+            pixelY >= 0 && pixelY < MATRIX_HEIGHT) {
+          const unsigned a = ipPixelAlpha(x, pixelY, alpha, strip.getBrightness());
+          const uint32_t color = dot ? strip.Color(232 * a / 255, 160 * a / 255, 35 * a / 255)
+                                     : strip.Color(48 * a / 255, 188 * a / 255, 226 * a / 255);
+          strip.setPixelColor(physicalIndex(x, pixelY), color);
+        }
       }
     }
   }
@@ -1210,8 +1250,7 @@ void drawIpLine(const char *text, int16_t y, uint8_t alpha = 255) {
 
 void drawIpAddress(const char *address = control.ip, uint8_t alpha = 255) {
   char first[16], second[16] = {};
-  std::memcpy(first, address, sizeof(first));
-  first[sizeof(first) - 1] = 0;
+  IpAddressTransition::address(first, address);
   char *dot = std::strchr(first, '.');
   dot = dot ? std::strchr(dot + 1, '.') : nullptr;
   if (dot) {
@@ -1233,12 +1272,13 @@ void drawBlackHole() {
   // darkens with the scene envelope, never revealing an unknown full-quota sky.
   const unsigned visible = min(uint32_t(SCENE_DURATION_MS), sceneProgress);
   const unsigned gain = unsigned(strip.getBrightness()) + 1;
+  const float diskGain = gain < 9 ? 1.0f + (9 - gain) * 0.125f : 1.0f;
   for (unsigned y = 0; y < MATRIX_HEIGHT; ++y)
     for (unsigned x = 0; x < MATRIX_WIDTH; ++x) {
-      const auto color = black_hole::pixel(x, y, MATRIX_WIDTH, MATRIX_HEIGHT, view);
+      const auto color = black_hole::pixel(x, y, MATRIX_WIDTH, MATRIX_HEIGHT, view, diskGain);
       uint8_t *grb = pixels + physicalIndex(x, y) * 3;
-        const auto mix = [amount, visible, gain](uint8_t background, uint8_t foreground) {
-          const uint32_t source = uint32_t(foreground) * gain * visible / (256U * SCENE_DURATION_MS);
+      const auto mix = [amount, visible, gain](uint8_t background, uint8_t foreground) {
+        const uint32_t source = uint32_t(foreground) * gain * visible / (256U * SCENE_DURATION_MS);
         return uint8_t((uint32_t(background) * (255 - amount) + source * amount + 127) / 255);
       };
       grb[0] = mix(grb[0], color.green);
@@ -1464,18 +1504,9 @@ void renderTask(void *) {
            PROJECT_DATA_PIN, xPortGetCoreID(), bootOutputReady, int(status.ledError),
            status.watchdogReady, status.assetsReady, control.on);
   if (bootOutputReady) {
-    strip.setBrightness(255);
-    strip.clear();
-    if (showFrame(true) && control.maintenance == Maintenance::None) {
-      strip.setPixelColor(0, strip.Color(0, 0, 192));
-      if (showFrame()) {
-        vTaskDelay(pdMS_TO_TICKS(1200));
-        feedWatchdog();
-      }
-    }
+    strip.setBrightness(control.brightness);
     strip.clear();
     showFrame(true);
-    strip.setBrightness(control.brightness);
   }
   feedWatchdog();
   uint16_t frame = 0;
@@ -1586,7 +1617,10 @@ void renderTask(void *) {
         blackHole.pause(now);
         blackHolePreview.pause(now);
       }
-      if (blackHoleActive()) stopMemorialMeteors();
+      // Explicit power-off can start closing on this refresh. Maintenance alone
+      // still lets existing flights finish before acknowledging the barrier.
+      if (blackHoleActive() || (!control.on && control.maintenance == Maintenance::None &&
+                                meteorFlightInProgress())) clearMeteorFlights();
       const bool memorialScheduled = control.memorialScheduled;
       const int32_t untilMemorial = int32_t(control.memorialStartedAt - now);
       const bool memorialPreparing = control.on && lightOpeningReady && memorialScheduled &&
@@ -1610,7 +1644,7 @@ void renderTask(void *) {
           memorialExitFrom = 0; // The scheduled return reaches the sky at 09:01.
       }
       if (newMemorial) {
-        stopMemorialMeteors();
+        clearMeteorFlights();
         memorialStart = control.memorialStartedAt;
         const uint32_t lead = memorialPreparing
             ? uint32_t(max(int32_t(0), untilMemorial - int32_t(memorial::kSettledBeforeMinuteMs))) : 0;
@@ -1734,7 +1768,7 @@ void renderTask(void *) {
                                10000, offset, [paletteGain](int x, int y, memorial::Pixel color) {
             color = memorial::scalePixel(color, paletteGain);
             strip.setPixelColor(physicalIndex(x, y), strip.Color(color.red, color.green, color.blue));
-          });
+          }, control.brightness);
         }
         drawAirAlertIndicator(true);
         const bool shown = showFrame();
@@ -1767,7 +1801,7 @@ void renderTask(void *) {
         const bool requestedOn = control.on && lightOpeningReady;
         const bool wantsIp = (!control.connected && !blackHole.active()) || ipHold;
         if (sceneVisible) advanceSceneTimeline(maintenance ? sceneTargetOn
-            : requestedOn || (flying && sceneProgress == SCENE_DURATION_MS));
+            : requestedOn);
         if (!requestedOn && (!sceneVisible || sceneProgress == 0)) {
           sceneVisible = false;
           strip.clear();
@@ -1777,11 +1811,20 @@ void renderTask(void *) {
             ipTransition.reset();
           }
         } else if (!flying && requestedOn && (wantsIp || ipTransition.visible())) {
-          sceneVisible = false;
           const uint32_t ipNow = millis();
-          const uint8_t ipAlpha = wantsIp ? ipTransition.sample(control.ip, ipNow)
+          if (sceneVisible && wantsIp && !ipTransition.visible()) {
+            // No scene render uses this scratch while IP owns the display.
+            std::memcpy(entrancePixels, strip.getPixels(), sizeof(entrancePixels));
+            ipTransition.beginSky(control.ip, ipNow, strip.getBrightness());
+          }
+          sceneVisible = false;
+          const uint8_t opacity = wantsIp ? ipTransition.sample(control.ip, ipNow)
               : ipTransition.sampleHide(ipNow);
-          drawIpAddress(ipTransition.shown, ipAlpha);
+          // The driver squares staged channels. Compensate once per frame so
+          // both sides of the fade spend fewer refreshes quantized to black.
+          const uint8_t ipAlpha = uint8_t(std::lround(std::sqrt(255.0f * opacity)));
+          if (ipTransition.fadingSky()) fadeIpBackdrop(ipAlpha, ipTransition.skyBrightness);
+          else drawIpAddress(ipTransition.shown, ipAlpha);
           drawAirAlertIndicator(true);
           if (showFrame()) {
             // Keep rendering the final black IP frame until its output succeeds.

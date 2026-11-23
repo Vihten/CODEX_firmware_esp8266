@@ -4,6 +4,7 @@
 #include "password_sha256.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
@@ -302,15 +303,20 @@ bool derive(const char *password, const uint8_t (&salt)[16], uint8_t (&out)[32])
   // hashing both pads again on every iteration. Local software SHA avoids
   // acquiring/toggling the shared SHA/AES hardware engine for each final block.
   PasswordHmac hmac;
-  uint8_t first[20] = {}, current[32] = {};
+  uint8_t first[20] = {};
+  // XOR whole aligned words locally. SHA and the credential still use the
+  // original byte representation, including when the caller's output is unaligned.
+  std::array<uint32_t, 8> current{}, accumulated{};
+  static_assert(sizeof(current) == sizeof(out));
+  auto *currentBytes = reinterpret_cast<uint8_t *>(current.data());
   std::memcpy(first, salt, sizeof(salt)); first[19] = 1;
   int64_t sliceStarted = esp_timer_get_time();
-  bool okay = hmac.setup(password) && hmac.compute(first, sizeof(first), current);
-  if (okay) std::memcpy(out, current, sizeof(out));
+  bool okay = hmac.setup(password) && hmac.compute(first, sizeof(first), currentBytes);
+  if (okay) accumulated = current;
   for (uint32_t iteration = 1; okay && iteration < kIterations; ++iteration) {
-    okay = hmac.compute(current, sizeof(current), current);
+    okay = hmac.compute(currentBytes, sizeof(current), currentBytes);
     if (!okay) break;
-    for (size_t i = 0; i < sizeof(out); ++i) out[i] ^= current[i];
+    for (size_t i = 0; i < accumulated.size(); ++i) accumulated[i] ^= current[i];
     if ((iteration & 7U) == 0 && esp_timer_get_time() - sliceStarted >= kKdfSliceUs) {
       // Two ticks leave at least one full tick for lower priorities, even
       // if the call lands just before a tick boundary.
@@ -318,8 +324,10 @@ bool derive(const char *password, const uint8_t (&salt)[16], uint8_t (&out)[32])
       sliceStarted = esp_timer_get_time();
     }
   }
-  erase(first, sizeof(first)); erase(current, sizeof(current));
-  if (!okay) erase(out, sizeof(out));
+  if (okay) std::memcpy(out, accumulated.data(), sizeof(out));
+  else erase(out, sizeof(out));
+  erase(first, sizeof(first)); erase(current.data(), sizeof(current));
+  erase(accumulated.data(), sizeof(accumulated));
   return okay;
 }
 bool verify(const char *password, const Credential &record, bool &cryptoOkay) {

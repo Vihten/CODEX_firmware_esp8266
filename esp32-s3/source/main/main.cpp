@@ -2,6 +2,7 @@
 #include "external_light.hpp"
 #include "buzzer.hpp"
 #include "diagnostics.hpp"
+#include "diagnostic_persistence.hpp"
 #include "json_memory.hpp"
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -42,7 +43,10 @@ extern "C" void app_main() {
   static bool trialBoot = pendingVerification();
   const auto failBoot = [](const char *reason) {
     ESP_LOGE("boot", "%s", reason);
-    if (trialBoot) esp_restart();
+    if (trialBoot) {
+      diagnostic_persistence::retainOtaRejection(PROJECT_FIRMWARE_VERSION, reason, ESP_FAIL, 0);
+      esp_restart();
+    }
   };
   uint32_t flashSize = 0;
   if (esp_flash_get_size(nullptr, &flashSize) != ESP_OK || flashSize < 16 * 1024 * 1024) {

@@ -1,6 +1,24 @@
+    const weeklyCoverage = all('[data-weekly-coverage]');
+    const setRankingFeedback = message => {
+      rankings.forEach(({notes, kind}) => {
+        const state = notes.find(node => node.hasAttribute('data-' + kind + '-state'));
+        if (state) { state.hidden = false; state.textContent = message; }
+      });
+    };
     const updateRanking = (view, ranking, agents = []) => {
       const {root, rows: rankingRows, empty, records, kind, notes} = view;
       if (!root || !rankingRows) return;
+      const daily = kind === 'weekly' && ranking?.source === 'daily';
+      const elapsed = ranking?.elapsed_days;
+      const validElapsed = Number.isInteger(elapsed) && elapsed >= 1 && elapsed <= 7;
+      const validDays = days => validElapsed && Number.isInteger(days) && days >= 0 && days <= elapsed;
+      if (kind === 'weekly') {
+        const coverage = (name, days, available) => name + ': ' + (available === false ? 'немає даних' :
+          validDays(days) ? days + '/' + elapsed : 'покриття невідоме');
+        setText(weeklyCoverage, daily && ranking.available && Array.isArray(ranking.entries) ? 'Дні з даними · ' +
+          coverage('Codex', ranking.observed_days, ranking.codex_available) + ' · ' +
+          coverage('Claude', ranking.claude_observed_days, ranking.claude_available) : '');
+      }
       if (!ranking || !Array.isArray(ranking.entries) || (kind === 'weekly' && ranking.source === 'daily' && ranking.available !== true)) {
         text(`[data-${kind}-state]`, kind === 'weekly' && ranking?.source === 'daily' ? 'Ще немає статистики за цей тиждень' : 'Статистика поки недоступна', root);
         text(`[data-${kind}-pending]`, '', root);
@@ -49,11 +67,31 @@
         const share = !hasCodex ? '—' : row.tokens > 0 && BigInt(row.tokens) * 1000n < total ? '<0,1%' :
           `${decimal.format(total ? Number((BigInt(row.tokens) * 1000n + total / 2n) / total) / 10 : 0)}%`;
         values.push(share);
+        const partial = [];
+        if (daily && validElapsed) {
+          for (const [provider, available, days] of [
+            ['Codex', ranking.codex_available, row.codex_observed_days ?? row.observed_days],
+            ['Claude', ranking.claude_available, row.claude_observed_days],
+          ]) {
+            if (available === false || days === elapsed) continue;
+            partial.push(provider + ': ' + (validDays(days) ? days + '/' + elapsed + ' дн.' : 'покриття невідоме'));
+          }
+        }
+        const coverage = partial.join(' · ');
         values.forEach((value, column) => {
-          if (record.values[column] === value) return;
+          if (record.values[column] === value && (column !== 1 || record.coverage === coverage)) return;
           const td = record.cells[column];
           td.textContent = value;
-          if (column === 1) td.prepend(record.color);
+          if (column === 1) {
+            td.prepend(record.color);
+            if (coverage) {
+              const detail = document.createElement('small');
+              detail.className = 'agent-coverage';
+              detail.textContent = coverage;
+              td.append(detail);
+            }
+            record.coverage = coverage;
+          }
         });
         record.values = values;
         if (record.rgb !== row.color) { record.color.style.backgroundColor = row.color; record.rgb = row.color; }
@@ -75,9 +113,11 @@
       const week = String(ranking.week);
       if (kind === 'weekly') text('[data-weekly-period]', /^\d{8}$/.test(week) ?
         `${week.slice(6, 8)}.${week.slice(4, 6)}.${week.slice(0, 4)} · понеділок–неділя, Київ` : 'Очікування синхронізації часу', root);
-      const incomplete = kind === 'weekly' && ranking.source === 'daily' &&
-        (!Number.isInteger(ranking.observed_days) || !Number.isInteger(ranking.elapsed_days) ||
-         ranking.observed_days < ranking.elapsed_days);
+      const incomplete = daily && (typeof ranking.coverage_complete === 'boolean' ? !ranking.coverage_complete :
+        ranking.codex_available === false || ranking.claude_available === false || !validElapsed ||
+        [ranking.observed_days, ranking.claude_observed_days].some(days => validDays(days) && days < elapsed) ||
+        entries.some(row => [row.codex_observed_days ?? row.observed_days, row.claude_observed_days]
+          .some(days => validDays(days) && days < elapsed)));
       text(`[data-${kind}-state]`, ranking.save_failed === true ? 'Не вдалося зберегти статистику. Показано поточні дані.' : incomplete ? 'Статистика за тиждень поки неповна' : '', root);
       notes.forEach(node => {
         if (!node.classList.contains('ranking-note')) node.classList.add('ranking-note');
@@ -99,6 +139,8 @@
     const rotationStatusNodes = all('[data-quota-rotation-status]');
     const otaProgress = one('#ota-progress');
     const appearanceForms = all('form[action="/sky-colors"]');
+    const quotaMissing = all('[data-quota-missing]');
+    const snapshotNotices = all('[data-snapshot-notice]');
     const quotaGuidance = all('[data-quota-guidance]');
     const quotaResetRows = new Map(['codex', 'claude'].map(provider =>
       [provider, all(`[data-quota-reset-row="${provider}"]`)]));
@@ -108,6 +150,27 @@
     }]));
     const compactSeconds = seconds => seconds < 60 ? `${Math.floor(seconds)} ${portalStrings.seconds}` :
       seconds < 3600 ? `${Math.floor(seconds / 60)} ${portalStrings.minutes}` : `${Math.floor(seconds / 3600)} ${portalStrings.hours}`;
+    const snapshotTime = new Intl.DateTimeFormat('uk-UA', {
+      dateStyle: 'short', timeStyle: 'medium', timeZone: 'Europe/Kyiv',
+    });
+    const loadedAt = snapshotTime.format(new Date());
+    let lastSnapshot = '';
+    const markSnapshotStale = () => {
+      const age = lastSnapshot ? 'Останні дані за ' + lastSnapshot + ' (Київ).' : 'Дані зі сторінки, завантаженої ' + loadedAt + ' (Київ).';
+      snapshotNotices.forEach(node => { node.hidden = false; node.textContent = age; });
+      quotaCards.forEach(({card, current, meta}) => {
+        card.dataset.active = 'false';
+        card.dataset.stale = 'true';
+        if (current) current.hidden = true;
+        if (meta) { meta.removeAttribute('title'); meta.textContent = 'Застарілі дані'; }
+      });
+      for (const key of ['wifi', 'agents', 'activity', 'rssi', 'matrix', 'clock']) live(key, missing);
+      all(agentSelector).forEach(row => {
+        agentStates.delete(row);
+        text('[data-agent-state],[data-agent-activity]', 'Невідомо', row);
+        all('.agent-status', row).forEach(node => node.classList.toggle('online', false));
+      });
+    };
     const update = (status, sequence) => {
       reconcileSubmissions(status, sequence);
       const stamp = {uptime: status.uptime_ms, frames: status.frames, device: status.device_id, version: status.version};
@@ -164,18 +227,19 @@
           if (typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)) view.card.style.setProperty('--quota-color', color);
         }
       }
-      const bothQuotasKnown = ['codex', 'claude'].every(provider => {
+      const missingProviders = ['codex', 'claude'].filter(provider => {
         const quota = status.quotas?.[provider];
-        return quota?.known === true && finite(quota.remaining) && quota.remaining >= 0 && quota.remaining <= 100;
-      });
-      quotaGuidance.forEach(node => { node.hidden = bothQuotasKnown; });
+        return !(quota?.known === true && finite(quota.remaining) && quota.remaining >= 0 && quota.remaining <= 100);
+      }).map(provider => provider === 'codex' ? 'Codex' : 'Claude Code');
+      setText(quotaMissing, missingProviders.length ? 'Немає даних про ліміт ' + missingProviders.join(' і ') + '.' : '');
+      quotaGuidance.forEach(node => { node.hidden = !missingProviders.length; });
       live('activity', percent(status.activity));
       live('agents', number(status.agents_count));
       live('wifi', status.wifi === true ? 'Підключено' : status.wifi === false ? 'Не підключено' : missing);
       live('fps', fps);
       live('uptime', duration(status.uptime_ms));
       live('heap', finite(status.heap) ? `${integer.format(status.heap / 1024)} КіБ` : missing);
-      live('rssi', finite(status.rssi) ? `${status.rssi} дБм` : missing);
+      live('rssi', status.wifi === true && finite(status.rssi) && status.rssi !== -127 ? `${status.rssi} дБм` : missing);
       live('ota', typeof status.ota_label === 'string' ? status.ota_label : typeof status.ota === 'string' ? status.ota : missing);
       live('matrix', typeof status.matrix === 'string' ? status.matrix : missing);
       const outputLimit = status.output_limit_percent;
@@ -216,6 +280,10 @@
         meta.setAttribute('title', [reset, age, stale].filter(Boolean).join(' · '));
         live(`${provider}-quota-meta`, [countdown, countdown || !validAge ? shortAge : age, stale].filter(Boolean).join(' · '));
       }
+      const compared = status.ota_checked_at;
+      const checkedAt = Number.isSafeInteger(compared) && compared >= 1700000000 && compared <= 253402300799
+        ? new Date(compared * 1000).toISOString().slice(0, 19).replace('T', ' ') + ' UTC' : 'Час невідомий';
+      live('ota-last-compared', checkedAt);
       const progress = otaProgress;
       if (progress) {
         const valid = finite(status.ota_total) && status.ota_total > 0 && finite(status.ota_done);
@@ -228,7 +296,7 @@
       const range = one('#brightness');
       if (range && !dirtyForms.has(range.closest('form')) && Number.isInteger(status.brightness) && status.brightness >= 0 && status.brightness <= 255) {
         range.value = String(status.brightness);
-        text('#brightnessValue', `${Math.round(status.brightness * 100 / 255)}%`);
+        text('#brightnessValue', brightnessPercent(status.brightness));
       }
       const memorial = status.memorial;
       const blackHole = status.black_hole;
@@ -350,4 +418,6 @@
       }
       updateAgents(status.agents);
       rankings.forEach(view => updateRanking(view, status[view.kind], status.agents));
+      lastSnapshot = snapshotTime.format(new Date());
+      snapshotNotices.forEach(node => { node.hidden = true; });
     };

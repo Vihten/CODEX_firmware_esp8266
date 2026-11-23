@@ -21,7 +21,11 @@ radio/driver reserve. Allocation failure remains an explicit error. Outbound
 alert and update TLS jobs are serialized; background handshakes wait while
 internal free memory is below 32 KiB or its largest block is below 16 KiB.
 
-Wi-Fi reconnects without erasing credentials. After 90 seconds offline, station
+Wi-Fi initialization retries failed stages at five-second intervals, reusing the
+event loop, attached interfaces and initialized radio. The setup access point
+closes after two minutes of stable LAN connectivity when it has no clients. It
+reopens on loss of the station connection. Wi-Fi reconnects without erasing
+credentials. After 90 seconds offline, station
 recovery can restart STA up to three times, at least two minutes apart, while
 retaining the setup AP. Ordinary missing-router/authentication/DHCP failures do
 not authorize a full reset. Persistent driver faults can queue a controlled
@@ -44,22 +48,32 @@ the fallback is visible. Startup/IP diagnostics, power sequencing, maintenance,
 memorial presentation and air-alert indicators retain their priority. Neither
 the fallback nor its transition overwrites the last verified quota value.
 
-Daily calendar reports use `LFD1` and receive
-`LFD1_RAM_ACK,controller,client,YYYYMMDD,revision`. This confirms acceptance in
-volatile RAM, not a durable flash commit. Equal-revision, equal-total retries are
-idempotent and receive the same RAM acknowledgement; newer revisions may lower
-totals, including correcting a day to zero. Agents must continue cyclic replay
-of all retained daily snapshots after acknowledgement, without a permanent
-acknowledged checkpoint. The controller batches NVS writes at five-minute
-intervals and flushes before a requested restart or OTA. A power loss can lose
-the uncommitted interval (normally up to five minutes; longer if persistence
-fails); cyclic replay restores it from the agent's durable daily history.
+Daily reports use `LFD1` for Codex and `LFD2` for Claude Code. Both use
+`protocol,account,client,YYYYMMDD,tokens,revision,RGB6,UTF8_NAME_HEX` over UDP
+or POST `/agent`. A successfully accepted report receives
+`LFD1_RAM_ACK,controller,client,YYYYMMDD,revision` or the matching
+`LFD2_RAM_ACK`. These acknowledge volatile RAM acceptance. Equal-revision,
+equal-total retries are idempotent, and newer revisions can correct a day's
+total to zero. Agents cyclically replay retained reports to repair any data
+lost before a flash checkpoint. The controller batches writes at five-minute
+intervals and flushes before a requested restart or OTA.
 
-The agents page shows a Kyiv Monday-to-today weekly ranking and a seven-day
-calendar. Both now derive from the same LFD1 daily ledger, per agent; missing
-records remain unknown, not measured zero. Coverage and pending agents are
-shown explicitly. Legacy cumulative reports remain in NVS and are exposed as
-reported_tokens / reported_protocol for diagnostics, not ranked as dated usage.
+Codex keeps its existing 366-day ledger and NVS layout. Claude retains 28
+dates for each of up to 12 agents in a separate PSRAM allocation (under 9 KB,
+including its write buffer) and 16 KiB NVS partition in the existing gap
+between PHY data and `ota_0`. App-only OTA can register the same range at
+runtime on the original partition table. An overlap, unavailable partition,
+or corrupt Claude blob leaves the Codex ledger usable.
+
+The agents page shows a Kyiv Monday-to-today weekly ranking with five cells
+per row: rank, agent, Codex tokens, Claude tokens, and Codex share. Codex
+totals determine rank and share. Rows with only Claude data follow in
+descending Claude order with blank rank and share shown as em dashes.
+`/status` returns a row for every client with either provider's data. Its
+`tokens` and `claude_tokens` fields use JSON null for missing values and
+preserve recorded zero. The seven-day chart and the daily history endpoint
+use only Codex data. Legacy cumulative reports remain in NVS and are exposed
+as `reported_tokens` / `reported_protocol` for diagnostics.
 The lifetime transport remains available for historical diagnostics; local logs
 are not account billing or a guarantee of complete historical usage.
 
@@ -667,7 +681,7 @@ JSON/form flow; authentication and same-origin protections remain enforced.
 ## Hardware Acceptance
 
 After initial USB installation, switch safely to the normal external supply.
-Check the blue startup marker, IP display, scene entrance, correct colors and
+Check that startup stays dark until the requested IP or scene entrance, then verify colors and
 mapping, agent discovery and all eight-agent load levels. Run at least a one-hour
 30 FPS test while refreshing the web portal and sending telemetry. Check uptime,
 free internal heap, largest block, frame deadline misses and LED errors. Test

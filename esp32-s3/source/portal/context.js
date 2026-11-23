@@ -62,6 +62,7 @@
     setLightOutputs(null);
     const number = value => finite(value) ? numeric.format(value) : missing;
     const percent = value => finite(value) && value >= 0 && value <= 100 ? `${Math.round(value)}%` : missing;
+    const brightnessPercent = value => Number(value) === 1 ? '<1%' : percent(Number(value) * 100 / 255);
     let clock;
     try { clock = new Intl.DateTimeFormat('uk-UA', {timeZone: 'Europe/Kyiv', hour: '2-digit', minute: '2-digit', second: '2-digit'}); }
     catch (_) {
@@ -135,6 +136,7 @@
       if (modalWasOpen && typeof dialog.close === 'function') {
         try { dialog.close(); } catch (_) { /* The session banner remains available. */ }
       }
+      markSnapshotStale();
       showSessionBanner();
       if (modalWasOpen) one('#session-banner a')?.focus({preventScroll: true});
       all('[data-command-feedback]').forEach(node => { node.textContent = ''; node.hidden = true; });

@@ -5,8 +5,17 @@
 #include <cstring>
 #include <new>
 #include "esp_heap_caps.h"
+#include "esp_random.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+
+#ifdef ESP_PLATFORM
+extern "C" { extern volatile uint32_t ota_rejection_mailbox[32]; }
+#else
+static volatile uint32_t ota_rejection_mailbox[32]{};
+#endif
 
 namespace diagnostic_persistence {
 namespace {
@@ -24,6 +33,23 @@ int64_t nextFlushAt = 0, retryAt = 0;
 uint64_t firmwareVersion = 0, savedSequence = 0;
 uint32_t bootId = 0, resetCause = 0, savedRepeats = 0, savedLastMs = 0;
 char archiveDirectory[384]{};
+
+// Fixed wire layout and address so the fallback image can recover the trial's reason.
+struct Rejection {
+  uint32_t magic, checksum, versionLow, versionHigh, boot, reset, uptime;
+  int32_t reason, detail;
+  char text[92];
+};
+static_assert(sizeof(Rejection) == 128 && offsetof(Rejection, text) == 36);
+constexpr uint32_t kRejectionMagic = 0x4f544131; // OTA1
+std::atomic<bool> rejectionPending{false};
+uint32_t checksum(const Rejection& record) {
+  const auto* bytes = reinterpret_cast<const unsigned char*>(&record);
+  uint32_t hash = 2166136261u;
+  for (size_t i = offsetof(Rejection, versionLow); i < sizeof(record); ++i)
+    hash = (hash ^ bytes[i]) * 16777619u;
+  return hash;
+}
 
 bool take() {
   return mutex && xSemaphoreTake(mutex, pdMS_TO_TICKS(5)) == pdTRUE;
@@ -45,6 +71,31 @@ diagnostic_archive::Record bootRecord() {
   diagnostic_log::copyAscii(start.entry.text, "Controller started", 18);
   return start;
 }
+bool importRejection(int64_t now) {
+  if (!rejectionPending.load()) return true;
+  Rejection saved{};
+  const auto* src = reinterpret_cast<const volatile unsigned char*>(&ota_rejection_mailbox);
+  auto* dst = reinterpret_cast<unsigned char*>(&saved);
+  for (size_t i = 0; i < sizeof(saved); ++i) dst[i] = src[i];
+  if (saved.magic == kRejectionMagic && saved.checksum == checksum(saved)) {
+    diagnostic_archive::Record record;
+    record.firmware_version = (uint64_t(saved.versionHigh) << 32) | saved.versionLow;
+    record.boot_id = saved.boot;
+    record.reset_cause = saved.reset;
+    record.entry.sequence = UINT64_MAX; // Stable identity if reset interrupts import.
+    record.entry.uptime_ms = record.entry.last_uptime_ms = saved.uptime;
+    record.entry.severity = diagnostic_log::Severity::Error;
+    record.entry.module = diagnostic_log::Module::Ota;
+    record.entry.code = static_cast<uint16_t>(diagnostic_log::Code::UpdateFailed);
+    record.entry.snapshot.reason = saved.reason;
+    record.entry.snapshot.detail = saved.detail;
+    diagnostic_log::copyAscii(record.entry.text, saved.text, sizeof(saved.text));
+    if (!write(record, now)) return false;
+  }
+  ota_rejection_mailbox[0] = 0;
+  rejectionPending.store(false);
+  return true;
+}
 void retryLater(int64_t now) {
   failed.store(true, std::memory_order_relaxed);
   retryAt = now + kRetryIntervalMs;
@@ -55,11 +106,37 @@ void changed() noexcept {
   revision.fetch_add(1, std::memory_order_relaxed);
 }
 
+void retainOtaRejection(uint64_t firmware, const char* status, int32_t reason, int32_t detail) noexcept {
+  Rejection saved{};
+  saved.versionLow = uint32_t(firmware);
+  saved.versionHigh = uint32_t(firmware >> 32);
+  saved.boot = bootId ? bootId : esp_random();
+  saved.reset = uint32_t(esp_reset_reason());
+  saved.uptime = uint32_t(esp_timer_get_time() / 1000);
+  saved.reason = reason;
+  saved.detail = detail;
+  for (size_t i = 0; i + 1 < sizeof(saved.text) && status[i]; ++i) saved.text[i] = status[i];
+  saved.checksum = checksum(saved);
+  ota_rejection_mailbox[0] = 0;
+  const auto* src = reinterpret_cast<const unsigned char*>(&saved);
+  auto* dst = reinterpret_cast<volatile unsigned char*>(&ota_rejection_mailbox);
+  for (size_t i = sizeof(saved.magic); i < sizeof(saved); ++i) dst[i] = src[i];
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  ota_rejection_mailbox[0] = kRejectionMagic;
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  rejectionPending.store(true);
+}
+
+bool archiveOtaRejection(int64_t now) noexcept {
+  return available.load(std::memory_order_acquire) && importRejection(now);
+}
+
 bool initialize(const char* directory, uint64_t firmware, uint32_t boot,
                 uint32_t reset_cause) noexcept {
   firmwareVersion = firmware;
   bootId = boot;
   resetCause = reset_cause;
+  rejectionPending.store(ota_rejection_mailbox[0] == kRejectionMagic);
   if (!directory || std::strlen(directory) >= sizeof(archiveDirectory)) return false;
   std::strcpy(archiveDirectory, directory);
   mutex = xSemaphoreCreateMutexStatic(&mutexStorage);
@@ -75,12 +152,13 @@ bool initialize(const char* directory, uint64_t firmware, uint32_t boot,
   available.store(true, std::memory_order_release);
   if (!write(bootRecord(), 0)) { retryLater(0); return false; }
   bootPending.store(false, std::memory_order_relaxed);
+  if (!importRejection(0)) { retryLater(0); return false; }
   nextFlushAt = kFlushIntervalMs;
   return true;
 }
 
 bool due(int64_t now, bool urgent) noexcept {
-  if (!store || (!bootPending.load(std::memory_order_relaxed) &&
+  if (!store || (!rejectionPending.load() && !bootPending.load(std::memory_order_relaxed) &&
       revision.load(std::memory_order_relaxed) == savedRevision.load(std::memory_order_relaxed))) return false;
   if (failed.load(std::memory_order_relaxed) && now < retryAt) return false;
   return urgent || now >= nextFlushAt;
@@ -99,6 +177,7 @@ bool flush(int64_t now) noexcept {
     if (!write(bootRecord(), now)) { retryLater(now); return false; }
     bootPending.store(false, std::memory_order_relaxed);
   }
+  if (!importRejection(now)) { retryLater(now); return false; }
   const uint32_t targetRevision = revision.load(std::memory_order_relaxed);
   diagnostics::Cursor cursor;
   if (!diagnostics::beginRead(cursor, savedSequence ? savedSequence - 1 : 0)) return false;
@@ -137,7 +216,7 @@ bool metadata(Metadata& out) noexcept {
   out = Metadata{};
   out.available = available.load(std::memory_order_acquire);
   out.failed = failed.load(std::memory_order_relaxed);
-  out.pending = bootPending.load(std::memory_order_relaxed) ||
+  out.pending = rejectionPending.load() || bootPending.load(std::memory_order_relaxed) ||
       revision.load(std::memory_order_relaxed) != savedRevision.load(std::memory_order_relaxed);
   out.last_saved_ms = lastSavedAt.load(std::memory_order_relaxed);
   if (!out.available) return true;

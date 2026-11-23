@@ -194,6 +194,7 @@ table.agent-summary th{color:var(--muted);font-size:.8125rem;font-weight:500}
   .weekly-providers td:nth-child(3)::before,.weekly-providers td:nth-child(4)::before{display:block;color:var(--muted);font-size:.75rem}
   .weekly-providers td:nth-child(3)::before{content:'Токени Codex'}
   .weekly-providers td:nth-child(4)::before{content:'Токени Claude'}
+  .weekly-providers td:nth-child(5)::before{content:'Частка Codex';display:block;font-size:.75rem}
   .weekly-providers td:nth-child(5){grid-column:3;grid-row:1;text-align:right;color:var(--muted);font-size:.75rem}
 
 }
@@ -436,9 +437,20 @@ body:has(#agent-connections:target) .agent-page-nav a[href='#agent-connections']
 .device-settings-dialog [data-device-settings-body]>.section{padding:0;border:0}
 .device-settings-dialog [data-device-settings-body]>.section>.section-head h2{display:none}
 .device-settings-dialog [data-device-settings-body]>.section>.section-head:not(:has([role=status])){display:none}
-.token-history [data-history-status]:empty,[data-weekly-state]:empty,[data-weekly-incomplete]:empty{display:none}
+.token-history [data-history-status]:empty,[data-weekly-state]:empty,[data-weekly-incomplete]:empty,[data-lifetime-state]:empty,[data-weekly-coverage]:empty{display:none}
 @media(min-width:760px){
   .overview-device{grid-template-columns:minmax(18rem,.8fr) minmax(0,1.2fr)}
   .overview-device>.preview-section{grid-column:2;grid-row:1}
   .overview-device .device-visual{max-width:29rem}
+}
+
+.agent-coverage{display:block;font-size:.8125rem;line-height:1.4;color:var(--muted);margin-top:.125rem}
+.snapshot-notice{font-size:.875rem;color:var(--warning);margin:.5rem 0}
+@media(max-width:380px){
+  .token-history-grid{grid-template-columns:minmax(0,1fr);gap:4px}
+  .token-history-day{grid-template:44px / 4.5rem minmax(44px,1fr) 4rem;align-items:center;gap:.5rem}
+  .token-history-date{grid-area:1/1;text-align:left}
+  .token-history .token-history-bar{grid-area:1/2;height:44px}
+  .token-history-value{grid-area:1/3;text-align:right;align-self:center}
+  .token-history-bar-fill{inset:25% auto 25% 0;height:auto;width:calc(var(--history-bar-percent,0)*1%);border-radius:0 3px 3px 0}
 }

@@ -7,6 +7,7 @@ struct RatingRow {
 struct RatingRows {
   RatingRow rows[2 * daily::kAgents] = {};
   size_t count = 0;
+  bool coverageComplete = false;
 };
 
 RatingRows weeklyRatingRows(const daily_runtime::WeeklySnapshot &snapshot) {
@@ -25,11 +26,16 @@ RatingRows weeklyRatingRows(const daily_runtime::WeeklySnapshot &snapshot) {
     row.claude = entry.tokens;
     row.claudeDays = entry.observedDays;
   }
+  const auto elapsed = snapshot.codex.elapsedDays;
+  result.coverageComplete = result.count && snapshot.codexReady && snapshot.claudeReady &&
+      elapsed && elapsed == snapshot.claude.elapsedDays;
+  for (size_t i = 0; i < result.count && result.coverageComplete; ++i)
+    result.coverageComplete = result.rows[i].codexDays == elapsed && result.rows[i].claudeDays == elapsed;
   return result;
 }
 
 weekly::Entry weeklyRatingAgent(const View &view, uint32_t clientId) {
-  for (const auto &agent : view.control.agents) if (agent.present && agent.clientId == clientId) {
+  for (const auto &agent : view.control.agents) if (agent.name[0] && agent.clientId == clientId) {
     weekly::Entry entry;
     entry.clientId = clientId;
     entry.rgb = agent.rgb;
@@ -37,7 +43,9 @@ weekly::Entry weeklyRatingAgent(const View &view, uint32_t clientId) {
     return entry;
   }
   for (const auto &reported : view.weekly.entries)
-    if (reported.clientId == clientId) return reported;
+    if (reported.clientId == clientId && reported.name[0]) return reported;
+  for (const auto &reported : view.lifetime.entries)
+    if (reported.clientId == clientId && reported.name[0]) return reported;
   weekly::Entry entry;
   entry.clientId = clientId;
   entry.rgb = 0xd400ff;

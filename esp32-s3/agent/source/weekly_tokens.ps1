@@ -393,6 +393,49 @@ function Get-TokenDay([DateTimeOffset]$Timestamp) {
     return [TimeZoneInfo]::ConvertTime($Timestamp, $script:KyivTimeZone).ToString('yyyyMMdd', [Globalization.CultureInfo]::InvariantCulture)
 }
 
+# The controller retains 366 Codex dates and 28 Claude dates. Keep the local
+# ledger intact; only the bounded transport view follows receiver retention.
+function Update-DailyReplay($Previous, $Rows, [string]$Identity, [int]$Retention, [DateTimeOffset]$Now) {
+    $date = [TimeZoneInfo]::ConvertTime($Now, $script:KyivTimeZone).Date
+    $today = $date.ToString('yyyyMMdd', [Globalization.CultureInfo]::InvariantCulture)
+    $oldest = $date.AddDays(1 - $Retention).ToString('yyyyMMdd', [Globalization.CultureInfo]::InvariantCulture)
+    $days = @($Rows | Where-Object { $_ -and $_.Day -cge $oldest -and $_.Day -cle $today } |
+        Sort-Object { [string]$_.Day } -Descending)
+    $byDay = @{}
+    foreach ($row in $days) { $byDay[[string]$row.Day] = $row }
+    $replay = @{ Daily=$days; ByDay=$byDay; Pending=[ordered]@{}; Index=0; ReplayNext=$false
+        Today=$today; ReportIdentity=$Identity }
+    if ($null -eq $Previous -or $Previous.ReportIdentity -cne $Identity) { return $replay }
+    $replay.ReplayNext = $Previous.ReplayNext
+    foreach ($key in $Previous.Pending.Keys) {
+        if ($byDay.ContainsKey($key)) { $replay.Pending[$key] = $true }
+    }
+    $nextDay = if ($Previous.Daily.Count) { $Previous.Daily[$Previous.Index].Day }
+    for ($i = 0; $i -lt $days.Count; ++$i) {
+        $row = $days[$i]
+        $key = [string]$row.Day
+        if ($key -ceq $nextDay) { $replay.Index = $i }
+        if (-not $Previous.ByDay.ContainsKey($key) -or $Previous.ByDay[$key].Revision -ne $row.Revision) {
+            $replay.Pending[$key] = $true
+        }
+    }
+    return $replay
+}
+
+function Get-NextDailyReplay($Replay) {
+    if (-not $Replay.Daily.Count) { return }
+    if ($Replay.Pending.Count -and -not $Replay.ReplayNext) {
+        $key = $Replay.Pending.Keys | Select-Object -First 1
+        $Replay.ReplayNext = $true
+        $row = $Replay.ByDay[$key]
+    } else {
+        $row = $Replay.Daily[$Replay.Index]
+        $Replay.Index = ($Replay.Index + 1) % $Replay.Daily.Count
+        $Replay.ReplayNext = $false
+    }
+    return $row
+}
+
 function ConvertTo-DailyTokenMap($Value) {
     if ($Value -is [Collections.IDictionary]) {
         $result = @{}; foreach ($key in $Value.Keys) { $result[$key] = ConvertTo-DailyTokenMap $Value[$key] }; return $result

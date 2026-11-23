@@ -50,15 +50,16 @@ window if no five-hour candidate exists. The duration comes from
 windowDurationMins or window_duration_mins. Within the selected duration, the
 highest usedPercent wins and ties retain source order. The epoch comes from the
 selected window's resetsAt, resets_at, or reset_at field. If that field is
-missing or invalid, the agent omits the packet. The Codex remaining balance
+missing or invalid, the agent sends reset epoch zero to clear the previous window. The Codex remaining balance
 uses the most exhausted window across all limits.
 
 Claude uses the authenticated usage response's five_hour.resets_at, preserving
 its explicit timezone when converting to Unix seconds. The existing utilization
 rounding, identity verification, expiry, and credential handling are unchanged.
 
-Reset epochs must be integer seconds in [1700000000, 4102444800]; observation
-age is floored seconds in [0, 86400]. Invalid/unknown metadata is omitted.
+Known reset epochs are integer seconds in [1700000000, 4102444800].
+A verified observation with an unknown reset carries zero and its actual age.
+The agent omits observations with an unverified identity or an age outside [0, 86400] seconds.
 The same ASCII packet is sent over existing UDP and bounded HTTP /agent paths,
 at most once per provider every five seconds. Metadata never refreshes balance
 TTL. The separate updater HMAC request/reply formats are unchanged. Credentials
@@ -282,7 +283,7 @@ Every 15 seconds, a committed snapshot is sent over UDP and HTTP /agent:
 
 Nine ASCII fields, fewer than 200 bytes including the maximum name. The controller
 must support LFT2 and a 200-byte transport limit. There is no LFT1 fallback.
-Only LFT2_ACK,DEVICE,CLIENT acknowledges tokens; LFA2 heartbeats and their ACK,
+LFT2_ACK,DEVICE,CLIENT acknowledges weekly reports. LFA2 heartbeats and their ACK,
 connectivity, discovery and color semantics are unchanged. HTTP activity remains
 on its two-second cadence; requests retain the 750 ms deadline and a 200-byte
 response bound. Token retries never run every heartbeat.

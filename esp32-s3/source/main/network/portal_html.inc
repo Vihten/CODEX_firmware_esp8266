@@ -161,6 +161,7 @@ void writeAgents(Html &html, const View &view) {
       case 1: html.format("%u", unsigned(kAgentCapacity)); break;
     }
   });
+  html.file("templates/shell/snapshot-notice.html");
   html.file("templates/agents/filters.html");
   html.file("templates/agents/list-open.html");
   unsigned known = 0;
@@ -207,16 +208,19 @@ const char *portalOtaLabel(const char *value) {
   if (!std::strcmp(value, "Up to date")) return "Встановлено актуальну версію";
   if (!std::strcmp(value, "GitHub manifest older than installed firmware")) return "GitHub повернув старіший маніфест. Перевірка повториться.";
   if (!std::strcmp(value, "Not checked")) return "Перевірку ще не виконано";
+  if (!std::strcmp(value, "Manual update check expired before it could start")) return "Час очікування минув. Перевірку не розпочато.";
   if (!std::strcmp(value, "Checking S3 firmware manifest")) return "Перевіряємо GitHub";
   if (!std::strcmp(value, "New firmware verified; waiting for LEDs")) return "Підготовка до встановлення";
   if (!std::strcmp(value, "Firmware verified; restarting")) return "Оновлення перевірено, перезапуск";
-  if (!std::strcmp(value, "Update check queued")) return "Перевірку заплановано";
+  if (!std::strcmp(value, "Update check queued")) return "Перевірка в черзі";
+  if (!std::strcmp(value, "Previously rejected firmware; manual check required to retry")) return "Цю версію раніше відхилено. Для повторної спроби запустіть перевірку вручну.";
   if (!std::strcmp(value, "Manifest HTTPS request failed")) return "GitHub тимчасово недоступний";
   if (!std::strcmp(value, "Firmware HTTPS request failed")) return "Не вдалося завантажити прошивку";
   if (!std::strcmp(value, "Firmware transfer or raw SHA-256 verification failed")) return "Помилка передачі або контрольної суми";
   return value;
 }
 void writePortalStats(Html &html, const View &view) {
+  html.file("templates/shell/snapshot-notice.html");
   html.text("<div class='quota-cards' aria-label='Ліміти сервісів'>");
   for (unsigned service = 0; service < 2; ++service) {
     const auto &quota = service ? view.control.claudeQuota : view.control.codexQuota;
@@ -265,8 +269,12 @@ void writePortalStats(Html &html, const View &view) {
     });
   }
   html.text("</div><p class='quota-empty-notice' data-quota-guidance");
-  if (view.control.codexQuota.known && view.control.claudeQuota.known) html.file("templates/hidden.html");
-  html.text(">Немає даних від агентів. Перевірте, чи запущено агент на ПК. <a href='/agents#agent-connections'>Перевірити агентів</a></p>");
+  const auto known = [](const auto &quota) { return quota.known && quota.remaining >= 0 && quota.remaining <= 100; };
+  const bool codex = known(view.control.codexQuota), claude = known(view.control.claudeQuota);
+  if (codex && claude) html.file("templates/hidden.html");
+  html.text("><span data-quota-missing>");
+  if (!codex || !claude) html.format("Немає даних про ліміт %s.", codex ? "Claude Code" : claude ? "Codex" : "Codex і Claude Code");
+  html.text("</span> <a href='/agents#agent-connections'>Перевірити агентів</a></p>");
   html.text("<div class='overview-status'><dl class='stats'><div><dt>Активність</dt><dd data-live='activity'>");
   html.format("%u%%", view.control.activityPercent);
   html.text("</dd></div><div><dt>Агенти на зв’язку</dt><dd><span data-live='agents'>");
@@ -382,7 +390,10 @@ void writeOverview(Html &html, const View &view) {
   html.file("templates/overview/brightness-form-open.html");
   html.render("templates/overview/brightness-output.html", [&](unsigned token) {
     switch (token) {
-      case 0: html.format("%u", (unsigned(view.control.brightness) * 100 + 127) / 255); break;
+      case 0:
+        if (view.control.brightness == 1) html.text("&lt;1");
+        else html.format("%u", (unsigned(view.control.brightness) * 100 + 127) / 255);
+        break;
     }
   });
   html.render("templates/overview/brightness-input.html", [&](unsigned token) {
@@ -488,6 +499,14 @@ void writeSettings(Html &html, const View &view) {
   html.file("templates/settings/wifi-actions.html");
   html.file("templates/settings/ota-open.html");
   html.escaped(portalOtaLabel(view.ota));
+  html.text("</p><p>Останнє успішне порівняння маніфесту: <span data-live='ota-last-compared'>");
+  const time_t checked = time_t(view.otaCheckedAt);
+  tm comparedUtc{};
+  char comparedText[32] = {};
+  if (checked >= 1700000000 && gmtime_r(&checked, &comparedUtc) &&
+      std::strftime(comparedText, sizeof(comparedText), "%Y-%m-%d %H:%M:%S UTC", &comparedUtc)) html.text(comparedText);
+  else html.text("Час невідомий");
+  html.text("</span>");
   html.file("templates/settings/ota-progress-open.html");
   if (!view.otaTotal) html.file("templates/hidden.html");
   html.render("templates/settings/ota-progress-value.html", [&](unsigned token) {
@@ -526,7 +545,10 @@ void writeSettings(Html &html, const View &view) {
   html.format("%u КБ", unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024));
   html.render("templates/settings/rssi.html", [&](unsigned token) {
     switch (token) {
-      case 0: html.format("%d", view.rssi); break;
+      case 0:
+        if (view.control.connected && view.rssi != -127) html.format("%d дБм", view.rssi);
+        else html.text(portal_strings::missing);
+        break;
     }
   });
   html.render("templates/settings/frame-rate.html", [&](unsigned token) {
@@ -581,6 +603,19 @@ void writeRanking(Html &html, const View &view, bool lifetime) {
   else if (week) html.format("%02lu.%02lu.%04lu · понеділок–неділя, Київ", (unsigned long)(week % 100),
       (unsigned long)(week / 100 % 100), (unsigned long)(week / 10000));
   else html.text("Очікування щоденних даних і синхронізації часу");
+  const unsigned elapsed = snapshot.codex.elapsedDays ? snapshot.codex.elapsedDays : snapshot.claude.elapsedDays;
+  if (!lifetime) {
+    html.text("</p><p class='muted ranking-note' data-weekly-coverage>");
+    if (dailyReady && elapsed) {
+      if (!rating.coverageComplete) html.text("Статистика за тиждень поки неповна. ");
+      html.text("Дні з даними · Codex: ");
+      if (snapshot.codexReady) html.format("%u/%u", unsigned(snapshot.codex.observedDays), elapsed);
+      else html.text("немає даних");
+      html.text(" · Claude: ");
+      if (snapshot.claudeReady) html.format("%u/%u", unsigned(snapshot.claude.observedDays), elapsed);
+      else html.text("немає даних");
+    }
+  }
   html.file(lifetime ? "templates/lifetime/table.html" : "templates/weekly/table.html");
   for (size_t i = 0; i < rating.count; ++i) {
     const auto &row = rating.rows[i];
@@ -591,6 +626,13 @@ void writeRanking(Html &html, const View &view, bool lifetime) {
     html.format("</td><td><span class='weekly-agent-color' style='background:#%06lX' aria-hidden='true'></span>",
         (unsigned long)entry.rgb);
     html.escaped(entry.name);
+    if (!lifetime && elapsed) {
+      const auto partial = [&](const char *provider, unsigned days) {
+        if (days < elapsed) html.format("<small class='agent-coverage'>%s: %u/%u дн.</small>", provider, days, elapsed);
+      };
+      if (snapshot.codexReady) partial("Codex", row.codexDays);
+      if (snapshot.claudeReady) partial("Claude", row.claudeDays);
+    }
     html.text("</td><td>");
     if (row.codexDays) writeTokenCount(html, row.codex); else html.text("—");
     if (!lifetime) {

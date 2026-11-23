@@ -10,7 +10,7 @@ void serviceCommands() {
         next.enabled = command.enabled;
         if (next.enabled != model.airSettings.enabled || model.airSaveFailed) {
           model.airSettings = next; model.airDirty = true;
-          ++model.airGeneration; model.airNextAt = uptimeMs();
+          ++model.airGeneration; model.airNextAt = maintenanceClockMs();
           model.air.stopDemo(); model.city.stopDemo(); model.cityNextAt = uptimeMs();
         }
         break;
@@ -138,8 +138,14 @@ void serviceCommands() {
         if (!model.restarting) { model.restarting = true; model.restartAt = uptimeMs(); message("Restart queued."); }
         break;
       case CommandKind::Update:
-        if (!model.manifestBusy) { model.updateRequested = true; model.otaAt = maintenanceClockMs(); otaMessage("Update check queued"); }
-        else message("Update check already running.");
+        if (model.manifestBusy || model.manifestReady) {
+          message("Update check already running.");
+        } else if (!model.manualCheckUntil) {
+          model.updateRequested = true;
+          model.otaAt = maintenanceClockMs();
+          model.manualCheckUntil = model.otaAt + kManifestBudgetMs;
+          otaMessage("Update check queued");
+        }
         break;
     }
   }

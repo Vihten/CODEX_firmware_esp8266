@@ -129,12 +129,15 @@ struct Manifest {
 };
 struct ManifestJob {
   char url[256] = {};
+  bool manual = false;
   uint64_t currentVersion = PROJECT_FIRMWARE_VERSION;
   uint32_t partitionSize = 0;
   uint32_t deadline = 0;
 };
 struct ManifestResult {
   Manifest manifest;
+  bool compared = false, rejected = false;
+  int64_t comparedEpoch = 0;
   bool newer = false;
   bool upToDate = false;
   esp_err_t reason = ESP_FAIL;
@@ -165,6 +168,7 @@ struct View {
   RenderStatus render;
   char ssid[33] = {}, ap[32] = {}, message[96] = {}, ota[96] = {};
   uint32_t deviceId = 0, maintenanceTimeouts = 0, udpPackets = 0, otaDone = 0, otaTotal = 0;
+  int64_t otaCheckedAt = 0;
   uint32_t netStack = 0, networkLoops = 0, disconnects = 0;
   uint32_t clockRetries = 0;
   uint32_t recoveryOfflineMs = 0;
@@ -217,7 +221,8 @@ struct Model {
   city_presence::Sound citySound;
   uint32_t cityNextAt = 0;
   bool airDirty = false, airSaveFailed = false, airWorkerReady = false, airFetchFailed = false;
-  uint32_t airGeneration = 1, airNextAt = 0;
+  uint32_t airGeneration = 1;
+  int64_t airNextAt = 0;
   uint32_t airCheckpointSavedAt = 0;
   uint32_t airCheckpointHead = 0;
   int airHttpStatus = 0;
@@ -232,6 +237,11 @@ struct Model {
   httpd_handle_t http = nullptr;
   int udp = -1, rssi = -127;
   int64_t persistRetryAt = 0, otaAt = 0;
+  int64_t manualCheckUntil = 0, otaCheckedAt = 0;
+  int32_t confirmationSaveError = 0;
+  bool confirmationSettingsFailed = false;
+  bool confirmationSawMemorial = false;
+  uint32_t confirmationAfterMemorial = 0;
   uint32_t deviceId = 0, maintenanceAt = 0, dirtyAt = 0;
   uint32_t restartAt = 0, stationAt = 0, stationRetryAt = 0, discoveryAt = 0, udpRetryAt = 0;
   uint32_t legacyAt = 0, maintenanceTimeouts = 0, udpPackets = 0, disconnects = 0, loops = 0;
@@ -243,6 +253,9 @@ struct Model {
   uint8_t wifiNegativeSamples = 0;
   bool wifiSampled = false;
   bool wifiInitialized = false, wifiDriverStarted = false, recoveryRestart = false;
+  uint32_t wifiInitRetryAt = 0;
+  uint32_t setupApCheckAt = 0;
+  bool setupApOpen = true;
   recovery::Wifi wifiRecovery;
   uint16_t recoveryCode = 0;
   uint16_t disconnectReason = 0;
@@ -439,7 +452,7 @@ void networkTask(bool confirmationPending) {
     diagnostics::event(diagnostics::Level::Error, diagnostics::Module::System, uint16_t(0x0100));
     ESP_LOGW(kTag, "Diagnostic monitor unavailable");
   }
-  model.manifestWorkerReady = xTaskCreatePinnedToCore(manifestTask, "manifest", 16384, nullptr, 2, nullptr, 0) == pdPASS;
+  model.manifestWorkerReady = startManifestWorker();
   TickType_t wake = xTaskGetTickCount();
   bool renderReported = false;
   for (;;) {

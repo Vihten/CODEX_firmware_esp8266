@@ -163,18 +163,21 @@ inline void apply(uint8_t *rgb, uint8_t type, bool fixed, uint8_t amount,
       for (unsigned c = 0; c < 3; ++c) rgb[c] = uint8_t((unsigned(rgb[c]) * daylight + 127) / 255);
     return;
   }
-  if (amount == 255 && daylight == 255) {
+  // Daylight controls sky intensity. Only the service transition mixes hues;
+  // blending the source RGB back at dusk exposes blue cloud and star fringes.
+  if (amount == 255) {
     colorize(rgb, type, fixed, claude, claudeMinimumPeak, preserveSkyRim);
+    if (sky && daylight != 255)
+      for (unsigned c = 0; c < 3; ++c) rgb[c] = uint8_t((unsigned(rgb[c]) * daylight + 127) / 255);
     return;
   }
   uint8_t first[3] = {rgb[0], rgb[1], rgb[2]};
   uint8_t second[3] = {rgb[0], rgb[1], rgb[2]};
-  if (codex && amount != 255) colorize(first, type, fixed, *codex);
+  if (codex) colorize(first, type, fixed, *codex);
   colorize(second, type, fixed, claude, claudeMinimumPeak, preserveSkyRim);
   for (unsigned channel = 0; channel < 3; ++channel) {
-    const unsigned dayColor = (unsigned(rgb[channel]) * (255 - daylight) +
-                               unsigned(second[channel]) * daylight + 127) / 255;
-    const unsigned mixed = (unsigned(first[channel]) * (255 - amount) + dayColor * amount + 127) / 255;
+    const unsigned mixed = (unsigned(first[channel]) * (255 - amount) +
+                            unsigned(second[channel]) * amount + 127) / 255;
     rgb[channel] = uint8_t(sky ? (mixed * daylight + 127) / 255 : mixed);
   }
 }

@@ -375,7 +375,7 @@ void writeOverview(Html &html, const View &view) {
   html.text("<p class='muted rotation-summary'><span data-quota-rotation-status>Небо чергує сервіси кожні ");
   html.format("%u", unsigned(view.control.quotaRotationMinutes));
   html.text(" хв</span><a class='info-link' href='/settings#settings-appearance' aria-label='Налаштувати чергування сервісів' title='Налаштувати чергування сервісів'><svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' aria-hidden='true'><circle cx='12' cy='12' r='9'/><path d='M12 11v6M12 7v1'/></svg></a></p>");
-  html.text("<div class='overview-device'><div class='overview-toolbar' data-overview-toolbar data-device-controls><section class='matrix-quick-controls'><div class='section-head'><h2>Матриця</h2><span class='muted' data-live='matrix'>");
+  html.text("<section class='overview-device' aria-labelledby='matrix-controls-title'><div class='overview-toolbar' data-overview-toolbar data-device-controls><section class='matrix-quick-controls'><div class='section-head'><h2 id='matrix-controls-title'>Матриця</h2><span class='muted' data-live='matrix'>");
   html.text(portalMatrixState(view)); html.file("templates/overview/power-heading.html");
   html.file("templates/overview/power-form-open.html");
   for (unsigned mode = 0; mode < 3; ++mode)
@@ -403,6 +403,8 @@ void writeOverview(Html &html, const View &view) {
   });
   html.file("templates/overview/brightness-actions.html");
   html.text("<div class='actions overview-advanced-actions'><a class='button secondary' href='#schedule-panel' data-device-settings='schedule' aria-haspopup='dialog'>Розклад…</a><a class='button secondary' href='#external-light-panel' data-device-settings='lighting' aria-haspopup='dialog'>Підсвітка…</a></div></section></div>");
+  html.file("templates/overview/matrix-preview.html");
+  html.text("</section>");
   html.text("<div data-device-advanced id='schedule-panel'>"); writeSchedule(html, view); html.text("</div>");
   html.text("<div data-device-advanced>");
   html.render("templates/overview/external-light.html", [&](unsigned token) {
@@ -417,8 +419,6 @@ void writeOverview(Html &html, const View &view) {
       case 5: html.attribute(!view.lightReady || view.restarting || view.control.maintenance == Maintenance::Ota ? "@disabled" : ""); break;
     }
   });
-  html.text("</div>");
-  html.file("templates/overview/matrix-preview.html");
   html.text("</div>");
   writeAgentSummary(html, view);
 }

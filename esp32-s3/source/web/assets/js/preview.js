@@ -52,7 +52,8 @@
           scale, left: (canvas.width - widthMm * scale) / 2, top: (canvas.height - heightMm * scale) / 2};
       }
       const {scale, left, top} = layout;
-      const gain = normalize.checked && frame.brightness < 255 ? 256 / (frame.brightness + 1) : 1;
+      // Keep dim pixels visible even when the strip is already at full brightness.
+      const gain = normalize.checked ? Math.max(2, 256 / (frame.brightness + 1)) : 1;
       const gainChanged = cachedGain !== gain;
       if (gainChanged) {
         for (let value = 0; value < 256; ++value) {

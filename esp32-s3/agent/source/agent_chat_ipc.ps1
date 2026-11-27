@@ -3,6 +3,15 @@
 $chatUtf8 = [Text.UTF8Encoding]::new($false, $true)
 $chatUuid = '\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z'
 
+function Request-LocalAgentRestart {
+    $name = $env:LED_FORGE_TRAY_RESTART
+    if ($name -cnotmatch '\ALocal\\LEDForgeTrayRestart-[0-9a-f]{32}\z') { return $false }
+    try {
+        $event = [Threading.EventWaitHandle]::OpenExisting($name,[Security.AccessControl.EventWaitHandleRights]::Modify)
+        try { return $event.Set() } finally { $event.Dispose() }
+    } catch [Threading.WaitHandleCannotBeOpenedException] { return $false }
+}
+
 function Read-ChatObject([string]$Path) {
     Assert-AgentPlainPath $Path
     $stream = [IO.File]::Open($Path,'Open','Read',[IO.FileShare]'Read,Delete')

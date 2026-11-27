@@ -85,6 +85,7 @@ $nextUpdatePoll = [DateTime]::MinValue
 $loadedHelper = ''
 $managementContext = $null
 $control = Join-Path $PSScriptRoot ('.agent-worker-' + [guid]::NewGuid().ToString('N'))
+$installedTray = $PSScriptRoot -eq (Join-Path $env:LOCALAPPDATA 'LED Forge\Codex LAN Agent')
 try {
     try { $ownsMutex = $mutex.WaitOne(0) }
     catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
@@ -103,7 +104,7 @@ try {
     $arguments = @(
         '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden'
         "-File `"$worker`""
-        $(if ($PSScriptRoot -eq (Join-Path $env:LOCALAPPDATA 'LED Forge\Codex LAN Agent')) { '-EnableChat' })
+        $(if ($installedTray) { '-EnableChat' })
         "-CollectorHost `"$CollectorHost`" -Port $Port"
         "-DirectHost `"$DirectHost`" -DirectPort $DirectPort -DirectHttpPort $DirectHttpPort"
         "-LogPath `"$LogPath`""
@@ -111,6 +112,8 @@ try {
     ) -join ' '
     while ($true) {
         $startedProvisional = $pendingHealth
+        $restartEvent = $null
+        $trayRestart = $false
         try {
             if ($loadedHelper) {
                 $state = Read-AgentActionState $PSScriptRoot
@@ -129,7 +132,21 @@ try {
                 } elseif ($null -ne $state -and $state.action -eq 'uninstall' -and $state.result -eq 'ok') { return }
                 else { [void](Invoke-AgentPendingAction $PSScriptRoot $null $control) }
             }
-            $child = Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $arguments -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $PSScriptRoot 'worker-output.log') -RedirectStandardError (Join-Path $PSScriptRoot 'worker-error.log') -PassThru
+            $previousRestart = $env:LED_FORGE_TRAY_RESTART
+            try {
+                $env:LED_FORGE_TRAY_RESTART = $null
+                if ($installedTray -and $loadedHelper) {
+                    $name = 'Local\LEDForgeTrayRestart-' + [guid]::NewGuid().ToString('N')
+                    $acl = [Security.AccessControl.EventWaitHandleSecurity]::new()
+                    $acl.AddAccessRule([Security.AccessControl.EventWaitHandleAccessRule]::new(
+                        [Security.Principal.WindowsIdentity]::GetCurrent().User, 'FullControl', 'Allow'))
+                    $created = $false
+                    $restartEvent = [Threading.EventWaitHandle]::new($false,'ManualReset',$name,[ref]$created,$acl)
+                    if (-not $created) { throw 'Worker restart event already exists' }
+                    $env:LED_FORGE_TRAY_RESTART = $name
+                }
+                $child = Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $arguments -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $PSScriptRoot 'worker-output.log') -RedirectStandardError (Join-Path $PSScriptRoot 'worker-error.log') -PassThru
+            } finally { $env:LED_FORGE_TRAY_RESTART = $previousRestart }
             while (-not $child.WaitForExit(250)) {
                 if ($reloadRequired) { break }
                 if ($pendingHealth) {
@@ -194,6 +211,12 @@ try {
                       }
                     }
                 }
+                if ($restartEvent -and $restartEvent.WaitOne(0) -and $null -eq $download) {
+                    Write-AgentDurable "$control.stop" ([byte[]]@(1))
+                    [void]$child.WaitForExit(15000)
+                    $trayRestart = $true
+                    break
+                }
                 if ($null -eq $download -and [DateTime]::UtcNow -ge $nextUpdatePoll) {
                     $nextUpdatePoll = [DateTime]::UtcNow.AddSeconds(15)
                     if (Test-Path -LiteralPath $updateHelper) {
@@ -235,10 +258,11 @@ try {
             $child.Refresh()
             $exitCode = $child.ExitCode
             if ($null -eq $exitCode) { $exitCode = 'unknown' }
-            $message = "worker exited: $exitCode; restarting in 10 seconds"
+            $message = if ($trayRestart) { 'Tray requested a local agent restart.' } else { "worker exited: $exitCode; restarting in 10 seconds" }
         }
         catch { $message = "worker launch failed: $($_.Exception.Message); retrying in 10 seconds" }
         finally {
+            if ($restartEvent) { $restartEvent.Dispose() }
             if ($null -ne $child) {
                 if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit() }
                 $child.Dispose(); $child = $null
@@ -252,7 +276,7 @@ try {
         }
         try { Add-Content -LiteralPath $LogPath -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $message" -Encoding UTF8 }
         catch { }
-        Start-Sleep -Seconds 10
+        if (-not $trayRestart) { Start-Sleep -Seconds 10 }
     }
 }
 catch {

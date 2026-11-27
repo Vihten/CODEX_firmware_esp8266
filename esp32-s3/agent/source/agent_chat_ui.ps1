@@ -116,14 +116,16 @@ function Format-PeerFingerprint($value) {
     return ''
 }
 
-function Test-EnteredFingerprint($peer) {
-    if (-not $peer) { return $false }
-    $value = $independentFingerprint.Text.Trim()
-    if ($value -match '\AID ([0-9a-f]{8}) +(.+)\z') {
-        if ($Matches[1] -ine $peer.id) { return $false }
-        $value = $Matches[2]
-    }
-    return ($value -replace '[\s-]','') -ieq $peer.fingerprint
+function Get-PeerComparisonCode($localPin,$remotePin) {
+    if (-not (Test-PeerFingerprint $localPin) -or -not (Test-PeerFingerprint $remotePin) -or
+        $localPin -ceq $remotePin) { return '' }
+    $pins = [string[]]@($localPin,$remotePin)
+    [Array]::Sort($pins,[StringComparer]::Ordinal)
+    $inputBytes = [Text.Encoding]::ASCII.GetBytes(('LFCHAT-PAIR-V1',$pins[0],$pins[1] -join [char]10))
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hex = [BitConverter]::ToString($sha.ComputeHash($inputBytes),0,6).Replace('-','') }
+    finally { $sha.Dispose() }
+    return ($hex -replace '(.{4})(?=.)','$1 ')
 }
 
 function Copy-ChatIdentity([string]$value) {
@@ -133,24 +135,31 @@ function Copy-ChatIdentity([string]$value) {
 function Update-PeerVerification {
     $peer = $peerList.SelectedItem.Identity
     $approvePeer.Enabled = $false
+    $codesMatch.Enabled = $false
+    $pairCode.Text = ''
     if (-not $peer) {
-        $remoteFingerprint.Clear()
         $trustStatus.Text = 'Очікуємо на інші ПК у локальній мережі.'
         return
     }
-    $remoteFingerprint.Text = Format-PeerFingerprint $peer.fingerprint
     if (Test-CandidateConflict $trustSnapshot $peer) {
         $trustStatus.Text = 'Конфлікт ключів для цього ID. Звірте дані з власником ПК.'
-    } elseif (Test-BindingMatches $peer) {
-        $trustStatus.Text = 'Цей ID та відбиток уже підтверджено.'
+        return
+    }
+    $saved = Test-BindingMatches $peer
+    if ($saved) {
+        $trustStatus.Text = 'Цей ПК уже підтверджено. Інший власник може звірити цей код.'
+    } elseif (Test-CanApprovePeer $trustSnapshot $peer) {
+        $trustStatus.Text = 'Підтвердьте збіг на кожному ПК лише після звірки всіх трьох груп.'
     } elseif (Test-Path -LiteralPath (Get-TrustBindingPath $peer.id)) {
         $trustStatus.Text = "Збережена прив’язка відрізняється. Заміну заблоковано."
-    } elseif (Test-CanApprovePeer $trustSnapshot $peer) {
-        $trustStatus.Text = 'Отримайте відбиток від власника телефоном або особисто.'
-        $approvePeer.Enabled = Test-EnteredFingerprint $peer
+        return
     } else {
         $trustStatus.Text = 'Перевірка недоступна. Оновіть список ПК.'
+        return
     }
+    $pairCode.Text = Get-PeerComparisonCode $trustSnapshot.self_fingerprint $peer.fingerprint
+    $codesMatch.Enabled = -not $saved -and $pairCode.Text.Length -gt 0
+    $approvePeer.Enabled = $codesMatch.Enabled -and $codesMatch.Checked
 }
 
 function Refresh-PeerTrust {
@@ -162,7 +171,7 @@ function Refresh-PeerTrust {
     }
     $ownLabel.Text = "Відбиток цього ПК (ID $($trustSnapshot.self_id))"
     $peerList.Items.Clear()
-    $independentFingerprint.Clear()
+    $codesMatch.Checked = $false
     $listed = @{}
     foreach ($peer in (@($trustSnapshot.candidates) + @($trustSnapshot.agents))) {
         if (-not (Test-PeerIdentity $peer) -or $peer.id -ceq $trustSnapshot.self_id) { continue }
@@ -190,13 +199,13 @@ function Show-PeerTrust {
     $trustWindow.Text = "Перевірити комп’ютери"
     $trustWindow.Font = $form.Font
     $trustWindow.AutoScaleMode = 'Dpi'
-    $trustWindow.ClientSize = New-Object Drawing.Size(660,432)
+    $trustWindow.ClientSize = New-Object Drawing.Size(660,364)
     $trustWindow.FormBorderStyle = 'FixedDialog'
     $trustWindow.MaximizeBox = $false
     $trustWindow.StartPosition = 'CenterScreen'
     $trustWindow.Padding = 16
     $layout = New-ChatGrid
-    foreach ($height in 36,34,28,38,28,34,28,34,40,50,42) {
+    foreach ($height in 36,34,28,38,28,40,36,40,42) {
         [void]$layout.RowStyles.Add([Windows.Forms.RowStyle]::new('Absolute',$height))
     }
     $trustWindow.Controls.Add($layout)
@@ -225,28 +234,30 @@ function Show-PeerTrust {
     $peerList.DisplayMember = 'Label'
     $peerList.Dock = 'Fill'
     $layout.Controls.Add($peerList,0,3)
-    $layout.Controls.Add((New-ChatLabel 'Відбиток іншого ПК у мережі'),0,4)
-    $script:remoteFingerprint = New-FingerprintField $true 'Відбиток іншого ПК у мережі'
-    $layout.Controls.Add($remoteFingerprint,0,5)
-    $layout.Controls.Add((New-ChatLabel 'Введіть відбиток, отриманий від власника ПК'),0,6)
-    $script:independentFingerprint = New-FingerprintField $false 'Відбиток від власника ПК'
-    $layout.Controls.Add($independentFingerprint,0,7)
+    $layout.Controls.Add((New-ChatLabel 'Виберіть один одного на обох ПК. Звірте цей код особисто або телефоном.'),0,4)
+    $script:pairCode = New-ChatLabel ''
+    $pairCode.Font = New-Object Drawing.Font('Consolas',18,[Drawing.FontStyle]::Bold)
+    $pairCode.AccessibleName = 'Спільний код перевірки'
+    $layout.Controls.Add($pairCode,0,5)
+    $script:codesMatch = New-Object Windows.Forms.CheckBox
+    $codesMatch.Dock = 'Fill'
+    $codesMatch.Text = 'Я звірив усі три групи коду з власником іншого ПК'
+    $layout.Controls.Add($codesMatch,0,6)
     $script:trustStatus = New-ChatLabel ''
-    $layout.Controls.Add($trustStatus,0,8)
+    $layout.Controls.Add($trustStatus,0,7)
     $actions = New-Object Windows.Forms.FlowLayoutPanel
     $actions.Dock = 'Fill'
     $actions.FlowDirection = 'RightToLeft'
-    $layout.Controls.Add((New-ChatLabel 'Обидва власники мають підтвердити інший ПК. Передайте свій ID та відбиток іншому власнику через незалежний канал.'),0,9)
-    $layout.Controls.Add($actions,0,10)
+    $layout.Controls.Add($actions,0,8)
     $script:approvePeer = New-Object Windows.Forms.Button
     $approvePeer.Text = 'Підтвердити ПК'
     $approvePeer.Size = New-Object Drawing.Size(150,30)
     $approvePeer.Add_Click({
         $peer = $peerList.SelectedItem.Identity
         try {
-            if (-not (Test-EnteredFingerprint $peer)) { return }
+            if (-not $codesMatch.Checked -or -not $codesMatch.Enabled -or -not $pairCode.Text) { return }
             Save-VerifiedPeer $peer $trustSnapshot
-            $independentFingerprint.Clear()
+            $codesMatch.Checked = $false
             Update-Seats
             Update-PeerVerification
         } catch {
@@ -260,8 +271,8 @@ function Show-PeerTrust {
     $refresh.Size = New-Object Drawing.Size(150,30)
     $refresh.Add_Click({ Refresh-PeerTrust })
     $actions.Controls.Add($refresh)
-    $peerList.Add_SelectedIndexChanged({ $independentFingerprint.Clear(); Update-PeerVerification })
-    $independentFingerprint.Add_TextChanged({ Update-PeerVerification })
+    $peerList.Add_SelectedIndexChanged({ $codesMatch.Checked = $false; Update-PeerVerification })
+    $codesMatch.Add_CheckedChanged({ Update-PeerVerification })
     Refresh-PeerTrust
     $trustWindow.Show()
 }
@@ -693,6 +704,11 @@ if ($MyInvocation.InvocationName -ne '.') {
             $failed = Join-Path $MailboxRoot 'failed'
             $recover.Enabled = [IO.Directory]::Exists($failed) -and [bool]([IO.Directory]::EnumerateFiles($failed,'*.json') | Select-Object -First 1)
         })
+        if ($env:LED_FORGE_TRAY_RESTART) {
+            [void]$menu.Items.Add('Перезапустити агента',$null,{ param($item,$eventArgs)
+                if (Request-LocalAgentRestart) { $item.Enabled = $false }
+            })
+        }
         [void]$menu.Items.Add('Вийти',$null,{ [Windows.Forms.Application]::ExitThread() })
         [void]$menu.Items.Add("Перевірити комп’ютери",$null,{ Show-PeerTrust })
         [void]$menu.Items.Add('Підключити табло',$null,{

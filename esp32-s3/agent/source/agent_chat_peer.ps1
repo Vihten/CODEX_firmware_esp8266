@@ -56,6 +56,20 @@ public sealed class PeerWireV1 : IDisposable {
     }
     readonly Dictionary<string, Binding> trust = new Dictionary<string, Binding>();
     readonly Dictionary<string, Location> locations = new Dictionary<string, Location>();
+    // Discovery-thread only. Charge attempts even if the socket send fails.
+    readonly Stopwatch replyClock = Stopwatch.StartNew();
+    readonly Dictionary<string,long> lastReply = new Dictionary<string,long>();
+    readonly Queue<long> recentReplies = new Queue<long>();
+    bool ReserveReply(string pin) {
+        long now = replyClock.ElapsedMilliseconds;
+        foreach (string key in lastReply.Where(x=>now-x.Value >= 8000).Select(x=>x.Key).ToArray())
+            lastReply.Remove(key);
+        while (recentReplies.Count != 0 && now-recentReplies.Peek() >= 1000) recentReplies.Dequeue();
+        if (lastReply.ContainsKey(pin) || recentReplies.Count >= 16) return false;
+        recentReplies.Enqueue(now);
+        lastReply[pin] = now;
+        return true;
+    }
 
     static void Require(bool ok, string message) {
         if (!ok) throw new InvalidDataException(message);
@@ -138,9 +152,12 @@ public sealed class PeerWireV1 : IDisposable {
         }).ToArray();
     }
 
-    byte[] Beacon() {
+    byte[] Beacon(bool reply = false) {
+        // A leading '+' marks a terminal reply inside the signature. Legacy LFPEER1
+        // readers parse the same positive Int64 and accept it as ordinary presence.
         string data = String.Join("|", Version, id, B64(name), TcpPort.ToString(),
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(), Convert.ToBase64String(cert.RawData));
+            (reply ? "+" : "") + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(),
+            Convert.ToBase64String(cert.RawData));
         using (RSA key = cert.GetRSAPrivateKey()) {
             byte[] signature = key.SignData(Utf8.GetBytes(data),HashAlgorithmName.SHA256,RSASignaturePadding.Pkcs1);
             return Utf8.GetBytes(data + "|" + Convert.ToBase64String(signature));
@@ -163,6 +180,7 @@ public sealed class PeerWireV1 : IDisposable {
         using (var remote = new X509Certificate2(raw)) {
             string pin = Fingerprint(remote);
             if (pin == Pin || !Current(remote)) return;
+            bool terminal = p[4][0] == '+';
             lock (gate) {
                 Location old;
                 Binding b;
@@ -175,7 +193,11 @@ public sealed class PeerWireV1 : IDisposable {
                     Utf8.GetBytes(data.Substring(0,data.LastIndexOf('|'))),Convert.FromBase64String(p[6]),
                     HashAlgorithmName.SHA256,RSASignaturePadding.Pkcs1)) return;
             }
+            bool reply;
             lock (gate) {
+                Binding b;
+                bool pinned = trust.TryGetValue(p[1],out b) && b.Pin == pin && b.Name == displayName;
+                if (terminal && !pinned) return;
                 foreach (var k in locations.Where(x=>!Fresh(x.Value)).Select(x=>x.Key).ToArray()) locations.Remove(k);
                 if (!locations.ContainsKey(pin) && locations.Count >= MaxPeers) {
                     if (!trust.Values.Any(x=>x.Pin == pin)) return;
@@ -185,18 +207,21 @@ public sealed class PeerWireV1 : IDisposable {
                 }
                 locations[pin] = new Location {Id=p[1],Name=displayName,Pin=pin,
                     Endpoint=new IPEndPoint(source.Address,port),Stamp=stamp};
+                reply = !terminal && pinned && ReserveReply(pin);
             }
+            if (reply) Announce(Beacon(true),source.Address);
         }
     }
-    void Announce(byte[] packet) {
-        if (discoveryAddress != null) {
-            udp.Send(packet,packet.Length,new IPEndPoint(discoveryAddress,discoveryPort));
+    void Announce(byte[] packet, IPAddress replyTo = null) {
+        if (discoveryAddress != null && (replyTo == null ||
+            (IPAddress.IsLoopback(bind) && IPAddress.IsLoopback(replyTo) && !replyTo.Equals(bind)))) {
+            udp.Send(packet,packet.Length,new IPEndPoint(replyTo ?? discoveryAddress,discoveryPort));
             return;
         }
         foreach (var adapter in NetworkInterface.GetAllNetworkInterfaces()) {
             Guid guid;
             if (adapter.OperationalStatus != OperationalStatus.Up || !Guid.TryParse(adapter.Id,out guid) ||
-                !physical.Contains(guid)) continue;
+                !(physical.Contains(guid) || (discoveryAddress != null && !bind.Equals(IPAddress.Any)))) continue;
             foreach (var item in adapter.GetIPProperties().UnicastAddresses) {
                 if (item.Address.AddressFamily != AddressFamily.InterNetwork || item.IPv4Mask == null ||
                     (!bind.Equals(IPAddress.Any) && !bind.Equals(item.Address))) continue;
@@ -204,11 +229,23 @@ public sealed class PeerWireV1 : IDisposable {
                 var mask = item.IPv4Mask.GetAddressBytes();
                 bool lan = ip[0]==10 || (ip[0]==172 && ip[1]>=16 && ip[1]<=31) || (ip[0]==192 && ip[1]==168);
                 if (!lan || mask[0]==0 || mask[3]>=254) continue;
+                if (replyTo != null) {
+                    var target = replyTo.GetAddressBytes();
+                    bool sameSubnet = true, network = true, broadcast = true;
+                    for (int i=0;i<4;i++) {
+                        int host = target[i] & (255 ^ mask[i]);
+                        sameSubnet &= ((target[i] ^ ip[i]) & mask[i]) == 0;
+                        network &= host == 0;
+                        broadcast &= host == (255 ^ mask[i]);
+                    }
+                    if (!sameSubnet || network || broadcast || replyTo.Equals(item.Address)) continue;
+                }
                 for (int i=0;i<4;i++) ip[i] |= (byte)~mask[i];
                 try {
                     using (var outbound = new UdpClient(new IPEndPoint(item.Address,0))) {
-                        outbound.EnableBroadcast = true;
-                        outbound.Send(packet,packet.Length,new IPEndPoint(new IPAddress(ip),discoveryPort));
+                        outbound.EnableBroadcast = replyTo == null;
+                        outbound.Send(packet,packet.Length,new IPEndPoint(replyTo ?? new IPAddress(ip),discoveryPort));
+                        if (replyTo != null) return;
                     }
                 } catch (SocketException) { }
             }

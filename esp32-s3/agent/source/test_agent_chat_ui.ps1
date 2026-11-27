@@ -50,16 +50,18 @@ try {
         Save-ChatPreview $trustPath $trustWindow
     }
     Check ($ownFingerprint.Text -ceq (Format-PeerFingerprint $ownPin) -and $ownFingerprint.ReadOnly) 'Own fingerprint unavailable'
-    Check ($peerList.SelectedItem.Identity.id -ceq $peer.id -and $remoteFingerprint.Text -ceq (Format-PeerFingerprint $pin)) 'Missing candidate fingerprint'
-    Check (-not $approvePeer.Enabled) 'Approval enabled without independent fingerprint'
-    $independentFingerprint.Text = 'B2' * 32
-    Check (-not $approvePeer.Enabled) 'Wrong fingerprint enabled approval'
+    $expectedCode = 'AF98 F090 F8D2'
+    Check ($peerList.SelectedItem.Identity.id -ceq $peer.id -and $pairCode.Text -ceq $expectedCode) 'Pair comparison vector'
+    Check (-not (Get-PeerComparisonCode $pin $pin) -and -not (Get-PeerComparisonCode 'bad' $pin)) 'Invalid pins produced a code'
+    Check ((Get-PeerComparisonCode $ownPin ('A1' * 31 + 'A0')) -cne $expectedCode) 'Last byte of pin omitted'
+    Check ($codesMatch.Enabled -and -not $codesMatch.Checked -and -not $approvePeer.Enabled) 'Approval requires explicit comparison'
     $copyIdentity.PerformClick()
     Check ($copiedIdentity -ceq ('ID 00000001  ' + (Format-PeerFingerprint $ownPin))) 'Clipboard identity missing ID or grouped fingerprint'
-    $independentFingerprint.Text = 'ID 00000009  ' + (Format-PeerFingerprint $pin)
-    Check (-not $approvePeer.Enabled) 'Copied identity for wrong ID accepted'
-    $independentFingerprint.Text = 'ID 00000002  ' + (Format-PeerFingerprint $pin).ToLowerInvariant()
-    Check ($approvePeer.Enabled) 'Verified fingerprint did not enable approval'
+    $codesMatch.Checked = $true
+    Refresh-PeerTrust
+    Check (-not $codesMatch.Checked -and -not $approvePeer.Enabled) 'Refresh retained confirmation'
+    $codesMatch.Checked = $true
+    Check ($approvePeer.Enabled) 'Compared pair code did not enable approval'
     $bindingPath = Get-TrustBindingPath $peer.id
     $peer.fingerprint = 'B2' * 32
     Write-Fixture 'roster.json' $snapshot
@@ -68,7 +70,7 @@ try {
     $peer.fingerprint = $pin
     Write-Fixture 'roster.json' $snapshot
     Refresh-PeerTrust
-    $independentFingerprint.Text = $pin
+    $codesMatch.Checked = $true
     $approvePeer.PerformClick()
     Check ((Test-BindingMatches $peer) -and -not $approvePeer.Enabled) 'First approval did not persist once'
     Check (-not $buttons['Дімасік'].Enabled) 'Approval bypassed runtime verification'
@@ -85,14 +87,25 @@ try {
     Write-Fixture 'roster.json' $snapshot
     Refresh-PeerTrust
     Update-Seats
-    $independentFingerprint.Text = $peer.fingerprint
+    Check (-not $pairCode.Text -and -not $codesMatch.Enabled) 'Changed binding displayed a usable pairing code'
     Check (-not $approvePeer.Enabled -and -not $buttons['Дімасік'].Checked -and -not $buttons['Дімасік'].Enabled) 'Changed identity accepted'
     Check ((Read-ChatJson $bindingPath).fingerprint -ceq $pin) 'Pin overwritten'
     $peer.fingerprint = $pin
     Write-Fixture 'roster.json' $snapshot
+    $snapshot.candidates = @()
+    Write-Fixture 'roster.json' $snapshot
     $trustWindow.Close()
     Show-PeerTrust
-    Check (-not $approvePeer.Enabled -and $trustStatus.Text.Contains('уже підтверджено')) 'Reopened verification lost binding'
+    Check ($peerList.SelectedItem.Identity.id -ceq $peer.id -and $pairCode.Text -ceq $expectedCode -and -not $codesMatch.Enabled -and -not $approvePeer.Enabled) 'Previously approved peer must still display the comparison code'
+    $reverse = @{self_id=$peer.id;self_fingerprint=$pin;candidates=@(@{id=$snapshot.self_id;name='Oleksii';fingerprint=$ownPin});agents=@()}
+    Write-Fixture 'roster.json' $reverse
+    Refresh-PeerTrust
+    Check ($codesMatch.Enabled -and -not $approvePeer.Enabled -and $pairCode.Text -ceq $expectedCode) 'Other PC did not independently display the same code'
+    $codesMatch.Checked = $true
+    $approvePeer.PerformClick()
+    Check ((Test-BindingMatches $reverse.candidates[0]) -and $pairCode.Text -ceq $expectedCode) 'Second PC did not save full pin'
+    $snapshot.candidates = @($peer)
+    Write-Fixture 'roster.json' $snapshot
     $trustWindow.Close()
     Update-Seats
     Check (-not $buttons['Олексій'].Enabled -and $buttons['Олексій'].Text.EndsWith('Ви')) 'Self was selectable'

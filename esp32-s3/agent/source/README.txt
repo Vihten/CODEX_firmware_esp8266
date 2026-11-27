@@ -118,8 +118,10 @@ reports failed. Ack retries stop only after an authenticated successful reply.
 An explicit manual reinstall clears a successful uninstall tombstone after
 stopping the existing processes, without clearing settings/statistics.
 
-Older agents with the eight-file updater reject the expanded chat package before
-installation. Extract the trusted new bootstrap.zip into a separate folder and run
+Older agents with the eight-file updater require the signed migration release
+before installing the expanded chat package. The controller sequences both
+steps from one update request. For manual recovery, extract the trusted new
+bootstrap.zip into a separate folder and run
 update_codex_lan_agent.cmd as the installing Windows user. For a preview, run
 .\update_codex_lan_agent.ps1 -WhatIf from PowerShell in that folder.
 Once bootstrapped, the new updater accepts packages matching its fixed file set.

@@ -5,6 +5,46 @@
 
 namespace agent_update {
 constexpr uint32_t freshMs = 60000, requestMs = 600000;
+constexpr uint64_t bridgeVersion = 20261126000000ULL;
+inline uint64_t agentUpdateTarget(uint64_t installed, uint64_t release) {
+  if (installed >= release) return 0;
+  return installed < bridgeVersion && release > bridgeVersion ? bridgeVersion : release;
+}
+enum class Artifact : uint8_t { None, Bridge, Final };
+template<class Request>
+uint64_t downloadTarget(Request *request, uint64_t installed, uint64_t target, uint64_t release,
+                        bool (*grant)(Request *, uint64_t)) {
+  // Only the bridge updater has distinct final URLs. Other shipped clients
+  // need a matching lease before the poll can authorize their download.
+  if (!target || installed == bridgeVersion || release <= bridgeVersion) return target;
+  return grant && grant(request, target) ? target : 0;
+}
+// Accessed only by the single HTTP server task. Keep both GETs on one stage
+// across separate sockets, including when several PCs share a NAT address.
+struct ArtifactLeases {
+  static constexpr uint64_t durationMs = 45000;
+  struct Lease { uint32_t ip = 0; Artifact artifact = Artifact::None; uint64_t until = 0; };
+  Lease slots[12]{};
+  Artifact lookup(uint32_t ip, uint64_t now) const {
+    for (const auto &slot : slots)
+      if (ip && slot.ip == ip && now < slot.until) return slot.artifact;
+    return Artifact::None;
+  }
+  bool grant(uint32_t ip, Artifact artifact, uint64_t now) {
+    if (!ip || artifact == Artifact::None) return false;
+    Lease *free = nullptr;
+    for (auto &slot : slots) {
+      if (now >= slot.until) { free = &slot; continue; }
+      if (slot.ip != ip) continue;
+      if (slot.artifact != artifact) return false;
+      slot.until = now + durationMs;
+      return true;
+    }
+    if (!free) return false;
+    *free = {ip, artifact, now + durationMs};
+    return true;
+  }
+};
 enum class Action : uint8_t { None, Rename, Uninstall };
 struct Entry {
   uint64_t version = 0, requested = 0, lastCounter = 0, failed = 0;
@@ -14,6 +54,7 @@ struct Entry {
   Action action = Action::None;
   uint8_t actionState = 0;
   bool management = false;
+  bool updateExpired = false;
   char actionName[49] = {};
 };
 struct Table {
@@ -39,17 +80,23 @@ struct Table {
       slot->actionState = result == 1 ? 2 : 3;
     if (failed > slot->failed) slot->failed = failed;
     if (version >= slot->failed) slot->failed = 0;
-    if (slot->failed >= slot->requested) slot->requested = 0;
+    if (slot->requested && slot->failed >= agentUpdateTarget(version, slot->requested)) slot->requested = 0;
     if (version >= slot->requested) slot->requested = 0;
   }
   uint64_t target(uint32_t id, uint32_t now) const {
     const auto *entry = find(id);
     return entry && entry->requested > entry->version && now - entry->requestedAt < requestMs ? entry->requested : 0;
   }
+  uint64_t pollTarget(uint32_t id, uint64_t version, uint64_t failed, uint32_t now) const {
+    const auto *entry = find(id);
+    if (!entry || version < entry->version) return 0;
+    const uint64_t next = agentUpdateTarget(version, target(id, now));
+    return next > failed && next > entry->failed ? next : 0;
+  }
   bool request(uint32_t id, uint64_t release, uint32_t now) {
     for (auto &entry : entries) if (id && entry.clientId == id &&
-        now - entry.polledAt < freshMs && release > entry.version && release > entry.failed && release && entry.actionState != 1) {
-      if (!target(id, now)) { entry.requested = release; entry.requestedAt = now; }
+        now - entry.polledAt < freshMs && agentUpdateTarget(entry.version, release) > entry.failed && entry.actionState != 1) {
+      if (!target(id, now)) { entry.requested = release; entry.requestedAt = now; entry.updateExpired = false; }
       return true;
     }
     return false;
@@ -71,7 +118,10 @@ struct Table {
   }
   void expire(uint32_t now) {
     for (auto &entry : entries) {
-      if (entry.requested && now - entry.requestedAt >= requestMs) entry.requested = 0;
+      if (entry.requested && now - entry.requestedAt >= requestMs) {
+        entry.requested = 0;
+        entry.updateExpired = true;
+      }
       if (entry.actionState == 1 && now - entry.actionAt >= requestMs) entry.actionState = 4;
     }
   }

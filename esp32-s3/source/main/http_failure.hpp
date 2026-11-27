@@ -80,6 +80,8 @@ inline Route route(const char *uri) noexcept {
     {"/agent-uninstall", Route::AgentUpdate},
     {"/agent-update/manifest.json", Route::AgentUpdate},
     {"/agent-update/package.zip", Route::AgentUpdate},
+    {"/agent-update-final/manifest.json", Route::AgentUpdate},
+    {"/agent-update-final/package.zip", Route::AgentUpdate},
     {"/save", Route::Command}, {"/power", Route::Command},
     {"/brightness", Route::Command}, {"/external-light", Route::Command},
     {"/buzzer-test", Route::Command}, {"/buzzer-volume", Route::Command},

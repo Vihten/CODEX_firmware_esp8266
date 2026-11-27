@@ -579,8 +579,12 @@ Windows updater. The publisher private key stays on the publishing PC, outside
 the workspace, firmware and archives. Never lose it without planning a manual
 trust-key replacement on every enrolled agent.
 
-The controller only serves `/agent-update/manifest.json` and
-`/agent-update/package.zip`; management endpoints are explicit POST routes.
+After an authenticated poll, the controller serves the appropriate signed
+manifest and ZIP at the installed updater's original `/agent-update/` URLs.
+Eight-file updaters install the migration release first. That release then
+requests the ten-file package at `/agent-update-final/`. One operator request
+stays active across both stages until the final version is reported or the
+request expires. Management endpoints are explicit POST routes.
 Capability polling does not change meteor activity, weekly counters or agent
 metadata. Update job state is owned by the network task, not the HTTP task.
 The Windows updater owns staging, code-only replacement, health confirmation

@@ -345,12 +345,15 @@ esp_err_t portalStatus(httpd_req_t *request) {
     number(item, "remaining", agent.present ? agent.remaining : -1);
     boolean(item, "quota_source", agent.present && agent.quotaForPairedAccount);
     const auto *update = view.agentUpdates.find(agent.clientId);
+    const uint64_t next = update ? agent_update::agentUpdateTarget(update->version, agent_release::version) : 0;
     number(item, "agent_version", update ? double(update->version) : 0);
     boolean(item, "update_capable", update && view.agentUpdateKeyReady && agent_release::version &&
         uptimeMs() - update->polledAt < agent_update::freshMs);
     boolean(item, "update_pending", view.agentUpdates.target(agent.clientId, uptimeMs()) != 0);
-    boolean(item, "update_failed", update && update->failed && update->failed >= agent_release::version);
-    boolean(item, "update_available", update && agent_release::version > update->version && agent_release::version > update->failed);
+    number(item, "update_target", double(next));
+    boolean(item, "update_expired", update && next && update->updateExpired);
+    boolean(item, "update_failed", update && next && update->failed >= next);
+    boolean(item, "update_available", update && next > update->failed);
     boolean(item, "management_capable", update && update->management && view.agentUpdateKeyReady &&
         uptimeMs() - update->polledAt < agent_update::freshMs);
     number(item, "management_state", update ? update->actionState : 0);
@@ -734,16 +737,51 @@ bool validAgentChallenge(const char *nonce, uint64_t &counter) {
   const uint64_t current = agentChallengeCounter();
   return counter && counter <= current && current - counter <= 1;
 }
+agent_update::ArtifactLeases agentArtifactLeases;
+uint32_t agentPeerAddress(httpd_req_t *request) {
+  sockaddr_storage address{};
+  socklen_t size = sizeof(address);
+  const int socket = httpd_req_to_sockfd(request);
+  if (socket < 0 || getpeername(socket, reinterpret_cast<sockaddr *>(&address), &size)) return 0;
+  if (address.ss_family == AF_INET && size >= sizeof(sockaddr_in))
+    return reinterpret_cast<const sockaddr_in *>(&address)->sin_addr.s_addr;
+#if CONFIG_LWIP_IPV6
+  if (address.ss_family == AF_INET6 && size >= sizeof(sockaddr_in6)) {
+    const auto &ip = reinterpret_cast<const sockaddr_in6 *>(&address)->sin6_addr;
+    constexpr uint8_t mapped[12] = {0,0,0,0,0,0,0,0,0,0,0xff,0xff};
+    if (!std::memcmp(&ip, mapped, sizeof(mapped))) {
+      uint32_t ipv4;
+      std::memcpy(&ipv4, reinterpret_cast<const uint8_t *>(&ip) + sizeof(mapped), sizeof(ipv4));
+      return ipv4;
+    }
+  }
+#endif
+  return 0;
+}
+bool grantAgentArtifact(httpd_req_t *request, uint64_t target) {
+  const auto artifact = target == agent_update::bridgeVersion ? agent_update::Artifact::Bridge : agent_update::Artifact::Final;
+  return agentArtifactLeases.grant(agentPeerAddress(request), artifact, maintenanceClockMs());
+}
 esp_err_t agentUpdateArtifact(httpd_req_t *request) {
   HandlerScope scope;
   if (!agent_release::version) return error(request, "503 Service Unavailable", "No signed agent release.");
-  if (!std::strcmp(request->uri, "/agent-update/manifest.json"))
+  const bool manifest = !std::strcmp(request->uri, "/agent-update/manifest.json");
+  if (manifest || !std::strcmp(request->uri, "/agent-update/package.zip")) {
+    const auto stage = agent_release::version > agent_update::bridgeVersion ?
+        agentArtifactLeases.lookup(agentPeerAddress(request), maintenanceClockMs()) : agent_update::Artifact::Final;
+    if (stage == agent_update::Artifact::None) return error(request, "409 Conflict", "Poll again before downloading.");
+    const bool bridge = stage == agent_update::Artifact::Bridge;
+    if (manifest) return serveWebFile(request, bridge ? "agent-update-bridge/manifest.json" : "agent-update/manifest.json",
+                                      "application/json; charset=utf-8");
+    return serveWebFile(request, bridge ? "agent-update-bridge/package.zip" : "agent-update/package.zip", "application/zip");
+  }
+  if (!std::strcmp(request->uri, "/agent-update-final/manifest.json"))
     return serveWebFile(request, "agent-update/manifest.json", "application/json; charset=utf-8");
-  if (!std::strcmp(request->uri, "/agent-update/package.zip"))
+  if (!std::strcmp(request->uri, "/agent-update-final/package.zip"))
     return serveWebFile(request, "agent-update/package.zip", "application/zip");
   return error(request, "404 Not Found", "Not found.");
 }
-esp_err_t agentUpdatePost(httpd_req_t *request) {
+esp_err_t agentUpdatePost(httpd_req_t *request, bool (*grantArtifact)(httpd_req_t *, uint64_t) = nullptr) {
   HandlerScope scope;
   View view;
   if (!snapshot(view) || view.restarting || view.control.maintenance == Maintenance::Ota || view.control.maintenance == Maintenance::Restart)
@@ -843,7 +881,7 @@ esp_err_t agentUpdatePost(httpd_req_t *request) {
   } else {
     command.kind = CommandKind::AgentUpgrade;
     const auto *entry = view.agentUpdates.find(command.clientId);
-    if (!entry || !agent_release::version || entry->version >= agent_release::version || entry->failed >= agent_release::version ||
+    if (!entry || agent_update::agentUpdateTarget(entry->version, agent_release::version) <= entry->failed ||
         uptimeMs() - entry->polledAt >= agent_update::freshMs || entry->actionState == 1)
       return error(request, "409 Conflict", "Agent update channel is not ready.");
   }
@@ -853,8 +891,8 @@ esp_err_t agentUpdatePost(httpd_req_t *request) {
   xSemaphoreGive(viewMutex);
   if (!queued) return error(request, "503 Service Unavailable", "Update queue unavailable.");
   if (poll) {
-    uint64_t target = view.agentUpdates.target(command.clientId, uptimeMs());
-    if (target <= command.agentVersion) target = 0;
+    uint64_t target = view.agentUpdates.pollTarget(command.clientId, command.agentVersion, command.agentFailedVersion, uptimeMs());
+    target = agent_update::downloadTarget(request, command.agentVersion, target, agent_release::version, grantArtifact);
     const auto *action = command.agentManagement ? view.agentUpdates.pendingAction(command.clientId, uptimeMs()) : nullptr;
     if (action && command.agentActionAck == action->actionId) action = nullptr;
     char signedText[384]; uint8_t mac[32]; char hex[65], response[512], nameHex[97] = {};
@@ -1053,7 +1091,8 @@ bool machineRoute(const char *uri, httpd_method_t method) {
       !std::strcmp(uri, "/agent-update-enroll") || !std::strcmp(uri, "/agent-update-challenge") ||
       !std::strcmp(uri, "/agent-update-poll");
   return method == HTTP_GET && (!std::strcmp(uri, "/agent-update/manifest.json") ||
-      !std::strcmp(uri, "/agent-update/package.zip"));
+      !std::strcmp(uri, "/agent-update/package.zip") || !std::strcmp(uri, "/agent-update-final/manifest.json") ||
+      !std::strcmp(uri, "/agent-update-final/package.zip"));
 }
 bool initializeHttp() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG(); config.core_id = 0; config.stack_size = 16384;
@@ -1091,8 +1130,9 @@ bool initializeHttp() {
   for (const char *uri : {"/assets/css/portal.css", "/assets/css/preview.css", "/assets/js/portal.js", "/assets/js/preview.js", "/assets/js/boot.js", "/assets/js/token-history.js"})
     if (!registerRoute(uri, HTTP_GET, staticAsset)) return failed();
   for (const char *uri : {"/agent-update-enroll", "/agent-update-challenge", "/agent-update-poll", "/agent-upgrade", "/agent-rename", "/agent-uninstall"})
-    if (!registerRoute(uri, HTTP_POST, agentUpdatePost)) return failed();
-  for (const char *uri : {"/agent-update/manifest.json", "/agent-update/package.zip"})
+    if (!registerRoute(uri, HTTP_POST, [](httpd_req_t *request) { return agentUpdatePost(request, grantAgentArtifact); })) return failed();
+  for (const char *uri : {"/agent-update/manifest.json", "/agent-update/package.zip",
+                          "/agent-update-final/manifest.json", "/agent-update-final/package.zip"})
     if (!registerRoute(uri, HTTP_GET, agentUpdateArtifact)) return failed();
   for (const char *uri : {"/chat/enroll", "/chat/state", "/chat/roster", "/chat/send", "/chat/inbox", "/chat/ack"})
     if (!registerRoute(uri, HTTP_POST, chatPost)) return failed();

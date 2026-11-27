@@ -73,19 +73,22 @@ public:
 };
 void writeAgentUpgrade(Html &html, const View &view, uint32_t id, bool online) {
   const auto *entry = view.agentUpdates.find(id);
+  const uint64_t next = entry ? agent_update::agentUpdateTarget(entry->version, agent_release::version) : 0;
   const bool ready = online && view.agentUpdateKeyReady && agent_release::version && entry &&
       uptimeMs() - entry->polledAt < agent_update::freshMs;
   html.file("templates/agent/update-open.html");
   if (!entry) html.text("Очікування агента з підтримкою оновлень");
-  else if (entry->failed && entry->failed >= agent_release::version) html.text("Оновлення не вдалося; збережено попередню версію");
-  else if (view.agentUpdates.target(id, uptimeMs())) html.text("Запит у черзі; очікування підтвердження нової версії");
+  else if (next && entry->failed >= next) html.text("Агент заблокував повтор після помилки. Запустіть підписаний інсталятор (bootstrap) вручну на цьому ПК.");
+  else if (view.agentUpdates.target(id, uptimeMs())) html.format("Установлено %llu. Очікуємо підтвердження версії %llu від ПК.",
+      (unsigned long long)entry->version, (unsigned long long)next);
   else if (agent_release::version && entry->version >= agent_release::version) html.text("Установлена актуальна версія");
   else if (!online) html.text("Агент не на зв’язку");
   else if (!agent_release::version) html.text("Підписаний пакет ще не підготовлено");
+  else if (entry->updateExpired) html.text("ПК не підтвердив оновлення за 10 хв. Можна повторити запит.");
   else html.format("Версія %llu · доступна %llu", (unsigned long long)entry->version, (unsigned long long)agent_release::version);
   html.render("templates/agent/update-form.html", [&](unsigned token) {
     if (!token) html.format("%08lX", (unsigned long)id);
-    else if (token == 1) html.attribute(ready && entry->version < agent_release::version && entry->failed < agent_release::version &&
+    else if (token == 1) html.attribute(ready && next > entry->failed && entry->actionState != 1 &&
         !view.agentUpdates.target(id, uptimeMs()) ? "" : "@disabled");
   });
   const bool managementReady = ready && entry->management && entry->actionState != 1 && !view.agentUpdates.target(id, uptimeMs());

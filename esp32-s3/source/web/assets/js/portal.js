@@ -1034,8 +1034,11 @@
         const pending = agent && agent.update_pending === true;
         const available = agent && agent.update_available === true;
         text('[data-agent-update-state]', !agent || !agent.agent_version ? 'Очікування агента з підтримкою оновлень' :
-          agent.update_failed === true ? 'Оновлення не вдалося; збережено попередню версію' :
-          pending ? 'Запит у черзі; очікування підтвердження нової версії' :
+          agent.update_failed === true ? 'Агент заблокував повтор після помилки. Запустіть підписаний інсталятор (bootstrap) вручну на цьому ПК.' :
+          pending ? (Number.isSafeInteger(agent.update_target) && agent.update_target > agent.agent_version ?
+            `Установлено ${agent.agent_version}. Очікуємо підтвердження версії ${agent.update_target} від ПК.` :
+            'Запит у черзі; очікування підтвердження нової версії') :
+          agent.update_expired === true ? 'ПК не підтвердив оновлення за 10 хв. Можна повторити запит.' :
           !online ? 'Агент не на зв’язку' : !updates ? 'Канал оновлень недоступний' :
           available ? `Установлена версія ${number(agent.agent_version)}` : 'Установлена актуальна версія', row);
         all('.agent-upgrade button[type=submit]', row).forEach(control => { control.disabled = !online || !updates || !available || pending; });

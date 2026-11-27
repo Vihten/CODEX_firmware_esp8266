@@ -1,5 +1,12 @@
 # Chat relay v1
 
+Windows agents with direct LAN messaging use this protocol for the optional
+matrix destination. Only an explicit board selection needs a controller boot
+nonce and an authenticated send with `X-Chat-To: board`. PC discovery, trust,
+acknowledgments and desktop messages are handled between Windows agents.
+The roster, inbox and acknowledgment endpoints below remain available to
+older agents while installations are upgraded.
+
 Machine paths are exact POSTs. The board serves HTTP on the existing trusted LAN. Provision only on a protected link. Chat bodies are plaintext. Enrollment uses the existing logged-in portal session and its same-origin check. Generate a fresh random 32-byte chat-only key on the PC. POST /chat/enroll with application/x-www-form-urlencoded fields client (8 uppercase hex) and key (64 lowercase hex). The operator must approve the actual PC/key pair. The client must be in current telemetry. Repeating the same binding is safe. A different key cannot replace a live binding. Approved bindings persist in NVS. Enrollment returns 202 while the guarded flash commit is pending and 200 for an already durable binding. Signed operations require the durable binding. Boot clears sequence counters, inboxes, receipts, and board deliveries. Never retry an uncertain send across boot automatically.
 
 POST /chat/state with empty body returns {"boot":"16 lowercase hex"}. Every other machine request uses X-Chat-Client, X-Chat-Seq (positive decimal integer up to 9007199254740991, strictly increasing per PC per boot), X-Chat-Mac (lowercase HMAC-SHA256 hex with raw enrollment key). Keep sequence locally, serialize requests; UTC milliseconds with monotonic increment is suitable. Sign the UTF-8 bytes of LFCHAT1\n{boot}\n{client}\n{seq}\n{path}\n{id}\n{to}\n{body} with LF separators, no implicit final LF. X-Chat-Id and X-Chat-To absent mean empty. Fresh sequence on every retry. Verify X-Chat-Reply on every success: HMAC over LFCHAT1-REPLY\n{boot}\n{client}\n{seq}\n{response body}. Ignore unsigned successes.

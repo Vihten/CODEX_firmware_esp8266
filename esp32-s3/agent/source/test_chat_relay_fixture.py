@@ -66,7 +66,7 @@ class Relay(BaseHTTPRequestHandler):
                 self.send_error(503)
                 return
         elif op == "send":
-            if body != "test\n\u2603" or to != "board,AABBCCDD":
+            if body != "test\n\u2603" or to != "board":
                 self.send_error(400)
                 return
             if mode == "uncertain":

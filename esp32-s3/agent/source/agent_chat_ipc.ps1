@@ -1,4 +1,5 @@
 ﻿# Windows PowerShell 5.1. Dot-source agent_update.ps1 for durable file operations.
+. (Join-Path $PSScriptRoot 'agent_chat_peer.ps1')
 $chatUtf8 = [Text.UTF8Encoding]::new($false, $true)
 $chatUuid = '\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z'
 
@@ -28,7 +29,7 @@ function Initialize-ChatMailbox($Root) {
     foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleAll($rule) }
     $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
     [IO.Directory]::SetAccessControl($Root,$acl)
-    foreach ($name in 'inbox','outbox','seen','attempts','failed') {
+    foreach ($name in 'inbox','outbox','seen','attempts','failed','deliveries','board-attempts','trusted') {
         $path = Join-Path $Root $name
         Assert-AgentPlainPath $path
         [void][IO.Directory]::CreateDirectory($path)
@@ -87,7 +88,7 @@ function Get-ChatSequence($Context) {
     $Context.Seq
 }
 
-function Invoke-ChatRest($Context,[ValidateSet('state','roster','send','inbox','ack')]$Operation,
+function Invoke-ChatRest($Context,[ValidateSet('state','send')]$Operation,
         [string]$Id='', [string]$To='', [string]$Body='') {
     if ($Context.Stop -and $Context.Stop.WaitOne(0)) { throw 'Chat session stopping' }
     $path = "/chat/$Operation"
@@ -158,124 +159,237 @@ function Test-ChatText($Value) {
     $Value -is [string] -and $Value.Length -gt 0 -and $Value -notmatch '[\x00-\x09\x0b-\x1f\x7f]' -and $chatUtf8.GetByteCount($Value) -le 512
 }
 
-function Get-ChatRoster($Context) {
-    $r = Invoke-ChatRest $Context roster
-    if ($r.self_id -cne $Context.Client -or $r.agents -isnot [array] -or $r.agents.Count -gt 13) { throw 'Invalid chat roster' }
-    $known = @{}
-    foreach ($peer in $r.agents) {
-        if ($peer.id -isnot [string] -or $peer.id -cnotmatch '\A([0-9A-F]{8}|board)\z' -or $known.ContainsKey($peer.id) -or
-            $peer.online -isnot [bool] -or $peer.name -isnot [string] -or $peer.name.Length -gt 128) { throw 'Invalid roster member' }
-        $known[$peer.id] = $true
-    }
-    $r
-}
-
-function Receive-ChatDelivery($Root,$Context) {
-    $r = Invoke-ChatRest $Context inbox
-    if ($r.messages -isnot [array] -or $r.messages.Count -gt 1) { throw 'Invalid chat inbox' }
-    foreach ($msg in $r.messages) {
-        if ($msg.id -isnot [string] -or $msg.id -cnotmatch $chatUuid -or $msg.sender_id -cnotmatch '\A[0-9A-F]{8}\z' -or
-            $msg.sender_name -isnot [string] -or $msg.sender_name.Length -gt 128 -or -not (Test-ChatText $msg.text)) { throw 'Invalid delivery' }
-        $path = Join-Path $Root "inbox/$($msg.id).json"
-        if (-not [IO.File]::Exists($path) -and -not [IO.File]::Exists((Join-Path $Root "seen/$($msg.id).json"))) {
-            if (@([IO.Directory]::EnumerateFiles((Join-Path $Root 'inbox'),'*.json') | Select-Object -First 64).Count -ge 64) {
-                throw 'Local inbox full'
-            }
-            Write-ChatObject $path $msg
-        }
-        [void](Invoke-ChatRest $Context ack $msg.id)
-    }
-}
-
-function Send-ChatOutbox($Root,$Context,$Roster) {
-    $dir = Join-Path $Root 'outbox'
-    foreach ($path in [IO.Directory]::EnumerateFiles($dir,'*.json') | Select-Object -First 4) {
-        $id = [IO.Path]::GetFileNameWithoutExtension($path)
-        Assert-AgentPlainPath $path
-        $attempt = $null
+function Sync-ChatTrust($Root,$Context) {
+    $bindings = @{}
+    foreach ($file in [IO.Directory]::EnumerateFiles((Join-Path $Root 'trusted'),'*.json')) {
+        if ($bindings.Count -ge 64) { break }
         try {
-            if ($id -cnotmatch $chatUuid) { throw 'Invalid filename' }
-            $msg = Read-ChatObject $path
-            if ($msg.id -cne $id -or -not (Test-ChatText $msg.text) -or $msg.recipient_ids -isnot [array] -or
-                $msg.recipient_ids.Count -lt 1 -or $msg.recipient_ids.Count -gt 12) { throw 'Invalid queued message' }
-            $attempt = Join-Path $Root "attempts/$id.json"
-            $retry = [IO.File]::Exists($attempt)
-            $recipients = @{}
-            foreach ($to in $msg.recipient_ids) {
-                if ($to -isnot [string] -or $to -cnotmatch '\A([0-9A-F]{8}|board)\z' -or $to -ceq $Context.Client -or
-                    $recipients.ContainsKey($to) -or (-not $retry -and -not ($Roster.agents | Where-Object { $_.online -and $_.id -ceq $to }))) { throw 'Invalid recipient' }
-                $recipients[$to] = $true
-            }
-            $toList = $msg.recipient_ids -join ','
-            $digest = Get-ChatMac $Context.Key ($toList + [char]10 + $msg.text)
-            $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-            if ($retry) {
-                $record = Read-ChatObject $attempt
-                if ($record.boot -cne $Context.Boot -or $record.digest -cne $digest -or
-                    $now -lt $record.started -or $now - $record.started -ge 590) { throw 'Expired or changed attempt' }
-            }
-        } catch {
-            $failed = Join-Path $Root ('failed/' + [IO.Path]::GetFileName($path))
-            Assert-AgentPlainPath $failed
-            if (-not [IO.File]::Exists($failed)) { [IO.File]::Move($path,$failed) }
-            if ($attempt) { [IO.File]::Delete($attempt) }
-            continue
-        }
-        if (-not $retry) { Write-ChatObject $attempt @{boot=$Context.Boot;digest=$digest;started=$now} }
-        try {
-            $reply = Invoke-ChatRest $Context send $id $toList $msg.text
-            if ($reply.ok -isnot [bool] -or -not $reply.ok) { throw 'Missing send receipt' }
-        } catch {
-            if ($_.Exception.Data['Status'] -notin @(400,409,413)) { throw }
-            [IO.File]::Move($path,(Join-Path $Root "failed/$id.json"))
-            [IO.File]::Delete($attempt)
-            continue
-        }
-        [IO.File]::Delete($path)
-        [IO.File]::Delete($attempt)
+            $id = [IO.Path]::GetFileNameWithoutExtension($file)
+            $row = Read-ChatObject $file
+            if ($id -cnotmatch '\A[0-9A-F]{8}\z' -or $id -ceq $Context.Client -or $row.id -cne $id -or
+                $row.fingerprint -isnot [string] -or $row.fingerprint -cnotmatch '\A[0-9A-F]{64}\z' -or
+                $row.name -isnot [string] -or [string]::IsNullOrWhiteSpace($row.name) -or
+                $row.name -match '[\p{Cc}]' -or $row.name.Length -gt 128) { continue }
+            $bindings[$id] = $row
+        } catch { continue }
     }
+    if (-not $Context.Applied) { $Context.Applied = @{} }
+    foreach ($id in @($Context.Applied.Keys)) {
+        $old = $Context.Applied[$id]
+        $new = $bindings[$id]
+        if (-not $new -or $old.fingerprint -cne $new.fingerprint -or $old.name -cne $new.name) {
+            Remove-ChatPeerTrust $Context.Peer $id
+            $Context.Applied.Remove($id)
+        }
+    }
+    if ($Context.Peer) {
+        foreach ($id in $bindings.Keys) {
+            if (-not $Context.Applied.ContainsKey($id)) {
+                $row = $bindings[$id]
+                try { Set-ChatPeerTrust $Context.Peer $id $row.name $row.fingerprint } catch { continue }
+                $Context.Applied[$id] = $row
+            }
+        }
+    }
+    $Context.Bindings = $bindings
 }
 
-function Publish-ChatRoster($Root,$Context,$Roster) {
-    $json = ConvertTo-Json -InputObject $Roster -Depth 5 -Compress
+function Publish-ChatRoster($Root,$Context,$EndpointPath) {
+    $Context.Online = @{}
+    $rows = @([ordered]@{id=$Context.Client;name=$Context.Name;online=$true})
+    $candidates = @()
+    if ($Context.Peer) {
+        foreach ($peer in (Get-ChatPeerRoster $Context.Peer | Sort-Object id)) {
+            $binding = $Context.Applied[$peer.id]
+            if ($binding) {
+                if ($peer.online) { $Context.Online[$peer.id] = $true }
+                $rows += [ordered]@{id=$peer.id;name=$binding.name;online=[bool]$peer.online;trusted=$true;fingerprint=$binding.fingerprint}
+            }
+        }
+        $candidates = @(foreach ($peer in (Get-ChatPeerCandidates $Context.Peer | Sort-Object id,pin,address)) {
+            [ordered]@{id=$peer.id;name=$peer.name;fingerprint=$peer.pin;address=[string]$peer.address}
+        })
+    }
+    # Board availability is a local hint. Credentials are opened only for an explicitly queued board send.
+    $ep = $null
+    try { $ep = Get-ChatEndpoint $EndpointPath } catch {}
+    $Context.Endpoint = $ep
+    $boardReady = $ep -and [IO.File]::Exists((Join-Path $Root "chat-key-$($ep.Device)-$($Context.Client).bin"))
+    $rows += [ordered]@{id='board';name='Табло';online=[bool]$boardReady}
+    $snapshot = [ordered]@{self_id=$Context.Client;self_fingerprint=$Context.Peer.Pin;agents=$rows;candidates=$candidates}
+    $json = ConvertTo-Json -InputObject $snapshot -Depth 5 -Compress
     if ($json -cne $Context.LastSnapshot) {
         Write-AgentDurable (Join-Path $Root 'roster.json') ($chatUtf8.GetBytes($json))
         $Context.LastSnapshot = $json
     }
 }
 
-function Invoke-ChatCycle($Root,$EndpointPath,$Context) {
-    $Context.Root = $Root
-    $now = [datetime]::UtcNow
-    if (-not $Context.Key -or $now -ge $Context.NextState) {
-        $ep = Get-ChatEndpoint $EndpointPath
-        if ($Context.Device -cne $ep.Device -or -not $Context.Key) {
-            $Context.Key = Get-ChatSecret $Root $ep.Device $Context.Client
-            $Context.Device = $ep.Device
-            $Context.Seq = 0L
-            $Context.SequenceLimit = 0L
-        }
-        $Context.Base = $ep.Base
-        $state = Invoke-ChatRest $Context state
-        if ($state.boot -isnot [string] -or $state.boot -cnotmatch '\A[0-9a-f]{16}\z') { throw 'Invalid chat boot' }
-        if ($Context.Boot -cne $state.boot) { $Context.NextRoster = [datetime]::MinValue }
-        $Context.Boot = $state.boot
-        $Context.NextState = $now.AddSeconds((Get-Random -Minimum 90 -Maximum 121))
+function Get-ChatBoardBoot($Root,$Context,$Target) {
+    $ep = $Context.Endpoint
+    if (-not $ep) { throw 'Board endpoint unavailable' }
+    if ($Target.device -and $Target.device -cne $ep.Device) { throw 'Selected board unavailable' }
+    if ($Context.Device -cne $ep.Device -or -not $Context.Key) {
+        $Context.Key = Get-ChatSecret $Root $ep.Device $Context.Client
+        $Context.Device = $ep.Device
+        $Context.Seq = 0L
+        $Context.SequenceLimit = 0L
     }
+    $Context.Base = $ep.Base
+    $state = Invoke-ChatRest $Context state
+    if ($state.boot -isnot [string] -or $state.boot -cnotmatch '\A[0-9a-f]{16}\z') { throw 'Invalid board boot' }
+    $Context.Boot = $state.boot
+}
+
+function Get-ChatDraftDigest($Message) {
+    $hash = [Security.Cryptography.SHA256]::Create()
     try {
-        if (-not $Context.Roster -or $now -ge $Context.NextRoster) {
-            $Context.Roster = Get-ChatRoster $Context
-            Publish-ChatRoster $Root $Context $Context.Roster
-            $Context.NextRoster = $now.AddSeconds((Get-Random -Minimum 20 -Maximum 31))
+        $value = ($Message.recipient_ids -join ',') + [char]10 + $Message.text
+        [BitConverter]::ToString($hash.ComputeHash($chatUtf8.GetBytes($value)))
+    } finally { $hash.Dispose() }
+}
+
+function New-ChatDelivery($Context,$Message,$Legacy) {
+    $unique = @{}
+    $targets = @(foreach ($id in $Message.recipient_ids) {
+        if ($id -isnot [string] -or $id -cnotmatch '\A([0-9A-F]{8}|board)\z' -or $id -ceq $Context.Client -or $unique.ContainsKey($id)) {
+            throw 'Invalid recipient'
         }
-        Receive-ChatDelivery $Root $Context
-        Send-ChatOutbox $Root $Context $Context.Roster
-    } catch {
-        if ($_.Exception.Data['Status'] -in @(403,409)) { $Context.NextState = [datetime]::MinValue }
-        throw
+        $unique[$id] = $true
+        $pin = if ($id -cne 'board' -and $Context.Bindings.ContainsKey($id)) { $Context.Bindings[$id].fingerprint }
+        $device = if ($id -ceq 'board') { $Context.Endpoint.Device }
+        $state = if ($Legacy) { 'uncertain' } elseif ($id -cne 'board' -and -not $pin) { 'failed' } else { 'pending' }
+        [pscustomobject]@{id=$id;state=$state;started=0L;retry=0L;pin=$pin;device=$device;boot=$null}
+    })
+    [pscustomobject]@{id=$Message.id;digest=(Get-ChatDraftDigest $Message);queued=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds();targets=$targets}
+}
+
+function Send-ChatTarget($Root,$Context,$Message,$Record,$Target,$Journal,$Now) {
+    if ($Target.state -cne 'pending' -or ($Context.Stop -and $Context.Stop.WaitOne(0))) { return }
+    if ($Target.started -and ($Now -lt $Target.started -or $Now - $Target.started -ge 590)) {
+        $Target.state = 'uncertain'
+    } elseif (-not $Target.started -and ($Now -lt $Record.queued -or $Now - $Record.queued -ge 86400)) {
+        $Target.state = 'failed'
+    } elseif ($Now -lt $Target.retry) { return }
+    else {
+        $board = $Target.id -ceq 'board'
+        if (-not $board -and $Context.Bindings[$Target.id].fingerprint -cne $Target.pin) {
+            $Target.state = if ($Target.started) { 'uncertain' } else { 'failed' }
+        } else {
+            try {
+                if ($board) {
+                    Get-ChatBoardBoot $Root $Context $Target
+                    if ($Target.boot -and $Target.boot -cne $Context.Boot) { $Target.state = 'uncertain' }
+                    else { $Target.boot = $Context.Boot; $Target.device = $Context.Device }
+                } elseif (-not $Context.Peer -or -not $Context.Online.ContainsKey($Target.id)) { return }
+            } catch {
+                $Target.retry = $Now + 10
+                Write-ChatObject $Journal $Record
+                return
+            }
+            if ($Target.state -ceq 'pending') {
+                if (-not $Target.started) { $Target.started = $Now }
+                $Target.retry = $Now + 10
+                # Persist the exact UUID, board boot or peer pin before the first uncertain network write.
+                Write-ChatObject $Journal $Record
+                try {
+                    if ($board) {
+                        $reply = Invoke-ChatRest $Context send $Message.id 'board' $Message.text
+                        if ($reply.ok -isnot [bool] -or -not $reply.ok) { throw 'Invalid board receipt' }
+                    } else {
+                        $receipt = Send-ChatPeerMessage $Context.Peer $Target.id $Message.id $Message.text
+                        if ($receipt -isnot [string] -or $receipt -cne $Message.id) { throw 'Invalid peer receipt' }
+                    }
+                    $Target.state = 'delivered'
+                } catch { return }
+            }
+        }
+    }
+    Write-ChatObject $Journal $Record
+}
+
+function Send-ChatBoardDraft($Root,$Context,$Message,$Record) {
+    if ($Record.digest -cne (Get-ChatDraftDigest $Message)) { return }
+    $board = $Record.targets | Where-Object id -ceq 'board'
+    if ($board.state -cne 'pending') { return }
+    $path = Join-Path $Root "board-attempts/$($Message.id).json"
+    if ([IO.File]::Exists($path)) {
+        $progress = Read-ChatObject $path
+        if ($progress.id -cne $Record.id -or $progress.digest -cne $Record.digest) { return }
+    } else {
+        $progress = [pscustomobject]@{id=$Record.id;digest=$Record.digest;queued=$Record.queued;targets=@($board)}
+    }
+    Send-ChatTarget $Root $Context $Message $progress $progress.targets[0] $path ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+}
+
+function Invoke-ChatBoardCycle($Root,$EndpointPath,$Context) {
+    foreach ($file in [IO.Directory]::EnumerateFiles((Join-Path $Root 'outbox'),'*.json')) {
+        if ($Context.Stop.WaitOne(0)) { return }
+        try {
+            $msg = Read-ChatObject $file
+            if ($msg.id -cnotmatch $chatUuid -or $msg.id -cne [IO.Path]::GetFileNameWithoutExtension($file) -or
+                $msg.recipient_ids -cnotcontains 'board') { continue }
+            $record = Read-ChatObject (Join-Path $Root "deliveries/$($msg.id).json")
+            $Context.Endpoint = $null
+            try { $Context.Endpoint = Get-ChatEndpoint $EndpointPath } catch {}
+            Send-ChatBoardDraft $Root $Context $msg $record
+        } catch { continue }
     }
 }
 
+function Send-ChatOutbox($Root,$Context) {
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    foreach ($path in [IO.Directory]::EnumerateFiles((Join-Path $Root 'outbox'),'*.json')) {
+        if ($Context.Stop -and $Context.Stop.WaitOne(0)) { return }
+        $name = [IO.Path]::GetFileName($path)
+        $id = [IO.Path]::GetFileNameWithoutExtension($path)
+        $failed = Join-Path $Root "failed/$name"
+        $journal = Join-Path $Root "deliveries/$name"
+        try {
+            $msg = Read-ChatObject $path
+            if ($id -cnotmatch $chatUuid -or $msg.id -cne $id -or -not (Test-ChatText $msg.text) -or
+                $msg.recipient_ids -isnot [array] -or $msg.recipient_ids.Count -lt 1 -or $msg.recipient_ids.Count -gt 13) { throw 'Invalid draft' }
+            if ([IO.File]::Exists($journal)) {
+                $record = Read-ChatObject $journal
+                if ($record.id -cne $id -or $record.digest -cne (Get-ChatDraftDigest $msg) -or
+                    $record.targets -isnot [array] -or ($record.targets.id -join ',') -cne ($msg.recipient_ids -join ',')) { throw 'Draft or journal changed' }
+            } else {
+                $legacy = [IO.File]::Exists((Join-Path $Root "attempts/$name"))
+                $record = New-ChatDelivery $Context $msg $legacy
+                Write-ChatObject $journal $record
+            }
+        } catch {
+            if (-not [IO.File]::Exists($failed)) { [IO.File]::Move($path,$failed) }
+            continue
+        }
+        foreach ($t in $record.targets | Where-Object id -cne 'board') {
+            Send-ChatTarget $Root $Context $msg $record $t $journal $now
+        }
+        $board = $record.targets | Where-Object id -ceq 'board'
+        if ($board.state -ceq 'pending') {
+            if (-not $Context.SeparateBoard) { Send-ChatBoardDraft $Root $Context $msg $record }
+            $progressPath = Join-Path $Root "board-attempts/$id.json"
+            if ([IO.File]::Exists($progressPath)) {
+                $progress = Read-ChatObject $progressPath
+                if ($progress.id -ceq $id -and $progress.digest -ceq $record.digest -and
+                    $progress.targets[0].state -cin @('delivered','uncertain','failed')) {
+                    $board.state = $progress.targets[0].state
+                    Write-ChatObject $journal $record
+                }
+            }
+        }
+        if ($record.targets.state -ccontains 'pending') { continue }
+        if (@($record.targets | Where-Object state -cne 'delivered').Count) {
+            if (-not [IO.File]::Exists($failed)) { [IO.File]::Move($path,$failed) }
+        } else { [IO.File]::Delete($path) }
+    }
+}
+
+function Invoke-ChatCycle($Root,$EndpointPath,$Context) {
+    $Context.Root = $Root
+    Sync-ChatTrust $Root $Context
+    Publish-ChatRoster $Root $Context $EndpointPath
+    Send-ChatOutbox $Root $Context
+}
 function Show-AgentChatPairing($Root,$EndpointPath) {
     Add-Type -AssemblyName System.Windows.Forms
     $ep = Get-ChatEndpoint $EndpointPath
@@ -289,7 +403,7 @@ function Show-AgentChatPairing($Root,$EndpointPath) {
     } finally { $sha.Dispose() }
     $dialog = [Windows.Forms.Form]::new()
     try {
-        $dialog.Text = 'Підключення офісного чату'
+        $dialog.Text = 'Підключення табло'
         $dialog.Width = 595
         $dialog.Height = 220
         $dialog.StartPosition = 'CenterScreen'
@@ -310,7 +424,7 @@ function Show-AgentChatPairing($Root,$EndpointPath) {
     } finally { $dialog.Dispose() }
 }
 
-function Start-AgentChatSession($Directory,$EndpointPath,$Client,$Root) {
+function Start-AgentChatSession($Directory,$EndpointPath,$Client,$Root,$Name=$env:COMPUTERNAME,[hashtable]$PeerOptions=@{}) {
     Initialize-ChatMailbox $Root
     $lockPath = Join-Path $Root 'worker.lock'
     Assert-AgentPlainPath $lockPath
@@ -318,7 +432,7 @@ function Start-AgentChatSession($Directory,$EndpointPath,$Client,$Root) {
     $session = @{ Lock=$lock; Stop=[Threading.ManualResetEvent]::new($false); Jobs=@() }
     try {
         Write-ChatObject (Join-Path $Root 'roster.json') @{self_id=$Client;agents=@()}
-        foreach ($role in 'transport','tray') {
+        foreach ($role in 'transport','board','tray') {
             $space = [RunspaceFactory]::CreateRunspace()
             $space.ApartmentState = if ($role -eq 'tray') { 'STA' } else { 'MTA' }
             $space.ThreadOptions = 'ReuseThread'
@@ -328,7 +442,7 @@ function Start-AgentChatSession($Directory,$EndpointPath,$Client,$Root) {
             $space.Open()
             $ps.Runspace = $space
             [void]$ps.AddScript({
-                param($role,$directory,$endpoint,$client,$root,$stop)
+                param($role,$directory,$endpoint,$client,$root,$stop,$name,$peerOptions)
                 $ErrorActionPreference = 'Stop'
                 . (Join-Path $directory 'agent_update.ps1')
                 . (Join-Path $directory 'agent_chat_ipc.ps1')
@@ -336,24 +450,28 @@ function Start-AgentChatSession($Directory,$EndpointPath,$Client,$Root) {
                     & (Join-Path $directory 'agent_chat_ui.ps1') -MailboxRoot $root -ChatStopEvent $stop
                     return
                 }
-                $ctx = @{Client=$client; Seq=0L; Stop=$stop}
-                $delay = 5
-                while (-not $stop.WaitOne(0)) {
-                    try {
-                        Invoke-ChatCycle $root $endpoint $ctx
-                        $delay = 5
-                    } catch {
-                        if ($stop.WaitOne(0)) { break }
-                        $offline = @(foreach ($peer in $ctx.Roster.agents) {
-                            [ordered]@{id=$peer.id;name=$peer.name;online=$false}
-                        })
-                        Publish-ChatRoster $root $ctx ([ordered]@{self_id=$client;agents=$offline})
-                        $ctx.NextRoster = [datetime]::MinValue
-                        $delay = [Math]::Min(30,2*$delay)
+                $ctx = @{Client=$client; Name=$name; Seq=0L; Stop=$stop; Root=$root; SeparateBoard=$true}
+                if ($role -eq 'board') {
+                    while (-not $stop.WaitOne(0)) {
+                        Invoke-ChatBoardCycle $root $endpoint $ctx
+                        [void]$stop.WaitOne(1500)
                     }
-                    [void]$stop.WaitOne(1000*$delay - (Get-Random -Minimum 0 -Maximum 901))
+                    return
                 }
-            }).AddArgument($role).AddArgument($Directory).AddArgument($EndpointPath).AddArgument($Client).AddArgument($Root).AddArgument($session.Stop)
+                $nextStart = [datetime]::MinValue
+                try {
+                    while (-not $stop.WaitOne(0)) {
+                        if (-not $ctx.Peer -and [datetime]::UtcNow -ge $nextStart) {
+                            $nextStart = [datetime]::UtcNow.AddSeconds(15)
+                            try { $ctx.Peer = Start-ChatPeerRuntime -Root $root -Client $client -Name $name @peerOptions } catch {}
+                        }
+                        try { Invoke-ChatCycle $root $endpoint $ctx } catch {
+                            if ($stop.WaitOne(1000)) { break }
+                        }
+                        [void]$stop.WaitOne(1500)
+                    }
+                } finally { if ($ctx.Peer) { Stop-ChatPeerRuntime $ctx.Peer } }
+            }).AddArgument($role).AddArgument($Directory).AddArgument($EndpointPath).AddArgument($Client).AddArgument($Root).AddArgument($session.Stop).AddArgument($Name).AddArgument($PeerOptions)
             $job.Task = $ps.BeginInvoke()
         }
         $session

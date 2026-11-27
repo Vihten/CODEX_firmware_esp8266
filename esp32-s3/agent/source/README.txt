@@ -1,5 +1,12 @@
 ﻿CODEX LAN ACTIVITY AGENT
 
+DIRECT PEER CHAT
+
+After a web update, extract the matching agent bootstrap. In an Administrator
+terminal in that folder, run .\configure_peer_firewall.cmd once on each PC
+that will receive peer messages. See DIRECT_PEER_INSTALL.md for manual setup
+and removal. OFFICE_CHAT.md explains peer fingerprint verification.
+
 PAIRED-ACCOUNT LIMITS (LFA3)
 
 Activity and token history continue for every local account. Sky/quota reports

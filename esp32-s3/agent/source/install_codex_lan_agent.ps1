@@ -42,6 +42,8 @@ foreach ($file in $codeFiles) {
         throw "Missing agent package file: $file. Extract the entire archive before installation."
     }
 }
+. (Join-Path $PSScriptRoot 'agent_chat_package.ps1')
+$ipcInstallBytes = Get-AgentChatIpcInstallBytes $PSScriptRoot
 . (Join-Path $PSScriptRoot 'agent_metadata.ps1')
 [void](Get-AgentInstalledVersion $PSScriptRoot)
 if (-not $AgentUpdatePublicKeyPath) {
@@ -115,7 +117,8 @@ Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
 Reset-AgentActionForReinstall $installDirectory
 
 foreach ($file in $codeFiles) {
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $installDirectory -Force
+    if ($file -eq 'agent_chat_ipc.ps1') { Write-AgentDurable (Join-Path $installDirectory $file) $ipcInstallBytes }
+    else { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $installDirectory -Force }
 }
 if ($AgentUpdatePublicKeyPath) {
     Write-AgentDurable (Join-Path $installDirectory 'agent-update-public.xml') ([Text.Encoding]::UTF8.GetBytes($publicXml))

@@ -13,6 +13,7 @@ if (-not (Test-Path -LiteralPath $source -PathType Container)) {
     $source = Split-Path $PSScriptRoot -Parent
 }
 . (Join-Path $source 'agent_update.ps1')
+. (Join-Path $source 'agent_chat_package.ps1')
 $publisher = if ($PublisherDirectory) { $PublisherDirectory } else { Join-Path $env:LOCALAPPDATA 'LED Forge/Agent Publisher' }
 $privatePath = Join-Path $publisher 'agent-update-private.xml'
 Assert-AgentPlainPath $publisher
@@ -57,7 +58,7 @@ try {
                 [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$parseErrors)
                 if ($parseErrors.Count) { throw "Invalid release script: $name" }
             }
-            $bytes = if ($name -eq 'agent-version.txt') { [Text.Encoding]::ASCII.GetBytes("$Version`n") } else { [IO.File]::ReadAllBytes($path) }
+            $bytes = if ($name -eq 'agent-version.txt') { [Text.Encoding]::ASCII.GetBytes("$Version`n") } elseif ($name -eq 'agent_chat_ipc.ps1') { Get-AgentChatIpcInstallBytes $source } else { [IO.File]::ReadAllBytes($path) }
             if ($bytes.Length -eq 0 -or [Array]::IndexOf($bytes, [byte]0) -ge 0) { throw "Empty or NUL-containing release source: $name" }
             $total += $bytes.Length
             if ($total -gt 2097152) { throw 'Expanded package exceeds 2MB' }
@@ -79,7 +80,7 @@ try {
     $verified = Test-AgentPackage $OutputDirectory $OutputDirectory 0
     $manualFiles = @('install_codex_lan_agent.ps1', 'install_codex_lan_agent.cmd',
         'update_codex_lan_agent.ps1', 'update_codex_lan_agent.cmd',
-        'controller_rebind.ps1',
+        'controller_rebind.ps1', 'agent_chat_package.ps1', 'configure_peer_firewall.ps1', 'configure_peer_firewall.cmd', 'DIRECT_PEER_INSTALL.md', 'OFFICE_CHAT.md',
         'rebind_to_s3.ps1', 'rebind_to_s3.cmd', 'start_codex_lan_agent.cmd',
         'uninstall_codex_lan_agent.ps1', 'uninstall_codex_lan_agent.cmd',
         'configure_collector_firewall.ps1', 'configure_collector_firewall.cmd', 'README.txt', 'TOKEN_ACCOUNTING_V2.md', 'CHAT_MAILBOX.md')

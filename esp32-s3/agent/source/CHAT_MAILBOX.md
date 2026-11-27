@@ -1,17 +1,34 @@
-# Windows chat mailbox v1
+# Windows chat mailbox v2
 
-Run agent_chat_ui.ps1 in the interactive user session. Both processes use the same per-user directory, default %LOCALAPPDATA%\CodexLanAgent\chat. Pass -MailboxRoot to override. No network access is required by the UI.
+The tray and background worker share the signed-in user's mailbox at
+`%LOCALAPPDATA%\CodexLanAgent\chat`. The tray accepts `-MailboxRoot` for an
+isolated session. Publish complete UTF-8 JSON using an atomic move or
+replacement in the destination directory. Readers ignore temporary files.
 
-Publish complete UTF-8 JSON using a temporary file in the destination directory and atomic rename (atomic replace for roster updates). Readers ignore temporary files. IDs are opaque, case-insensitive strings. Message IDs are UUIDs in canonical hyphenated form.
-
-| Path | Writer | JSON |
+| Path | Writer | Contract |
 | --- | --- | --- |
-| roster.json | worker | {"self_id":"00000001","agents":[{"id":"00000001","name":"Vlad","online":true},{"id":"00000002","name":"Nestor","online":true},{"id":"board","name":"Board","online":true}]} |
-| outbox/<id>.json | UI | {"id":"uuid","recipient_ids":["peer-id"],"text":"message"} |
-| inbox/<id>.json | worker | {"id":"uuid","sender_id":"peer-id","sender_name":"Nestor","text":"message"} |
-| seen/<id>.json | UI | Original inbox file moved after display |
+| `roster.json` | Worker | Local `self_id`, public `self_fingerprint`, verified `agents`, and discovered `candidates`. A verified PC row carries its ID, trusted name, fingerprint, and online state. |
+| `trusted/<ID>.json` | Tray | Immutable, user-approved `id`, `name`, and SHA-256 `fingerprint`. Each side verifies the other independently. |
+| `outbox/<uuid>.json` | Tray | Original `id`, `recipient_ids`, and `text`. The UI normalizes newlines to LF and enforces the 512-byte UTF-8 limit. |
+| `deliveries/<uuid>.json` | Worker | Draft digest, queue time, and per-recipient `targets` with `id` and `state`. States are `pending`, `delivered`, `failed`, and `uncertain`. |
+| `board-attempts/<uuid>.json` | Board worker | Independent progress for an explicitly selected board. The peer worker merges the board result into the delivery journal. |
+| `inbox/<uuid>.json` | Peer receiver | Durable message containing its UUID, sender ID, trusted sender name, sender fingerprint, and text. Receipt follows durable storage. |
+| `seen/<uuid>.json` | Tray | Original inbox record moved after display. The receiver consults both directories when handling a retry. |
+| `failed/<uuid>.json` | Worker | Original draft retained when one or more deliveries failed or became uncertain. The delivery journal identifies recipients that already received it. |
 
-The worker owns outbox consumption, retry, deduplication by message ID, and presence freshness. Include known offline agents in snapshots. The UI enables resolved online recipients only. The worker must revalidate recipients and reject self delivery. Queued indicates local handoff. The UI normalizes Windows newlines to LF before enforcing the 512-byte UTF-8 limit. Keep queued text unchanged. Include the local agent row with online true, or provide self_name alongside self_id for local desk identification. Publish the board with ID board for explicit selection. Use unique message IDs across senders.
+Peer IDs are eight uppercase hexadecimal characters. Message IDs are lowercase
+hyphenated UUIDs. A worker rejects self-delivery and duplicate recipients.
+Discovery supplies candidates. The tray requires explicit fingerprint
+approval before a discovered PC can receive text. Trust changes require a new
+verification. See [Office chat](OFFICE_CHAT.md) for the reimage procedure.
 
-Windows transport release handoff: retain the packaged names agent_chat_ipc.ps1 and agent_chat_ui.ps1. The former now owns file mailbox/REST integration. Pairing is an explicit tray action. The transport uses the confirmed telemetry controller endpoint and separate PC-generated chat key.
-Pairing launcher contract: transport supplies Show-AgentChatPairing -Root $MailboxRoot -EndpointPath (Join-Path $PSScriptRoot 'controller-endpoint.json'). The tray menu calls this helper on click. The helper loads a per-user DPAPI key, displays the PC ID, key and fingerprint on demand, and opens the controller-hosted approval form with only client ID in the URL. Transport worker owns this helper and the single menu hook. UI worker owns other UI changes. No pairing command files.
+The board recipient has ID `board`. Board pairing uses the confirmed telemetry
+endpoint and a separate per-user key. The tray displays the PC ID and key on
+request and opens the controller approval page with only the client ID in its
+URL. Board HTTP runs independently of direct peer delivery. Legacy
+`attempts/<uuid>.json` records yield uncertain results so an upgrade does not
+silently replay previously attempted messages.
+
+The signed web package carries peer code inside `agent_chat_ipc.ps1`. The
+editable source loads the adjacent `agent_chat_peer.ps1`. The user-facing tray
+remains `agent_chat_ui.ps1` in both layouts.

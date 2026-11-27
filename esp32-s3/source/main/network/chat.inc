@@ -227,13 +227,18 @@ esp_err_t chatPost(httpd_req_t *req) {
   if ((send || ack ? !chatUuid(id) : *id != 0) || (send ? !chatText(body) || !*to : *body || *to))
     return chatFailure(req,400);
   uint16_t online = chat::board;
-  const uint32_t telemetryNow = uptimeMs();
-  for (unsigned i=0; i<s.durable.load(); ++i)
-    if (onlineChatAgent(control,r.agents[i].id,telemetryNow)) online |= 1u << i;
+  const bool roster = !std::strcmp(req->uri,"/chat/roster");
+  // Direct-chat agents send only to the board. Desktop presence is needed
+  // solely by older agents during their migration.
+  if (roster || (send && std::strcmp(to,"board"))) {
+    const uint32_t telemetryNow = uptimeMs();
+    for (unsigned i=0; i<s.durable.load(); ++i)
+      if (onlineChatAgent(control,r.agents[i].id,telemetryNow)) online |= 1u << i;
+  }
   int result = 200;
   copy(s.response,"{\"ok\":true}");
   const uint16_t own = uint16_t(1u << index);
-  if (!std::strcmp(req->uri,"/chat/roster")) {
+  if (roster) {
     size_t n = std::snprintf(s.response,sizeof(s.response),"{\"self_id\":\"%s\",\"agents\":[",client);
     for (unsigned i=0; i<s.durable.load(); ++i) {
       char name[100]; chatQuote(r.agents[i].name,name);
@@ -278,11 +283,11 @@ esp_err_t chatPairPage(httpd_req_t *req) {
   char page[1400];
   std::snprintf(page, sizeof(page),
       "<!doctype html><html lang=uk><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
-      "<title>Підключення чату</title><main><h1>Підключення чату</h1><p>ПК <strong>%s</strong></p>"
+      "<title>Підключення табло</title><main><h1>Повідомлення на табло</h1><p>ПК <strong>%s</strong></p>"
       "<form method=post action='/chat/enroll' autocomplete=off>"
       "<input type=hidden name=client value='%s'><label>Ключ чату з цього ПК "
       "<input type=password name=key required minlength=64 maxlength=64 pattern='[0-9a-f]{64}' autocomplete=off></label>"
-      "<p><button>Дозволити чат для цього ПК</button></p></form></main></html>", client, client);
+      "<p><button>Дозволити надсилання на табло</button></p></form></main></html>", client, client);
   httpd_resp_set_type(req, "text/html; charset=utf-8");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   httpd_resp_set_hdr(req, "Referrer-Policy", "same-origin");

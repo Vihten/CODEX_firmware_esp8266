@@ -1770,7 +1770,7 @@ try {
         try {
             . (Join-Path $PSScriptRoot 'agent_update.ps1')
             . (Join-Path $PSScriptRoot 'agent_chat_ipc.ps1')
-            $chatSession = Start-AgentChatSession $PSScriptRoot $ControllerStatePath $clientHash (Join-Path $env:LOCALAPPDATA 'CodexLanAgent/chat')
+            $chatSession = Start-AgentChatSession $PSScriptRoot $ControllerStatePath $clientHash (Join-Path $env:LOCALAPPDATA 'CodexLanAgent/chat') $metadata.Name
         } catch { Write-AgentStatus 'Chat startup failed.' }
     }
     Write-AgentStatus 'Codex LAN activity agent started.'

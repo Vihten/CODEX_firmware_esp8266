@@ -15,9 +15,9 @@ function Assert-VisibleLayout($parent) {
         Assert-VisibleLayout $child
     }
 }
-function Save-ChatPreview($path) {
-    $bitmap = New-Object Drawing.Bitmap($form.Width,$form.Height)
-    try { $form.DrawToBitmap($bitmap,[Drawing.Rectangle]::new(0,0,$bitmap.Width,$bitmap.Height)); $bitmap.Save($path) } finally { $bitmap.Dispose() }
+function Save-ChatPreview($path,$window=$form) {
+    $bitmap = New-Object Drawing.Bitmap($window.Width,$window.Height)
+    try { $window.DrawToBitmap($bitmap,[Drawing.Rectangle]::new(0,0,$bitmap.Width,$bitmap.Height)); $bitmap.Save($path) } finally { $bitmap.Dispose() }
 }
 function Write-Fixture($name,$object) {
     [IO.File]::WriteAllText((Join-Path $testRoot $name),($object | ConvertTo-Json -Depth 5))
@@ -34,8 +34,66 @@ try {
         @{id='00000004';name='Vlad';online=$true}
         @{id='board';name='Board';online=$true}
     )
-    $snapshot = @{self_id='00000001'; agents=$agents}
+    $pin = 'A1' * 32
+    function Copy-ChatIdentity([string]$value) { $script:copiedIdentity = $value }
+    $ownPin = 'C3' * 32
+    $peer = @{id='00000002';name='Dimasik';fingerprint=$pin}
+    $snapshot = @{self_id='00000001';self_fingerprint=$ownPin;agents=$agents;candidates=@($peer)}
     Write-Fixture 'roster.json' $snapshot
+    Update-Seats
+    Check (-not $buttons['Дімасік'].Enabled -and $board.Enabled) 'Legacy unpinned desktop became selectable'
+    Show-PeerTrust
+    [Windows.Forms.Application]::DoEvents()
+    Assert-VisibleLayout $trustWindow
+    if ($PreviewPath) {
+        $trustPath = Join-Path ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($PreviewPath))) ([IO.Path]::GetFileNameWithoutExtension($PreviewPath) + '-trust.png')
+        Save-ChatPreview $trustPath $trustWindow
+    }
+    Check ($ownFingerprint.Text -ceq (Format-PeerFingerprint $ownPin) -and $ownFingerprint.ReadOnly) 'Own fingerprint unavailable'
+    Check ($peerList.SelectedItem.Identity.id -ceq $peer.id -and $remoteFingerprint.Text -ceq (Format-PeerFingerprint $pin)) 'Missing candidate fingerprint'
+    Check (-not $approvePeer.Enabled) 'Approval enabled without independent fingerprint'
+    $independentFingerprint.Text = 'B2' * 32
+    Check (-not $approvePeer.Enabled) 'Wrong fingerprint enabled approval'
+    $copyIdentity.PerformClick()
+    Check ($copiedIdentity -ceq ('ID 00000001  ' + (Format-PeerFingerprint $ownPin))) 'Clipboard identity missing ID or grouped fingerprint'
+    $independentFingerprint.Text = 'ID 00000009  ' + (Format-PeerFingerprint $pin)
+    Check (-not $approvePeer.Enabled) 'Copied identity for wrong ID accepted'
+    $independentFingerprint.Text = 'ID 00000002  ' + (Format-PeerFingerprint $pin).ToLowerInvariant()
+    Check ($approvePeer.Enabled) 'Verified fingerprint did not enable approval'
+    $bindingPath = Get-TrustBindingPath $peer.id
+    $peer.fingerprint = 'B2' * 32
+    Write-Fixture 'roster.json' $snapshot
+    $approvePeer.PerformClick()
+    Check (-not [IO.File]::Exists($bindingPath) -and -not $approvePeer.Enabled) 'Stale verification pinned a changed key'
+    $peer.fingerprint = $pin
+    Write-Fixture 'roster.json' $snapshot
+    Refresh-PeerTrust
+    $independentFingerprint.Text = $pin
+    $approvePeer.PerformClick()
+    Check ((Test-BindingMatches $peer) -and -not $approvePeer.Enabled) 'First approval did not persist once'
+    Check (-not $buttons['Дімасік'].Enabled) 'Approval bypassed runtime verification'
+    $agents[1].fingerprint = $pin
+    $agents[1].trusted = $true
+    $agents[2].fingerprint = 'D4' * 32
+    $agents[2].trusted = $true
+    Write-Fixture 'trusted\00000003.json' $agents[2]
+    Write-Fixture 'roster.json' $snapshot
+    Update-Seats
+    Check ($buttons['Дімасік'].Enabled) 'Verified online peer not selectable'
+    $buttons['Дімасік'].Checked = $true
+    $peer.fingerprint = 'B2' * 32
+    Write-Fixture 'roster.json' $snapshot
+    Refresh-PeerTrust
+    Update-Seats
+    $independentFingerprint.Text = $peer.fingerprint
+    Check (-not $approvePeer.Enabled -and -not $buttons['Дімасік'].Checked -and -not $buttons['Дімасік'].Enabled) 'Changed identity accepted'
+    Check ((Read-ChatJson $bindingPath).fingerprint -ceq $pin) 'Pin overwritten'
+    $peer.fingerprint = $pin
+    Write-Fixture 'roster.json' $snapshot
+    $trustWindow.Close()
+    Show-PeerTrust
+    Check (-not $approvePeer.Enabled -and $trustStatus.Text.Contains('уже підтверджено')) 'Reopened verification lost binding'
+    $trustWindow.Close()
     Update-Seats
     Check (-not $buttons['Олексій'].Enabled -and $buttons['Олексій'].Text.EndsWith('Ви')) 'Self was selectable'
     Check (-not $buttons['Саша'].Enabled -and $buttons['Саша'].Text.Contains('Поза мережею')) 'Offline seat'
@@ -83,6 +141,25 @@ try {
     $envelope = Read-ChatJson $queued[0].FullName
     Check ($envelope.id -eq $queued[0].BaseName -and $envelope.text -ceq "Привіт, командо! 👋`nДругий рядок.") 'Unicode envelope'
     Check (($envelope.recipient_ids -join ',') -ceq '00000002,board') 'Recipient IDs'
+    Check ($deliveryText.Visible -and $deliveryText.Text.Contains('Дімасік — очікує') -and $deliveryText.Text.Contains('Табло — очікує')) 'Missing queued results'
+    [void][IO.Directory]::CreateDirectory((Join-Path $testRoot 'deliveries'))
+    $targets = @(@{id='00000002';state='delivered'},@{id='board';state='pending'})
+    Write-Fixture "deliveries/$($envelope.id).json" @{id=$envelope.id;targets=$targets}
+    Update-DeliveryView
+    Check ($deliveryText.Text.Contains('Дімасік — доставлено') -and $deliveryText.Text.Contains('Табло — очікує')) 'Per-recipient status mismatch'
+    if ($PreviewPath) {
+        $resultPath = Join-Path ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($PreviewPath))) ([IO.Path]::GetFileNameWithoutExtension($PreviewPath) + '-delivery.png')
+        Save-ChatPreview $resultPath
+    }
+    $targets[1].state = 'failed'
+    Write-Fixture "deliveries/$($envelope.id).json" @{id=$envelope.id;targets=$targets}
+    Update-DeliveryView
+    Check ($deliveryText.Text.Contains('Дімасік — доставлено') -and $deliveryText.Text.Contains('Табло — не доставлено')) 'Mixed terminal receipt states'
+    Set-ComposerMode $false
+    Check ($form.Height -eq $compactHeight -and $deliveryLink.Visible -and -not $deliveryText.Visible) 'Results enlarged compact map'
+    Assert-VisibleLayout $form
+    Show-DeliveryResults
+    Assert-VisibleLayout $form
     $draft.Text = 'Чернетка'
     $agents[1].id = '00000005'
     Write-Fixture 'roster.json' $snapshot
@@ -113,15 +190,18 @@ try {
     Check (-not $popup) 'Popup did not expire'
     [void][IO.Directory]::CreateDirectory((Join-Path $testRoot 'failed'))
     $failedId = [guid]::NewGuid().ToString()
-    Write-Fixture "failed/$failedId.json" @{id=$failedId;recipient_ids=@('board');text='recover me'}
+    Write-Fixture "failed/$failedId.json" @{id=$failedId;recipient_ids=@('00000005','board');text='recover me'}
+    Write-Fixture "deliveries/$failedId.json" @{id=$failedId;targets=@(@{id='00000005';state='uncertain'},@{id='board';state='delivered'})}
     $draft.Clear()
     Restore-ChatDraft
+    Check ($deliveryText.Text.Contains('Табло — доставлено') -and $deliveryText.Text.Contains('доставку не підтверджено') -and -not $board.Enabled) 'Partial recovery hid or allowed resending delivered recipient'
     Check ($draft.Text -ceq 'recover me' -and -not $board.Checked -and -not $send.Enabled) 'Failed send recovery'
     $stop = New-Object Threading.ManualResetEvent($true)
     try { & (Join-Path $PSScriptRoot 'agent_chat_ui.ps1') -MailboxRoot $testRoot -ChatStopEvent $stop }
     finally { $stop.Dispose() }
     'Windows tray chat UI tests passed'
 } finally {
+    if ($trustWindow) { $trustWindow.Dispose() }
     if ($popup) { $popup.Dispose() }
     if ($form) { $form.Dispose() }
     $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())

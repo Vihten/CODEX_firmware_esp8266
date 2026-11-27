@@ -50,9 +50,224 @@ function Update-Send {
     $send.Enabled = $selected.Count -gt 0 -and $valid -and -not [string]::IsNullOrWhiteSpace($body)
 }
 
+function Get-TrustRoster {
+    try { Read-ChatJson (Join-Path $MailboxRoot 'roster.json') } catch { return $null }
+}
+
+function Test-PeerFingerprint($value) {
+    $value -is [string] -and $value -cmatch '\A[0-9A-F]{64}\z'
+}
+
+function Test-PeerIdentity($peer) {
+    $peer.id -is [string] -and $peer.id -cmatch '\A[0-9A-F]{8}\z' -and
+        (Test-PeerFingerprint $peer.fingerprint) -and $peer.name -is [string] -and
+        [Text.Encoding]::UTF8.GetByteCount($peer.name) -le 48 -and -not [string]::IsNullOrWhiteSpace($peer.name) -and
+        $peer.name -notmatch '[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]'
+}
+
+function Get-TrustBindingPath($id) {
+    if ($id -isnot [string] -or $id -cnotmatch '\A[0-9A-F]{8}\z') { throw 'Invalid peer ID' }
+    Join-Path $MailboxRoot "trusted\$id.json"
+}
+
+function Test-BindingMatches($peer) {
+    if (-not (Test-PeerIdentity $peer)) { return $false }
+    try {
+        $saved = Read-ChatJson (Get-TrustBindingPath $peer.id)
+        return (Test-PeerIdentity $saved) -and $saved.id -ceq $peer.id -and
+            $saved.fingerprint -ceq $peer.fingerprint -and $saved.name -ceq $peer.name
+    } catch { return $false }
+}
+
+function Test-CandidateConflict($snapshot,$peer) {
+    foreach ($candidate in $snapshot.candidates) {
+        if ($candidate.id -ceq $peer.id -and $candidate.fingerprint -cne $peer.fingerprint) { return $true }
+    }
+    return $false
+}
+
+function Test-CanApprovePeer($snapshot,$peer) {
+    if (-not (Test-PeerIdentity $peer) -or $snapshot.self_id -cnotmatch '\A[0-9A-F]{8}\z' -or
+        -not (Test-PeerFingerprint $snapshot.self_fingerprint) -or $peer.id -ceq $snapshot.self_id -or
+        $peer.fingerprint -ceq $snapshot.self_fingerprint -or (Test-CandidateConflict $snapshot $peer)) { return $false }
+    $matches = @($snapshot.candidates | Where-Object { $_.id -ceq $peer.id })
+    if ($matches.Count -ne 1 -or $matches[0].fingerprint -cne $peer.fingerprint -or
+        $matches[0].name -cne $peer.name) { return $false }
+    return -not (Test-Path -LiteralPath (Get-TrustBindingPath $peer.id) -ErrorAction Stop)
+}
+
+function Save-VerifiedPeer($peer,$displayedRoster) {
+    $snapshot = Get-TrustRoster
+    if ($displayedRoster.self_id -cne $snapshot.self_id -or
+        $displayedRoster.self_fingerprint -cne $snapshot.self_fingerprint -or
+        -not (Test-CanApprovePeer $snapshot $peer)) { throw 'Identity changed' }
+    $path = Get-TrustBindingPath $peer.id
+    $directory = [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))
+    $temporary = Join-Path $directory.FullName ([guid]::NewGuid().ToString() + '.tmp')
+    try {
+        $binding = [ordered]@{id=$peer.id;name=$peer.name;fingerprint=$peer.fingerprint}
+        [IO.File]::WriteAllText($temporary,($binding | ConvertTo-Json -Compress))
+        [IO.File]::Move($temporary,$path)
+    } finally { if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) } }
+}
+
+function Format-PeerFingerprint($value) {
+    if (Test-PeerFingerprint $value) { return ($value -replace '(.{4})(?=.)','$1 ') }
+    return ''
+}
+
+function Test-EnteredFingerprint($peer) {
+    if (-not $peer) { return $false }
+    $value = $independentFingerprint.Text.Trim()
+    if ($value -match '\AID ([0-9a-f]{8}) +(.+)\z') {
+        if ($Matches[1] -ine $peer.id) { return $false }
+        $value = $Matches[2]
+    }
+    return ($value -replace '[\s-]','') -ieq $peer.fingerprint
+}
+
+function Copy-ChatIdentity([string]$value) {
+    [Windows.Forms.Clipboard]::SetText($value)
+}
+
+function Update-PeerVerification {
+    $peer = $peerList.SelectedItem.Identity
+    $approvePeer.Enabled = $false
+    if (-not $peer) {
+        $remoteFingerprint.Clear()
+        $trustStatus.Text = 'Очікуємо на інші ПК у локальній мережі.'
+        return
+    }
+    $remoteFingerprint.Text = Format-PeerFingerprint $peer.fingerprint
+    if (Test-CandidateConflict $trustSnapshot $peer) {
+        $trustStatus.Text = 'Конфлікт ключів для цього ID. Звірте дані з власником ПК.'
+    } elseif (Test-BindingMatches $peer) {
+        $trustStatus.Text = 'Цей ID та відбиток уже підтверджено.'
+    } elseif (Test-Path -LiteralPath (Get-TrustBindingPath $peer.id)) {
+        $trustStatus.Text = "Збережена прив’язка відрізняється. Заміну заблоковано."
+    } elseif (Test-CanApprovePeer $trustSnapshot $peer) {
+        $trustStatus.Text = 'Отримайте відбиток від власника телефоном або особисто.'
+        $approvePeer.Enabled = Test-EnteredFingerprint $peer
+    } else {
+        $trustStatus.Text = 'Перевірка недоступна. Оновіть список ПК.'
+    }
+}
+
+function Refresh-PeerTrust {
+    $script:trustSnapshot = Get-TrustRoster
+    $ownFingerprint.Text = 'Очікуємо локальний ключ.'
+    $copyIdentity.Enabled = (Test-PeerFingerprint $trustSnapshot.self_fingerprint) -and $trustSnapshot.self_id -cmatch '\A[0-9A-F]{8}\z'
+    if ($copyIdentity.Enabled) {
+        $ownFingerprint.Text = Format-PeerFingerprint $trustSnapshot.self_fingerprint
+    }
+    $ownLabel.Text = "Відбиток цього ПК (ID $($trustSnapshot.self_id))"
+    $peerList.Items.Clear()
+    $independentFingerprint.Clear()
+    $listed = @{}
+    foreach ($peer in (@($trustSnapshot.candidates) + @($trustSnapshot.agents))) {
+        if (-not (Test-PeerIdentity $peer) -or $peer.id -ceq $trustSnapshot.self_id) { continue }
+        $key = "$($peer.id)/$($peer.fingerprint)"
+        if ($listed.ContainsKey($key)) { continue }
+        $listed[$key] = $true
+        [void]$peerList.Items.Add([pscustomobject]@{Label="$($peer.name) ($($peer.id))";Identity=$peer})
+    }
+    if ($peerList.Items.Count) { $peerList.SelectedIndex = 0 }
+    Update-PeerVerification
+}
+
+function New-FingerprintField($readOnly,$label) {
+    $field = New-Object Windows.Forms.TextBox
+    $field.Dock = 'Fill'
+    $field.ReadOnly = $readOnly
+    $field.AccessibleName = $label
+    $field.Font = New-Object Drawing.Font('Consolas',10)
+    return $field
+}
+
+function Show-PeerTrust {
+    if ($trustWindow -and -not $trustWindow.IsDisposed) { $trustWindow.Activate(); return }
+    $script:trustWindow = New-Object Windows.Forms.Form
+    $trustWindow.Text = "Перевірити комп’ютери"
+    $trustWindow.Font = $form.Font
+    $trustWindow.AutoScaleMode = 'Dpi'
+    $trustWindow.ClientSize = New-Object Drawing.Size(660,432)
+    $trustWindow.FormBorderStyle = 'FixedDialog'
+    $trustWindow.MaximizeBox = $false
+    $trustWindow.StartPosition = 'CenterScreen'
+    $trustWindow.Padding = 16
+    $layout = New-ChatGrid
+    foreach ($height in 36,34,28,38,28,34,28,34,40,50,42) {
+        [void]$layout.RowStyles.Add([Windows.Forms.RowStyle]::new('Absolute',$height))
+    }
+    $trustWindow.Controls.Add($layout)
+    $script:ownLabel = New-ChatLabel ''
+    $identityRow = New-ChatGrid
+    [void]$identityRow.ColumnStyles.Add([Windows.Forms.ColumnStyle]::new('Percent',100))
+    [void]$identityRow.ColumnStyles.Add([Windows.Forms.ColumnStyle]::new('Absolute',240))
+    $identityRow.Controls.Add($ownLabel,0,0)
+    $script:copyIdentity = New-Object Windows.Forms.Button
+    $copyIdentity.Dock = 'Fill'
+    $copyIdentity.Text = 'Скопіювати ID та відбиток'
+    $copyIdentity.Add_Click({
+        try {
+            Copy-ChatIdentity ("ID " + $trustSnapshot.self_id + "  " + $ownFingerprint.Text)
+            $trustStatus.Text = 'ID та відбиток цього ПК скопійовано.'
+        } catch { $trustStatus.Text = 'Буфер обміну зайнято. Виділіть відбиток і скопіюйте його вручну.' }
+    })
+    $identityRow.Controls.Add($copyIdentity,1,0)
+    $layout.Controls.Add($identityRow,0,0)
+    $script:ownFingerprint = New-FingerprintField $true 'Відбиток цього ПК'
+    $layout.Controls.Add($ownFingerprint,0,1)
+    $layout.Controls.Add((New-ChatLabel 'Інший ПК'),0,2)
+    $script:peerList = New-Object Windows.Forms.ComboBox
+    $peerList.AccessibleName = 'Інший ПК'
+    $peerList.DropDownStyle = 'DropDownList'
+    $peerList.DisplayMember = 'Label'
+    $peerList.Dock = 'Fill'
+    $layout.Controls.Add($peerList,0,3)
+    $layout.Controls.Add((New-ChatLabel 'Відбиток іншого ПК у мережі'),0,4)
+    $script:remoteFingerprint = New-FingerprintField $true 'Відбиток іншого ПК у мережі'
+    $layout.Controls.Add($remoteFingerprint,0,5)
+    $layout.Controls.Add((New-ChatLabel 'Введіть відбиток, отриманий від власника ПК'),0,6)
+    $script:independentFingerprint = New-FingerprintField $false 'Відбиток від власника ПК'
+    $layout.Controls.Add($independentFingerprint,0,7)
+    $script:trustStatus = New-ChatLabel ''
+    $layout.Controls.Add($trustStatus,0,8)
+    $actions = New-Object Windows.Forms.FlowLayoutPanel
+    $actions.Dock = 'Fill'
+    $actions.FlowDirection = 'RightToLeft'
+    $layout.Controls.Add((New-ChatLabel 'Обидва власники мають підтвердити інший ПК. Передайте свій ID та відбиток іншому власнику через незалежний канал.'),0,9)
+    $layout.Controls.Add($actions,0,10)
+    $script:approvePeer = New-Object Windows.Forms.Button
+    $approvePeer.Text = 'Підтвердити ПК'
+    $approvePeer.Size = New-Object Drawing.Size(150,30)
+    $approvePeer.Add_Click({
+        $peer = $peerList.SelectedItem.Identity
+        try {
+            if (-not (Test-EnteredFingerprint $peer)) { return }
+            Save-VerifiedPeer $peer $trustSnapshot
+            $independentFingerprint.Clear()
+            Update-Seats
+            Update-PeerVerification
+        } catch {
+            Refresh-PeerTrust
+            $trustStatus.Text = 'Підтвердження не збережено. Перевірте дані ще раз.'
+        }
+    })
+    $actions.Controls.Add($approvePeer)
+    $refresh = New-Object Windows.Forms.Button
+    $refresh.Text = 'Оновити список'
+    $refresh.Size = New-Object Drawing.Size(150,30)
+    $refresh.Add_Click({ Refresh-PeerTrust })
+    $actions.Controls.Add($refresh)
+    $peerList.Add_SelectedIndexChanged({ $independentFingerprint.Clear(); Update-PeerVerification })
+    $independentFingerprint.Add_TextChanged({ Update-PeerVerification })
+    Refresh-PeerTrust
+    $trustWindow.Show()
+}
+
 function Update-Seats {
-    $snapshot = $null
-    try { $snapshot = Read-ChatJson (Join-Path $MailboxRoot 'roster.json') } catch {}
+    $snapshot = Get-TrustRoster
     $rows = @($snapshot.agents)
     if ($snapshot.self_id -and $snapshot.self_name -and -not ($rows | Where-Object { $_.id -eq $snapshot.self_id })) {
         $rows += [pscustomobject]@{id=$snapshot.self_id;name=$snapshot.self_name;online=$true}
@@ -62,28 +277,89 @@ function Update-Seats {
         $names = @($seat.Name) + $seat.Aliases
         $peers = @($rows | Where-Object { $_.id -and $_.id -ne 'board' -and $names -contains ([string]$_.name).Trim() })
         $id = $null
+        $fingerprint = $null
         $state = 'Поза мережею'
         $enabled = $false
+        if (-not $peers.Count -and ($snapshot.candidates | Where-Object { $names -contains $_.name })) {
+            $state = 'Не перевірено'
+        }
         if ($peers.Count -gt 1) { $state = "Неоднозначне ім’я" }
         elseif ($peers.Count -eq 1) {
             $id = [string]$peers[0].id
             if ($id -eq $snapshot.self_id) { $state = 'Ви' }
+            elseif ((Test-CandidateConflict $snapshot $peers[0])) { $state = 'Ключ змінено' }
+            elseif ($peers[0].trusted -isnot [bool] -or -not $peers[0].trusted -or
+                    -not (Test-BindingMatches $peers[0]) -or
+                    @($rows | Where-Object { $_.id -ceq $id }).Count -ne 1) { $state = 'Не перевірено' }
             elseif ($peers[0].online -is [bool] -and $peers[0].online) {
                 $state = 'У мережі'
-                $enabled = -not [string]::IsNullOrWhiteSpace($snapshot.self_id)
+                $fingerprint = $peers[0].fingerprint
+                $enabled = $snapshot.self_id -cmatch '\A[0-9A-F]{8}\z' -and (Test-PeerFingerprint $snapshot.self_fingerprint)
             }
         }
-        if (-not $enabled -or $id -ne $button.Tag) { $button.Checked = $false }
+        if ($id -and $recoveredPath -and $lastDelivery -and $lastDelivery.states[$id] -ceq 'delivered') {
+            $state = 'Доставлено'
+            $enabled = $false
+        }
+        if (-not $enabled -or $id -ne $button.Tag -or $seatFingerprints[$seat.Name] -cne $fingerprint) { $button.Checked = $false }
+        $seatFingerprints[$seat.Name] = $fingerprint
         $button.Tag = $id
         $button.Enabled = $enabled
         $button.Text = $seat.Name + [Environment]::NewLine + $state
     }
     $boardRows = @($snapshot.agents | Where-Object { $_.id -ceq 'board' })
     $board.Enabled = $snapshot.self_id -and $boardRows.Count -eq 1 -and $boardRows[0].online -is [bool] -and $boardRows[0].online
+    if ($recoveredPath -and $lastDelivery -and $lastDelivery.states['board'] -ceq 'delivered') { $board.Enabled = $false }
     if (-not $board.Enabled) { $board.Checked = $false }
     if (-not $snapshot.self_id) { $presence.Text = 'Очікуємо список учасників' }
     else { $presence.Text = 'Оберіть отримувачів' }
     Update-Send
+}
+
+function Set-DeliveryView($id,$ids,[bool]$recovering) {
+    $names = @{}
+    foreach ($target in $ids) {
+        $names[$target] = $target
+        if ($target -ceq 'board') { $names[$target] = 'Табло'; continue }
+        foreach ($seat in $seats) {
+            if ($buttons[$seat.Name].Tag -ceq $target) { $names[$target] = $seat.Name; break }
+        }
+        if ($lastDelivery -and $lastDelivery.id -ceq $id -and $lastDelivery.names.ContainsKey($target)) {
+            $names[$target] = $lastDelivery.names[$target]
+        }
+    }
+    $script:lastDelivery = @{id=$id;ids=@($ids);names=$names;states=@{};recovering=$recovering}
+    $deliveryLink.Visible = $true
+    Update-DeliveryView
+}
+
+function Update-DeliveryView {
+    if (-not $lastDelivery) { return }
+    $labels = @{pending='очікує';delivered='доставлено';failed='не доставлено';uncertain='доставку не підтверджено'}
+    try {
+        $record = Read-ChatJson (Join-Path $MailboxRoot "deliveries\$($lastDelivery.id).json")
+        if ($record.id -ceq $lastDelivery.id -and $record.targets -is [array] -and
+            ($record.targets.id -join ',') -ceq ($lastDelivery.ids -join ',')) {
+            foreach ($target in $record.targets) {
+                if ($target.state -cin @('pending','delivered','failed','uncertain')) {
+                    $lastDelivery.states[$target.id] = $target.state
+                }
+            }
+        }
+    } catch { }
+    $lines = foreach ($id in $lastDelivery.ids) {
+        $description = if ($lastDelivery.states.ContainsKey($id)) { $labels[$lastDelivery.states[$id]] }
+            elseif ($lastDelivery.recovering) { 'доставку не підтверджено' } else { 'очікує' }
+        "$($lastDelivery.names[$id]) — $description"
+    }
+    $content = $lines -join [Environment]::NewLine
+    if ($deliveryText.Text -cne $content) { $deliveryText.Text = $content }
+}
+
+function Show-DeliveryResults {
+    if (-not $lastDelivery) { return }
+    Set-ComposerMode $true
+    [void]$deliveryText.Focus()
 }
 
 function Submit-Draft {
@@ -106,6 +382,8 @@ function Submit-Draft {
             [IO.File]::Delete($script:recoveredPath)
             $script:recoveredPath = $null
         }
+        Set-DeliveryView $id $ids $false
+        Set-ComposerMode $true
         $draft.Clear()
         $status.Text = "У черзі на надсилання ($($ids.Count))."
     } catch {
@@ -127,13 +405,21 @@ function Restore-ChatDraft {
     $entry = Get-ChildItem -LiteralPath $failed -File -Filter '*.json' | Sort-Object LastWriteTimeUtc | Select-Object -First 1
     if (-not $entry) { return }
     $msg = Read-ChatJson $entry.FullName
+    $uuid = [guid]::Empty
+    if (-not [guid]::TryParseExact($entry.BaseName,'D',[ref]$uuid) -or $msg.id -cne $entry.BaseName -or
+        $msg.recipient_ids -isnot [array] -or -not $msg.recipient_ids.Count) { return }
+    foreach ($target in $msg.recipient_ids) {
+        if ($target -isnot [string] -or $target -cnotmatch '\A([0-9A-F]{8}|board)\z') { return }
+    }
     if ($msg.text -isnot [string]) { return }
     Open-ChatWindow
     foreach ($button in $buttons.Values) { $button.Checked = $false }
     $draft.Text = $msg.text.Replace([string][char]10,[Environment]::NewLine)
     $script:recoveredPath = $entry.FullName
+    Set-DeliveryView $msg.id $msg.recipient_ids $true
+    Update-Seats
     Set-ComposerMode $true
-    $status.Text = 'Доставку не підтверджено. Перевірте отримувачів перед повтором.'
+    $status.Text = 'Перевірте результати перед повторним надсиланням.'
 }
 
 function New-ChatLabel($caption) {
@@ -169,6 +455,10 @@ function Set-ComposerMode([bool]$expanded) {
         $area = if ($form.Visible) { [Windows.Forms.Screen]::FromControl($form).WorkingArea }
                 else { [Windows.Forms.Screen]::FromPoint([Windows.Forms.Cursor]::Position).WorkingArea }
         $height = if ($expanded) { 452 } else { 266 }
+        $showResults = $expanded -and $null -ne $lastDelivery
+        $deliveryText.Visible = $showResults
+        $main.RowStyles[6].Height = if ($showResults) { 74 } else { 0 }
+        if ($showResults) { $height += 74 }
         $form.ClientSize = New-Object Drawing.Size(740,$height)
         Place-ChatWindow $form $area
     } finally { $form.ResumeLayout($true) }
@@ -194,7 +484,7 @@ function New-ChatWindow {
     $form.Padding = 16
     $script:main = New-ChatGrid
     $form.Controls.Add($main)
-    foreach ($height in 32,28,132,36,-1,42) {
+    foreach ($height in 32,28,132,36,-1,42,0) {
         if ($height -eq -1) { [void]$main.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100))) }
         else { [void]$main.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',$height))) }
     }
@@ -209,7 +499,25 @@ function New-ChatWindow {
     $board.TextAlign = 'MiddleCenter'
     $main.Controls.Add($board,0,0)
     $script:presence = New-ChatLabel ''
-    $main.Controls.Add($presence,0,1)
+    $presenceRow = New-ChatGrid
+    [void]$presenceRow.ColumnStyles.Add([Windows.Forms.ColumnStyle]::new('Percent',100))
+    [void]$presenceRow.ColumnStyles.Add([Windows.Forms.ColumnStyle]::new('Absolute',174))
+    [void]$presenceRow.ColumnStyles.Add([Windows.Forms.ColumnStyle]::new('Absolute',174))
+    $presenceRow.Controls.Add($presence,0,0)
+    $script:deliveryLink = New-Object Windows.Forms.LinkLabel
+    $deliveryLink.Text = 'Результати надсилання'
+    $deliveryLink.TextAlign = 'MiddleRight'
+    $deliveryLink.Dock = 'Fill'
+    $deliveryLink.Add_LinkClicked({ Show-DeliveryResults })
+    $deliveryLink.Visible = $false
+    $presenceRow.Controls.Add($deliveryLink,1,0)
+    $verifyLink = New-Object Windows.Forms.LinkLabel
+    $verifyLink.Text = "Перевірити комп’ютери"
+    $verifyLink.Dock = 'Fill'
+    $verifyLink.TextAlign = 'MiddleRight'
+    $verifyLink.Add_LinkClicked({ Show-PeerTrust })
+    $presenceRow.Controls.Add($verifyLink,2,0)
+    $main.Controls.Add($presenceRow,0,1)
     $script:grid = New-ChatGrid
     $main.Controls.Add($grid,0,2)
     foreach ($width in 20,20,0,20,20,0,20) {
@@ -224,6 +532,7 @@ function New-ChatWindow {
         $empty.AccessibleName = 'Вільне місце'
         $grid.Controls.Add($empty,$col,0)
     }
+    $script:seatFingerprints = @{}
     $script:buttons = @{board=$board}
     foreach ($seat in $seats) {
         $button = New-Object Windows.Forms.CheckBox
@@ -279,6 +588,13 @@ function New-ChatWindow {
     $write.Dock = 'Fill'
     $write.Add_Click({ Set-ComposerMode $true })
     $actions.Controls.Add($write)
+    $script:deliveryText = New-Object Windows.Forms.TextBox
+    $deliveryText.AccessibleName = 'Результати за отримувачами'
+    $deliveryText.Multiline = $true
+    $deliveryText.ReadOnly = $true
+    $deliveryText.ScrollBars = 'Vertical'
+    $deliveryText.Dock = 'Fill'
+    $main.Controls.Add($deliveryText,0,6)
     $form.Add_FormClosing({ param($src,$e)
         if ($e.CloseReason -eq 'UserClosing') { $e.Cancel = $true; $src.Hide() }
     })
@@ -378,12 +694,13 @@ if ($MyInvocation.InvocationName -ne '.') {
             $recover.Enabled = [IO.Directory]::Exists($failed) -and [bool]([IO.Directory]::EnumerateFiles($failed,'*.json') | Select-Object -First 1)
         })
         [void]$menu.Items.Add('Вийти',$null,{ [Windows.Forms.Application]::ExitThread() })
-        [void]$menu.Items.Add('Підключити чат',$null,{
+        [void]$menu.Items.Add("Перевірити комп’ютери",$null,{ Show-PeerTrust })
+        [void]$menu.Items.Add('Підключити табло',$null,{
             try {
                 . (Join-Path $PSScriptRoot 'agent_update.ps1')
                 . (Join-Path $PSScriptRoot 'agent_chat_ipc.ps1')
                 Show-AgentChatPairing $MailboxRoot (Join-Path $PSScriptRoot 'controller-endpoint.json')
-            } catch { [void][Windows.Forms.MessageBox]::Show('Не вдалося відкрити форму підключення.') }
+            } catch { [void][Windows.Forms.MessageBox]::Show('Не вдалося відкрити форму підключення табло.') }
         })
         $tray = New-Object Windows.Forms.NotifyIcon
         $tray.Text = 'Офісний чат'
@@ -395,11 +712,11 @@ if ($MyInvocation.InvocationName -ne '.') {
         $tray.Visible = $true
         $timer = New-Object Windows.Forms.Timer
         $timer.Interval = 1500
-        $timer.Add_Tick({ if ($ChatStopEvent -and $ChatStopEvent.WaitOne(0)) { [Windows.Forms.Application]::ExitThread(); return }; if ($form.Visible) { Update-Seats }; Receive-Incoming })
+        $timer.Add_Tick({ if ($ChatStopEvent -and $ChatStopEvent.WaitOne(0)) { [Windows.Forms.Application]::ExitThread(); return }; if ($form.Visible) { Update-Seats; Update-DeliveryView }; Receive-Incoming })
         $timer.Start()
         [Windows.Forms.Application]::Run()
     } finally {
-        foreach ($item in $timer,$tray,$menu,$popup,$form) { if ($item) { $item.Dispose() } }
+        foreach ($item in $timer,$tray,$menu,$popup,$trustWindow,$form) { if ($item) { $item.Dispose() } }
         if ($owner) { $mutex.ReleaseMutex() }
         $mutex.Dispose()
     }

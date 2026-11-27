@@ -25,62 +25,137 @@ try {
     }
     $ep = "$root/endpoint.json"
     @{Host='127.0.0.1';HttpPort=[int][IO.File]::ReadAllText("$root/port");Account='53197668';Device='112233'} | ConvertTo-Json | Set-Content -Encoding UTF8 $ep
+    # Fault injection at the pinned-peer API boundary. HTTP still uses the real signed fixture.
+    $peerId = 'AABBCCDD'
+    $pin = '1' * 64
+    $ctx.Peer = @{Pin=('0' * 64)}
+    $ctx.Name = 'Sender'
+    $sent = @{}
+    $script:loseReceipt = $false
+    function Get-ChatPeerCandidates($runtime) { [pscustomobject]@{id=$peerId;name='Desk';pin=$pin;address='127.0.0.2'} }
+    $script:peerOnline = $true
+    function Get-ChatPeerRoster($runtime) { [pscustomobject]@{id=$peerId;name='Desk';online=$script:peerOnline} }
+    function Set-ChatPeerTrust($runtime,$id,$name,$fingerprint) { Check ($fingerprint -ceq $pin) 'Wrong applied pin' }
+    function Remove-ChatPeerTrust($runtime,$id) {}
+    function Send-ChatPeerMessage($runtime,$to,$uuid,$text) {
+        Check ($to -ceq $peerId -and $text -ceq ("test" + [char]10 + [char]0x2603)) 'Wrong peer or body'
+        $sent[$uuid] = 1 + [int]$sent[$uuid]
+        if ($script:loseReceipt) { throw 'Lost receipt' }
+        $uuid
+    }
     function Cycle { Invoke-ChatCycle $root $ep $ctx }
+    function Journal($id) { Read-ChatObject "$root/deliveries/$id.json" }
+    function RetryNow($id) {
+        foreach ($folder in 'deliveries','board-attempts') {
+            $path = "$root/$folder/$id.json"
+            if ([IO.File]::Exists($path)) {
+                $rec = Read-ChatObject $path
+                foreach ($target in $rec.targets) { $target.retry = 0L }
+                Write-ChatObject $path $rec
+            }
+        }
+    }
+    function Calls { if ([IO.File]::Exists("$root/calls")) { (Get-Content "$root/calls") -join ',' } else { '' } }
+    Cycle
+    $snapshot = Read-ChatObject "$root/roster.json"
+    Check ($snapshot.self_fingerprint -ceq $ctx.Peer.Pin -and $snapshot.candidates[0].fingerprint -ceq $pin) 'Missing verification metadata'
+    Check ($snapshot.agents.id -cnotcontains $peerId) 'Unverified advertisement enabled'
+    Write-ChatObject "$root/trusted/$peerId.json" @{id=$peerId;name='Desk';fingerprint=$pin}
     Cycle
     $stamp = [IO.File]::GetLastWriteTimeUtc("$root/roster.json")
     Cycle
-    Check ((Get-Content "$root/calls") -join ',' -ceq 'state,roster,inbox,inbox') 'Idle request budget exceeded'
-    $ctx.NextRoster = [datetime]::MinValue
-    Cycle
-    Check ([IO.File]::GetLastWriteTimeUtc("$root/roster.json") -eq $stamp) 'Unchanged roster rewritten'
+    Check ((Calls) -ceq '' -and [IO.File]::GetLastWriteTimeUtc("$root/roster.json") -eq $stamp) 'Idle HTTP or roster churn'
+
+    # No endpoint or board key is required to send directly.
+    [IO.File]::Move($ep,"$ep.off")
     $id = [guid]::NewGuid().ToString()
-    Queue $id @('board','AABBCCDD')
-    Mode uncertain
-    Reject { Cycle }
-    Check ([IO.File]::Exists("$root/attempts/$id.json")) 'Missing durable attempt'
-    Mode idle
+    Queue $id @($peerId)
     Cycle
-    Check (-not [IO.File]::Exists("$root/outbox/$id.json")) 'Send receipt ignored'
-    Check (-not [IO.File]::Exists("$root/failed/$id.json")) 'Valid send failed'
+    Check ($sent[$id] -eq 1 -and -not [IO.File]::Exists("$root/outbox/$id.json") -and (Calls) -ceq '') 'Controller-free delivery failed'
+    $mixed = [guid]::NewGuid().ToString()
+    Queue $mixed @('board',$peerId)
+    Cycle
+    $rec = Journal $mixed
+    Check ($sent[$mixed] -eq 1 -and $rec.targets[0].state -ceq 'pending' -and $rec.targets[1].state -ceq 'delivered') 'Mixed selection lost'
+    Check ((Read-ChatObject "$root/outbox/$mixed.json").recipient_ids.Count -eq 2) 'Original selections changed'
+    [IO.File]::Move("$ep.off",$ep)
+    RetryNow $mixed
+    Cycle
+    Check ($sent[$mixed] -eq 1 -and (Calls) -ceq 'state,send' -and -not [IO.File]::Exists("$root/outbox/$mixed.json")) 'Board recovery duplicated peer or ignored receipt'
+
+    # Retry after a lost peer receipt keeps the UUID, across a fresh worker context.
     $id = [guid]::NewGuid().ToString()
-    Queue $id @('board','AABBCCDD')
-    Mode uncertain
-    Reject { Cycle }
+    Queue $id @($peerId)
+    $script:loseReceipt = $true
+    Cycle
+    Check ((Journal $id).targets[0].state -ceq 'pending') 'Uncertain peer send lost'
+    $ctx = @{Client=$ctx.Client;Name=$ctx.Name;Peer=$ctx.Peer;Seq=0L}
+    $script:loseReceipt = $false
+    RetryNow $id
+    Cycle
+    Check ($sent[$id] -eq 2 -and (Journal $id).targets[0].state -ceq 'delivered') 'Restart retry failed'
+
+    $legacy = [guid]::NewGuid().ToString()
+    Queue $legacy @($peerId,'board')
+    Write-ChatObject "$root/attempts/$legacy.json" @{boot='0123456789abcdef';digest='old';started=1}
+    Cycle
+    Check ([IO.File]::Exists("$root/failed/$legacy.json") -and [IO.File]::Exists("$root/attempts/$legacy.json") -and
+        -not $sent.ContainsKey($legacy) -and (Calls) -ceq 'state,send' -and (Journal $legacy).targets.state -notcontains 'pending') 'Replayed old relay attempt'
+
+    $id = [guid]::NewGuid().ToString()
+    Queue $id @('board')
+    Mode unsigned
+    Cycle
+    Check ((Journal $id).targets[0].state -ceq 'pending') 'Unsigned receipt accepted'
     Mode reboot
-    Reject { Cycle }
+    RetryNow $id
     Cycle
-    Check ([IO.File]::Exists("$root/failed/$id.json")) 'Replayed uncertain send after boot'
-    Mode idle
-    $ctx.NextState = [datetime]::MinValue
+    Check ((Journal $id).targets[0].state -ceq 'uncertain' -and (Calls) -ceq 'state,send,state,send,state') 'Replayed uncertain board send after reboot'
     $self = [guid]::NewGuid().ToString()
-    Queue $self @('01020304')
+    Queue $self @($ctx.Client)
     Cycle
     Check ([IO.File]::Exists("$root/failed/$self.json")) 'Self delivery accepted'
-    Mode ackfail
-    Reject { Cycle }
-    $incoming = '12345678-1234-4123-8123-123456789abc.json'
-    [IO.File]::Move("$root/inbox/$incoming","$root/seen/$incoming")
-    Mode delivery
+    $script:peerOnline = $false
+    $expired = [guid]::NewGuid().ToString()
+    Queue $expired @($peerId)
     Cycle
-    Check (-not [IO.File]::Exists("$root/inbox/$incoming")) 'Duplicate delivery'
-    foreach ($mode in 'unsigned','oversize','redirect') {
-        Mode $mode
-        Reject { Invoke-ChatRest $ctx inbox }
-    }
-    Mode idle
-    # Separate synthetic client does not share the fixture server's sequence counter.
-    # Exercise the production runspaces without an enrolled key or a live controller.
+    $rec = Journal $expired
+    Check ($rec.targets[0].started -eq 0 -and $rec.targets[0].state -ceq 'pending') 'Offline draft lost before its deadline'
+    $rec.queued -= 86401
+    Write-ChatObject "$root/deliveries/$expired.json" $rec
+    Cycle
+    Check ((Journal $expired).targets[0].state -ceq 'failed' -and [IO.File]::Exists("$root/failed/$expired.json")) 'Offline draft never expired'
     $local = Join-Path $root 'session'
-    $session = Start-AgentChatSession $PSScriptRoot (Join-Path $local 'missing.json') '05060708' $local
+    $localId = [guid]::NewGuid().ToString('N').Substring(0,8).ToUpperInvariant()
+    Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
+    $subject = "CN=Codex-LAN-Peer-v1-$localId"
+    Check (-not (Get-ChildItem Cert:\CurrentUser\My | Where-Object Subject -ceq $subject)) 'Fixture ID already in use'
+    $probe = [Net.Sockets.UdpClient]::new([Net.IPEndPoint]::new([IPAddress]::Loopback,0))
+    $port = $probe.Client.LocalEndPoint.Port
+    $probe.Dispose()
+    $session = $null
     try {
-        Start-Sleep -Milliseconds 2200
-        foreach ($job in $session.Jobs) { Check (-not $job.Task.IsCompleted) 'Chat runspace exited early' }
-    } finally { Stop-AgentChatSession $session }
-    foreach ($job in $session.Jobs) {
-        Check ($job.Space.RunspaceStateInfo.State -eq 'Closed') 'Chat runspace not closed'
-        Check (-not $job.Failure) "Runspace error during lifecycle ($($job.Role)): $($job.Failure)"
+        $session = Start-AgentChatSession $PSScriptRoot "$local/missing.json" $localId $local 'Fixture desk' @{
+            BindAddress='127.0.0.1';DiscoveryAddress='127.0.0.2';DiscoveryPort=$port;TcpPort=0
+        }
+        $deadline = [datetime]::UtcNow.AddSeconds(25)
+        do {
+            foreach ($job in $session.Jobs) { Check (-not $job.Task.IsCompleted) 'Chat runspace exited early' }
+            $live = Read-ChatObject "$local/roster.json"
+            if ($live.self_fingerprint -cmatch '\A[0-9A-F]{64}\z') { break }
+            Start-Sleep -Milliseconds 150
+        } while ([datetime]::UtcNow -lt $deadline)
+        Check ($live.self_fingerprint -cmatch '\A[0-9A-F]{64}\z' -and $live.agents.id -ccontains $localId) 'Peer runtime did not start'
+    } finally {
+        if ($session) { Stop-AgentChatSession $session }
+        foreach ($cert in (Get-ChildItem Cert:\CurrentUser\My | Where-Object Subject -ceq $subject)) {
+            Remove-Item -LiteralPath ("Cert:\CurrentUser\My\" + $cert.Thumbprint) -DeleteKey
+        }
     }
-    'PASS: signed REST, idle load, atomic delivery, retries, boot change, invalid responses'
+    foreach ($job in $session.Jobs) {
+        Check ($job.Space.RunspaceStateInfo.State -eq 'Closed' -and -not $job.Failure) "Failed to close $($job.Role)"
+    }
+    'PASS: independent delivery, mixed recipients, no idle HTTP, pinned roster, restart retry, legacy migration, board reboot and runspace lifecycle'
 } finally {
     if ($proc) { if (-not $proc.HasExited) { $proc.Kill(); $proc.WaitForExit() }; $proc.Dispose() }
     if ([IO.Path]::GetDirectoryName($root) -eq [IO.Path]::GetTempPath().TrimEnd('\') -and [IO.Path]::GetFileName($root) -match '^chat-fixture-[0-9a-f-]{36}$') {

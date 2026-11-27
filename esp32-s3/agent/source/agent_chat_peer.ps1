@@ -139,9 +139,14 @@ public sealed class PeerWireV1 : IDisposable {
     }
     public void Remove(string peer) { lock (gate) trust.Remove(peer); }
     bool Fresh(Location loc) { return loc.Age.ElapsedMilliseconds < 16000; }
+    bool Bound(Location loc) {
+        Binding b;
+        return trust.TryGetValue(loc.Id,out b) && b.Pin == loc.Pin && b.Name == loc.Name;
+    }
     Location Find(string peer, Binding b) {
         Location loc;
-        return locations.TryGetValue(b.Pin, out loc) && loc.Id == peer && loc.Name == b.Name && Fresh(loc) ? loc : null;
+        return locations.TryGetValue(b.Pin, out loc) && loc.Id == peer && loc.Name == b.Name &&
+            loc.Age.ElapsedMilliseconds < 40000 ? loc : null;
     }
     public Row[] Roster() {
         lock (gate) return trust.Select(x => new Row {id=x.Key, name=x.Value.Name, pin=x.Value.Pin, online=Find(x.Key,x.Value)!=null}).ToArray();
@@ -196,7 +201,9 @@ public sealed class PeerWireV1 : IDisposable {
                 // Check the current bindings when committing discovery, including terminal replies.
                 if (trust.Any(x=>x.Value.Pin == pin && x.Key != p[1])) return;
                 if (trust.TryGetValue(p[1],out b) && (b.Pin != pin || b.Name != displayName)) return;
-                foreach (var k in locations.Where(x=>!Fresh(x.Value)).Select(x=>x.Key).ToArray()) locations.Remove(k);
+                foreach (var k in locations.Where(x=>!Fresh(x.Value) &&
+                    (!Bound(x.Value) || x.Value.Age.ElapsedMilliseconds >= 300000)).Select(x=>x.Key).ToArray())
+                    locations.Remove(k);
                 if (!locations.ContainsKey(pin) && locations.Count >= MaxPeers) {
                     if (!trust.Values.Any(x=>x.Pin == pin)) return;
                     var victim = locations.Keys.FirstOrDefault(k=>!trust.Values.Any(x=>x.Pin == k));
@@ -251,7 +258,7 @@ public sealed class PeerWireV1 : IDisposable {
     }
     void Discover() {
         var clock = Stopwatch.StartNew();
-        long next = 0;
+        long next = 0, nextDirect = 0;
         var buffer = new byte[4097];
         while (!stopped) {
             try {
@@ -259,6 +266,14 @@ public sealed class PeerWireV1 : IDisposable {
                     next = clock.ElapsedMilliseconds + 4000;
                     var packet = Beacon();
                     Announce(packet);
+                    if (clock.ElapsedMilliseconds >= nextDirect) {
+                        nextDirect = clock.ElapsedMilliseconds + 12000;
+                        IPAddress[] targets;
+                        lock (gate) targets = locations.Values.Where(x => Bound(x) &&
+                            x.Age.ElapsedMilliseconds >= 8000 && x.Age.ElapsedMilliseconds < 300000)
+                            .Select(x => x.Endpoint.Address).Distinct().ToArray();
+                        foreach (var target in targets) Announce(packet,target);
+                    }
                 }
                 if (!udp.Client.Poll(250000,SelectMode.SelectRead)) continue;
                 EndPoint source = new IPEndPoint(IPAddress.Any,0);

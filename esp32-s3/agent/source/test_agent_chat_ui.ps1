@@ -154,7 +154,11 @@ try {
     $trustWindow.Close()
     Update-Seats
     Check (-not $buttons['Олексій'].Enabled -and $buttons['Олексій'].Text.EndsWith('Ви')) 'Self was selectable'
-    Check (-not $buttons['Саша'].Enabled -and $buttons['Саша'].Text.Contains('Поза мережею')) 'Offline seat'
+    Check ($buttons['Саша'].Enabled -and $buttons['Саша'].Text.Contains('Очікує мережу')) 'Verified offline recipient must remain selectable'
+    $buttons['Саша'].Checked = $true
+    Update-Seats
+    Check $buttons['Саша'].Checked 'Offline roster refresh cleared selection'
+    $buttons['Саша'].Checked = $false
     Check ($board.Enabled -and -not $board.Checked) 'Board must require explicit selection'
     $expected = @('0,1:Влад','1,1:Олексій','3,0:Нестор','4,0:Дімасік','3,1:Саша','4,1:Микола','6,0:Олег')
     foreach ($entry in $expected) {

@@ -335,8 +335,8 @@ function Update-Seats {
             elseif ($peers[0].trusted -isnot [bool] -or -not $peers[0].trusted -or
                     -not (Test-BindingMatches $peers[0]) -or
                     @($rows | Where-Object { $_.id -ceq $id }).Count -ne 1) { $state = 'Не перевірено' }
-            elseif ($peers[0].online -is [bool] -and $peers[0].online) {
-                $state = 'У мережі'
+            elseif ($peers[0].online -is [bool]) {
+                $state = if ($peers[0].online) { 'У мережі' } else { 'Очікує мережу' }
                 $fingerprint = $peers[0].fingerprint
                 $enabled = $snapshot.self_id -cmatch '\A[0-9A-F]{8}\z' -and (Test-PeerFingerprint $snapshot.self_fingerprint)
             }

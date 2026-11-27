@@ -1036,6 +1036,7 @@ esp_err_t tokenHistoryGet(httpd_req_t *request) {
   const auto clock = memorialClock();
   return daily_runtime::get(request, clock.valid ? clock.date : 0);
 }
+#include "chat.inc"
 struct ProtectedRoute { HttpHandler handler = nullptr; };
 ProtectedRoute protectedRoutes[40];
 size_t protectedRouteCount = 0;
@@ -1048,7 +1049,7 @@ esp_err_t protectedRequest(httpd_req_t *request) {
 bool machineRoute(const char *uri, httpd_method_t method) {
   // LAN agents keep their existing telemetry and signed-update protocol.
   // Browser actions (upgrade, rename, uninstall) are deliberately not exempt.
-  if (method == HTTP_POST) return !std::strcmp(uri, "/agent") ||
+  if (method == HTTP_POST) return chatMachinePath(uri) || !std::strcmp(uri, "/agent") ||
       !std::strcmp(uri, "/agent-update-enroll") || !std::strcmp(uri, "/agent-update-challenge") ||
       !std::strcmp(uri, "/agent-update-poll");
   return method == HTTP_GET && (!std::strcmp(uri, "/agent-update/manifest.json") ||
@@ -1093,6 +1094,9 @@ bool initializeHttp() {
     if (!registerRoute(uri, HTTP_POST, agentUpdatePost)) return failed();
   for (const char *uri : {"/agent-update/manifest.json", "/agent-update/package.zip"})
     if (!registerRoute(uri, HTTP_GET, agentUpdateArtifact)) return failed();
+  for (const char *uri : {"/chat/enroll", "/chat/state", "/chat/roster", "/chat/send", "/chat/inbox", "/chat/ack"})
+    if (!registerRoute(uri, HTTP_POST, chatPost)) return failed();
+  if (!registerRoute("/chat/pair", HTTP_GET, chatPairPage)) return failed();
   if (!web_auth::registerRoutes(model.http)) return failed();
   // The preview worker survives an HTTP server restart after a failed OTA.
   if (previewStreamReady.load(std::memory_order_acquire)) return true;

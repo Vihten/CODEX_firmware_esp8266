@@ -1,7 +1,8 @@
 ﻿# Remote packages can replace only this fixed code set. Keys and state never enter it.
 function Get-AgentCodeFiles {
     @('codex_lan_agent.ps1', 'start_agent_supervisor.ps1', 'agent_metadata.ps1',
-      'weekly_tokens.ps1', 'agent_update.ps1', 'agent_update_download.ps1', 'agent_update_restart.ps1', 'agent-version.txt')
+      'weekly_tokens.ps1', 'agent_chat_ipc.ps1', 'agent_chat_ui.ps1',
+      'agent_update.ps1', 'agent_update_download.ps1', 'agent_update_restart.ps1', 'agent-version.txt')
 }
 
 function Test-AgentUpdateReady([string]$Root) {

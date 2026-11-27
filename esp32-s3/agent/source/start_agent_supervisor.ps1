@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [ValidatePattern('^[a-zA-Z0-9._:-]+$')]
     [string]$CollectorHost = '255.255.255.255',
@@ -103,6 +103,7 @@ try {
     $arguments = @(
         '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden'
         "-File `"$worker`""
+        $(if ($PSScriptRoot -eq (Join-Path $env:LOCALAPPDATA 'LED Forge\Codex LAN Agent')) { '-EnableChat' })
         "-CollectorHost `"$CollectorHost`" -Port $Port"
         "-DirectHost `"$DirectHost`" -DirectPort $DirectPort -DirectHttpPort $DirectHttpPort"
         "-LogPath `"$LogPath`""

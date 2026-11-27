@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$CollectorHost = '255.255.255.255',
     [ValidateRange(1, 65535)]
@@ -24,6 +24,7 @@ param(
     [string]$ControllerStatePath = '',
     [string]$TokenStatePath = '',
     [string]$UpdateControlPath = '',
+    [switch]$EnableChat,
     [string]$ClaudeRoot = $(if ($env:CLAUDE_CONFIG_DIR) { Join-Path $env:CLAUDE_CONFIG_DIR 'projects' }
         else { Join-Path $env:USERPROFILE '.claude\projects' })
 )
@@ -1765,6 +1766,13 @@ try {
         return
     }
 
+    if ($EnableChat -and [Environment]::UserInteractive -and [Diagnostics.Process]::GetCurrentProcess().SessionId -gt 0) {
+        try {
+            . (Join-Path $PSScriptRoot 'agent_update.ps1')
+            . (Join-Path $PSScriptRoot 'agent_chat_ipc.ps1')
+            $chatSession = Start-AgentChatSession $PSScriptRoot $ControllerStatePath $clientHash (Join-Path $env:LOCALAPPDATA 'CodexLanAgent/chat')
+        } catch { Write-AgentStatus 'Chat startup failed.' }
+    }
     Write-AgentStatus 'Codex LAN activity agent started.'
     Write-AgentStatus "Client: $clientId"
     Write-AgentStatus "Optional LED Forge preview: ${CollectorHost}:$Port"
@@ -1860,6 +1868,7 @@ try {
     }
 }
 finally {
+    if ($chatSession) { Stop-AgentChatSession $chatSession }
     foreach ($iterator in $claudeDiscoveryStack) { $iterator.Dispose() }
     Stop-LimitAppServer
     if ($null -ne $claudePoller) { Stop-ClaudeQuotaWorker $claudePoller }

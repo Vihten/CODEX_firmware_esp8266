@@ -1,4 +1,5 @@
 #include "runtime.hpp"
+#include "chat_relay.hpp"
 #include "web_files.hpp"
 #include "web_auth.hpp"
 #include "preview.hpp"
@@ -365,6 +366,8 @@ esp_err_t error(httpd_req_t *request, const char *status, const char *text) {
 
 #include "network/ota.inc"
 
+bool chatBoardTake(ChatBoardMessage &message) { return takeBoardMessage(message); }
+
 void startHttpServer(bool retry) {
   model.httpReady = initializeHttp();
   if (model.httpReady) {
@@ -414,6 +417,7 @@ void networkTask(bool confirmationPending) {
   web_auth::initialize();
   bootloader_random_disable();
   loadAgentUpdateKey();
+  loadChat();
   loadWeekly();
   loadMemorialSettings();
   loadAirAlertSettings();

@@ -15,6 +15,7 @@
 #include "external_light.hpp"
 #include "light_sequence.hpp"
 #include "black_hole.hpp"
+#include "board_chat_visual.hpp"
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
 #include "esp_log.h"
@@ -1458,6 +1459,42 @@ bool otaFrameRequested() {
       (status.otaVisualSequence != control.otaVisualSequence || control.otaVisualAnimate);
 }
 
+board_chat::Scroll chatScroll;
+
+bool chatAllowed(bool requestedOn, bool memorialTransition) {
+  const bool alert = control.airAlertLevel == 1 || control.airAlertLevel == 2 ||
+      control.airAlertLevel == 4 || airAlertVisual.overlay().amount > 0;
+  return requestedOn && control.brightness && control.maintenance == Maintenance::None &&
+      !memorialTransition && !alert && sceneProgress >= SCENE_DURATION_MS;
+}
+
+// Save the scene band in raw staging units. IP crossfades can sample the
+// previous frame, so restore it immediately after submission and preview.
+bool showSceneWithChat(bool &sampled, uint32_t now) {
+  constexpr int top = (MATRIX_HEIGHT - 7) / 2;
+  uint8_t ink[7][MATRIX_WIDTH]{};
+  sampled = chatScroll.draw(now, MATRIX_WIDTH, [&](int x, int y, bool heading) {
+    ink[y][x] = heading ? 1 : 2;
+  });
+  if (!sampled) return showFrame();
+  static uint8_t background[7][MATRIX_WIDTH][3];
+  uint8_t *pixels = strip.getPixels();
+  for (int y = 0; y < 7; ++y) {
+    for (int x = 0; x < MATRIX_WIDTH; ++x) {
+      const unsigned index = physicalIndex(x, y + top);
+      std::memcpy(background[y][x], pixels + 3 * index, 3);
+      const auto color = ink[y][x] == 1 ? strip.Color(110, 210, 255) :
+                         ink[y][x] == 2 ? strip.Color(255, 248, 215) : 0;
+      strip.setPixelColor(index, color);
+    }
+  }
+  const bool shown = showFrame();
+  for (int y = 0; y < 7; ++y)
+    for (int x = 0; x < MATRIX_WIDTH; ++x)
+      std::memcpy(pixels + 3 * physicalIndex(x, y + top), background[y][x], 3);
+  return shown;
+}
+
 void renderOtaProgress() {
   // Continuous motion is granted only during network reads. Core 0 revokes it
   // and waits for an exact one-shot ACK before any subsequent flash operation.
@@ -1535,6 +1572,7 @@ void renderTask(void *) {
   for (;;) {
     feedWatchdog();
     const int64_t started = esp_timer_get_time();
+    bool chatSampled = false;
     const bool fresh = xQueueReceive(controlQueue, &control, 0) == pdTRUE;
     const bool serviceOtaFrame = parked && acknowledgedEpoch == control.maintenanceEpoch &&
         otaFrameRequested();
@@ -1843,7 +1881,8 @@ void renderTask(void *) {
           }
           if (renderScene(animationFile, effectMaskFile, frame, flying)) {
             drawAirAlertIndicator(false, blackHoleAmount() != 0);
-            if (showFrame()) ipTransition.reset();
+            const bool allowChat = chatAllowed(requestedOn, memorialTransition);
+            if (allowChat ? showSceneWithChat(chatSampled, now) : showFrame()) ipTransition.reset();
           }
           else {
             status.assetsReady = false;
@@ -1876,6 +1915,7 @@ void renderTask(void *) {
         status.quiescent = true;
       }
     }
+    if (!chatSampled) chatScroll.pause();
     if (!parked) status.quiescent = false;
     status.lastFrameUs = esp_timer_get_time() - started;
     publishStatus();

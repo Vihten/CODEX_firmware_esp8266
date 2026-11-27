@@ -103,8 +103,8 @@ Rename changes only the Name metadata field and gracefully restarts the worker.
 Unknown metadata fields, color, identity, configuration and statistics remain.
 
 Remote uninstall first requests a graceful worker stop (15-second bound).
-It removes only the exact verified per-user recovery task, legacy Startup shortcut and the original
-eight fixed remote code files (plus their atomic-write .new siblings), from
+It removes only the exact verified per-user recovery task, legacy Startup shortcut and the
+allowlisted remote code files (plus their atomic-write .new siblings), from
 the exact LOCALAPPDATA\LED Forge\Codex LAN Agent install directory. Reparse
 paths and shortcuts owned by another installation are rejected. There is no
 arbitrary command/path input or recursive installation-directory deletion.
@@ -118,7 +118,11 @@ reports failed. Ack retries stop only after an authenticated successful reply.
 An explicit manual reinstall clears a successful uninstall tombstone after
 stopping the existing processes, without clearing settings/statistics.
 
-The signed remote ZIP still contains exactly the original eight code files.
+Older agents with the eight-file updater reject the expanded chat package before
+installation. Extract the trusted new bootstrap.zip into a separate folder and run
+update_codex_lan_agent.cmd as the installing Windows user. For a preview, run
+.\update_codex_lan_agent.ps1 -WhatIf from PowerShell in that folder.
+Once bootstrapped, the new updater accepts packages matching its fixed file set.
 Manual support scripts remain bootstrap-only. Management and supervisor tests
 use temporary fixtures and mocked HTTP/process/removal operations; they never
 uninstall the running local agent.
@@ -445,7 +449,7 @@ Concrete manual bootstrap directory layout:
   explicit installer/support file set; it never takes version 1
   from the source directory when building release N. It contains no private keys
   or installed state. Manual staging equivalent:
-  Extract package.zip's eight flat code/version files into a new directory.
+  Extract package.zip's flat code/version files into a new directory.
   Copy install_codex_lan_agent.cmd/.ps1, update_codex_lan_agent.cmd/.ps1,
   and controller_rebind.ps1 into that directory.
   Copy agent-update-public.xml from the generated release. The installer scripts
@@ -519,9 +523,10 @@ Manifest: {schema:1,version:<safe integer>,size:<ZIP bytes>,sha256:<lowerhex>,si
 Signature: RSA-SHA256/PKCS#1 v1.5 over UTF8 exact:
   LFAU1\n<version decimal>\n<size decimal>\n<sha256 lowercase>\n
 The agent requires a newer version, a valid pinned-key signature and exact size
-and SHA256. ZIP <=512KB, expanded <=2MB. Exactly eight flat filenames are allowed:
+and SHA256. ZIP <=512KB, expanded <=2MB. Only the following flat filenames are allowed:
   codex_lan_agent.ps1, start_agent_supervisor.ps1, agent_metadata.ps1,
-  weekly_tokens.ps1, agent_update.ps1, agent_update_download.ps1,
+  weekly_tokens.ps1, agent_chat_ipc.ps1, agent_chat_ui.ps1,
+  agent_update.ps1, agent_update_download.ps1,
   agent_update_restart.ps1, agent-version.txt
 Names compare case-insensitively; duplicates, missing entries, links/reparse
 points, directories, alternate streams, traversal and extra files are rejected.

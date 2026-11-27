@@ -1,0 +1,3 @@
+@echo off
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0update_codex_lan_agent.ps1" %*
+if errorlevel 1 pause

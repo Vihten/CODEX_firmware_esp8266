@@ -154,6 +154,8 @@ function Install-AgentStagedUpdate([string]$Root, [string]$Stage) {
     }
     Write-AgentDurable (Join-Path $Root '.agent-update-journal.json') ([Text.Encoding]::UTF8.GetBytes('{"pending":true}'))
     try {
+        # From here a rollback may be needed. Preflight, backup and worker-stop failures remain retryable.
+        Write-AgentDurable (Join-Path $Root '.agent-update-failed-version.txt') ([Text.Encoding]::ASCII.GetBytes([string]$package.Version))
         foreach ($name in Get-AgentCodeFiles) { Write-AgentDurable (Join-Path $Root $name) $package.Files[$name] }
     } catch { Restore-AgentUpdate $Root; throw }
 }

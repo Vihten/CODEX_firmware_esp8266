@@ -82,6 +82,7 @@ $reloadRequired = $false
 $healthDeadline = [DateTime]::MinValue
 $healthySince = $null
 $nextUpdatePoll = [DateTime]::MinValue
+$stopRetrySeconds = 0
 $loadedHelper = ''
 $managementContext = $null
 $control = Join-Path $PSScriptRoot ('.agent-worker-' + [guid]::NewGuid().ToString('N'))
@@ -190,7 +191,12 @@ try {
                             if ($outcome -eq 'restart') { break }
                         }
                         if ($ready) {
+                          $installLock = $null
                           try {
+                            # No other poll may replace the staged files or queue a conflicting action during the stop.
+                            $installLock = Open-AgentPollLock $PSScriptRoot
+                            $state = Read-AgentActionState $PSScriptRoot
+                            if (($state -and -not $state.confirmed) -or ($restartEvent -and $restartEvent.WaitOne(0))) { continue }
                             $stage = Join-Path $PSScriptRoot '.agent-update-stage'
                             $hub = Get-AgentHubBinding $PSScriptRoot
                             $scopePath = Join-Path $stage '.management-scope'
@@ -198,15 +204,21 @@ try {
                             $scope = if ([IO.File]::Exists($scopePath)) { [IO.File]::ReadAllText($scopePath) }
                             if ("$($hub.Scope)" -cne "$($scope)") { throw 'Staged update belongs to a different binding' }
                             $candidate = Test-AgentPackage $PSScriptRoot $stage (Get-AgentInstalledVersion $PSScriptRoot)
-                            Write-AgentDurable "$control.stop" ([byte[]]@(1))
-                            if (-not $child.WaitForExit(15000)) {
-                                # Never install after a forced stop: a scanner may be committing state.
-                                Write-AgentDurable (Join-Path $PSScriptRoot '.agent-update-failed-version.txt') ([Text.Encoding]::ASCII.GetBytes([string]$candidate.Version))
-                                [IO.File]::Delete("$control.stop")
+                            try {
+                                Write-AgentDurable "$control.stop" ([byte[]]@(1))
+                                $stopped = $child.WaitForExit(15000) -or $child.WaitForExit(15000)
+                            } finally { [IO.File]::Delete("$control.stop") }
+                            if (-not $stopped) {
+                                $delay = [Math]::Min(120, [Math]::Max(15, 2 * $stopRetrySeconds))
+                                if ($delay -ne $stopRetrySeconds) {
+                                    try { Add-Content -LiteralPath $LogPath -Value "Update $($candidate.Version) deferred: worker still running after 30s. Next poll in ${delay}s." } catch {}
+                                }
+                                $stopRetrySeconds = $delay
+                                $nextUpdatePoll = [DateTime]::UtcNow.AddSeconds($delay)
                                 continue
                             }
-                            Write-AgentDurable (Join-Path $PSScriptRoot '.agent-update-failed-version.txt') ([Text.Encoding]::ASCII.GetBytes([string]$candidate.Version))
                             Install-AgentStagedUpdate $PSScriptRoot $stage
+                            $stopRetrySeconds = 0
                             $pendingHealth = $true
                             $healthySince = $null
                             $healthDeadline = [DateTime]::UtcNow.AddSeconds(60)
@@ -214,7 +226,7 @@ try {
                           } catch {
                             try { Add-Content -LiteralPath $LogPath -Value "Update rejected: $($_.Exception.Message)" } catch { }
                             if ($child.HasExited) { break }
-                          }
+                          } finally { if ($installLock) { $installLock.Dispose() } }
                         }
                     } finally { $guard.Dispose() }
                 }

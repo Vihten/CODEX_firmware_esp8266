@@ -487,17 +487,27 @@ function Start-AgentChatSession($Directory,$EndpointPath,$Client,$Root,$Name=$en
     } catch { Stop-AgentChatSession $session; throw }
 }
 
-function Stop-AgentChatSession($Session) {
+function Stop-AgentChatSession($Session, [switch]$WorkerExiting) {
     if (-not $Session) { return }
     [void]$Session.Stop.Set()
     foreach ($job in $Session.Jobs) {
         if ($job.Task) {
-            if (-not $job.Task.AsyncWaitHandle.WaitOne(6500)) { $job.Shell.Stop() }
+            if (-not $job.Task.AsyncWaitHandle.WaitOne(6500)) {
+                if ($WorkerExiting -and $job.Role -eq 'tray') {
+                    # Stop/EndInvoke/Dispose can all wait for an unmanaged STA call.
+                    # Keep the mailbox lock and shared event until the worker exits.
+                    $Session.TrayStillRunning = $true
+                    continue
+                }
+                $job.Shell.Stop()
+            }
             try { [void]$job.Shell.EndInvoke($job.Task) } catch { $job.Failure = $_.Exception }
         }
         $job.Shell.Dispose()
         $job.Space.Dispose()
     }
-    $Session.Stop.Dispose()
-    $Session.Lock.Dispose()
+    if (-not $Session.TrayStillRunning) {
+        $Session.Stop.Dispose()
+        $Session.Lock.Dispose()
+    }
 }

@@ -1794,7 +1794,11 @@ try {
 
     while ($true) {
         if ($UpdateControlPath) {
-            if (Test-Path -LiteralPath "$UpdateControlPath.stop") { break }
+            if (Test-Path -LiteralPath "$UpdateControlPath.stop") {
+                $managedStop = $true
+                Write-AgentStatus 'Worker accepted the supervisor stop request.'
+                break
+            }
             [IO.File]::WriteAllText("$UpdateControlPath.health", [DateTime]::UtcNow.Ticks.ToString())
         }
         $now = Get-Date
@@ -1868,7 +1872,18 @@ try {
     }
 }
 finally {
-    if ($chatSession) { Stop-AgentChatSession $chatSession }
+    if ($chatSession) {
+        # Only the supervisor's dedicated powershell.exe -File process can finish
+        # teardown by exiting the host. Embedded callers retain normal disposal.
+        $argv = [Environment]::GetCommandLineArgs()
+        $fileArg = [Array]::FindIndex($argv, [Predicate[string]]{ param($arg) $arg -ieq '-File' })
+        $dedicatedWorker = $managedStop -and $fileArg -ge 0 -and $fileArg+1 -lt $argv.Length -and
+            [IO.Path]::GetFullPath($argv[$fileArg+1]) -ieq $PSCommandPath
+        Stop-AgentChatSession $chatSession -WorkerExiting:$dedicatedWorker
+        if ($chatSession.TrayStillRunning) {
+            Write-AgentStatus 'Chat tray missed shutdown deadline. Finishing worker cleanup before process exit.'
+        }
+    }
     foreach ($iterator in $claudeDiscoveryStack) { $iterator.Dispose() }
     Stop-LimitAppServer
     if ($null -ne $claudePoller) { Stop-ClaudeQuotaWorker $claudePoller }
@@ -1883,4 +1898,9 @@ finally {
         if ($ownsMutex) { $mutex.ReleaseMutex() }
     }
     finally { $mutex.Dispose() }
+    if ($dedicatedWorker -and $chatSession.TrayStillRunning) {
+        # Transport and board have joined; token checkpoint writers are now stopped.
+        # Normal Windows PowerShell host teardown would synchronously stop the STA again.
+        [Environment]::Exit(0)
+    }
 }

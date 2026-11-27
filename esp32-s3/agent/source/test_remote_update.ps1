@@ -70,11 +70,16 @@ try {
     New-TestPackage -Oversized
     Reject { Test-AgentPackage $root $stage 1 } 'Expanded bound'
     New-TestPackage
+    $failurePath = Join-Path $root '.agent-update-failed-version.txt'
+    $busy = [IO.File]::Open((Join-Path $root 'weekly_tokens.ps1'),'Open','ReadWrite','None')
+    try { Reject { Install-AgentStagedUpdate $root $stage } 'Backup file still busy' } finally { $busy.Dispose() }
+    Assert (-not [IO.File]::Exists($failurePath)) 'Backup failure must not suppress an uninstalled release'
     Install-AgentStagedUpdate $root $stage
     Assert ((Get-AgentInstalledVersion $root) -eq 2) 'Code applied without executing it'
     Assert (Test-Path -LiteralPath (Join-Path $root '.agent-update-journal.json')) 'Pending health journal'
     Restore-AgentUpdate $root
     Assert ((Get-AgentInstalledVersion $root) -eq 1) 'Health rollback'
+    Assert ([IO.File]::ReadAllText($failurePath) -ceq '2') 'Rolled-back attempted release remains suppressed'
     foreach ($name in Get-AgentCodeFiles) {
         $expected = if ($name -eq 'agent-version.txt') { '1' } else { "ORIGINAL $name" }
         Assert ([IO.File]::ReadAllText((Join-Path $root $name)) -ceq $expected) 'Original code restored'

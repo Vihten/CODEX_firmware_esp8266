@@ -30,7 +30,7 @@ public sealed class PeerWireV1 : IDisposable {
     readonly IPAddress bind;
     readonly IPAddress discoveryAddress;
     readonly int discoveryPort;
-    readonly HashSet<Guid> physical = new HashSet<Guid>();
+    volatile HashSet<Guid> physical = new HashSet<Guid>();
     readonly TcpListener listener;
     readonly UdpClient udp;
     readonly Thread discovery;
@@ -53,6 +53,7 @@ public sealed class PeerWireV1 : IDisposable {
     }
     sealed class Binding {
         public string Name, Pin;
+        public IPAddress Route;
     }
     readonly Dictionary<string, Binding> trust = new Dictionary<string, Binding>();
     readonly Dictionary<string, Location> locations = new Dictionary<string, Location>();
@@ -134,10 +135,25 @@ public sealed class PeerWireV1 : IDisposable {
         lock (gate) {
             Require(!stopped && (trust.ContainsKey(peer) || trust.Count < MaxPeers), "Trust table unavailable");
             Require(!trust.Any(x => x.Key != peer && x.Value.Pin == pin), "Pin already bound");
-            trust[peer] = new Binding {Name=displayName, Pin=pin};
+            var binding = new Binding {Name=displayName, Pin=pin};
+            Location seen;
+            if (locations.TryGetValue(pin,out seen) && seen.Id == peer && seen.Name == displayName)
+                binding.Route = seen.Endpoint.Address;
+            trust[peer] = binding;
         }
     }
     public void Remove(string peer) { lock (gate) trust.Remove(peer); }
+    public void RestoreRoute(string peer, string pin, string address) {
+        IPAddress ip;
+        if (!IPAddress.TryParse(address,out ip) || ip.AddressFamily != AddressFamily.InterNetwork) return;
+        lock (gate) {
+            Binding b;
+            if (trust.TryGetValue(peer,out b) && b.Pin == pin && b.Route == null) b.Route = ip;
+        }
+    }
+    public void RefreshAdapters(string[] adapterIds) {
+        physical = new HashSet<Guid>(adapterIds.Select(Guid.Parse));
+    }
     bool Fresh(Location loc) { return loc.Age.ElapsedMilliseconds < 16000; }
     bool Bound(Location loc) {
         Binding b;
@@ -149,7 +165,8 @@ public sealed class PeerWireV1 : IDisposable {
             loc.Age.ElapsedMilliseconds < 40000 ? loc : null;
     }
     public Row[] Roster() {
-        lock (gate) return trust.Select(x => new Row {id=x.Key, name=x.Value.Name, pin=x.Value.Pin, online=Find(x.Key,x.Value)!=null}).ToArray();
+        lock (gate) return trust.Select(x => new Row {id=x.Key, name=x.Value.Name, pin=x.Value.Pin,
+            address=x.Value.Route == null ? null : x.Value.Route.ToString(), online=Find(x.Key,x.Value)!=null}).ToArray();
     }
     public Row[] Candidates() {
         lock (gate) return locations.Values.Where(Fresh).Where(x => !trust.ContainsKey(x.Id) && locations.Values.Count(y => y.Id == x.Id && Fresh(y)) == 1).Select(x => new Row {
@@ -201,6 +218,7 @@ public sealed class PeerWireV1 : IDisposable {
                 // Check the current bindings when committing discovery, including terminal replies.
                 if (trust.Any(x=>x.Value.Pin == pin && x.Key != p[1])) return;
                 if (trust.TryGetValue(p[1],out b) && (b.Pin != pin || b.Name != displayName)) return;
+                if (b != null) b.Route = source.Address;
                 foreach (var k in locations.Where(x=>!Fresh(x.Value) &&
                     (!Bound(x.Value) || x.Value.Age.ElapsedMilliseconds >= 300000)).Select(x=>x.Key).ToArray())
                     locations.Remove(k);
@@ -269,9 +287,11 @@ public sealed class PeerWireV1 : IDisposable {
                     if (clock.ElapsedMilliseconds >= nextDirect) {
                         nextDirect = clock.ElapsedMilliseconds + 12000;
                         IPAddress[] targets;
-                        lock (gate) targets = locations.Values.Where(x => Bound(x) &&
-                            x.Age.ElapsedMilliseconds >= 8000 && x.Age.ElapsedMilliseconds < 300000)
-                            .Select(x => x.Endpoint.Address).Distinct().ToArray();
+                        lock (gate) targets = trust.Where(x => {
+                            if (x.Value.Route == null) return false;
+                            Location loc = Find(x.Key,x.Value);
+                            return loc == null || loc.Age.ElapsedMilliseconds >= 8000;
+                        }).Select(x => x.Value.Route).Distinct().ToArray();
                         foreach (var target in targets) Announce(packet,target);
                     }
                 }

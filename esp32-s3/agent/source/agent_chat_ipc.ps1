@@ -38,7 +38,7 @@ function Initialize-ChatMailbox($Root) {
     foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleAll($rule) }
     $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
     [IO.Directory]::SetAccessControl($Root,$acl)
-    foreach ($name in 'inbox','outbox','seen','attempts','failed','deliveries','board-attempts','trusted') {
+    foreach ($name in 'inbox','outbox','seen','attempts','failed','deliveries','board-attempts','trusted','routes') {
         $path = Join-Path $Root $name
         Assert-AgentPlainPath $path
         [void][IO.Directory]::CreateDirectory($path)
@@ -197,6 +197,13 @@ function Sync-ChatTrust($Root,$Context) {
                 $row = $bindings[$id]
                 try { Set-ChatPeerTrust $Context.Peer $id $row.name $row.fingerprint } catch { continue }
                 $Context.Applied[$id] = $row
+                try {
+                    $hint = Read-ChatObject (Join-Path $Root "routes/$id.json")
+                    if ($hint.pin -ceq $row.fingerprint) {
+                        $Context.Peer.RestoreRoute($id,$row.fingerprint,[string]$hint.address)
+                        $row | Add-Member NoteProperty savedRoute $hint.address -Force
+                    }
+                } catch { }
             }
         }
     }
@@ -211,6 +218,12 @@ function Publish-ChatRoster($Root,$Context,$EndpointPath) {
         foreach ($peer in (Get-ChatPeerRoster $Context.Peer | Sort-Object id)) {
             $binding = $Context.Applied[$peer.id]
             if ($binding) {
+                if ($peer.address -and $peer.online -and $binding.savedRoute -cne $peer.address) {
+                    try {
+                        Write-ChatObject (Join-Path $Root "routes/$($peer.id).json") @{pin=$binding.fingerprint;address=$peer.address}
+                        $binding | Add-Member NoteProperty savedRoute $peer.address -Force
+                    } catch { }
+                }
                 if ($peer.online) { $Context.Online[$peer.id] = $true }
                 $rows += [ordered]@{id=$peer.id;name=$binding.name;online=[bool]$peer.online;trusted=$true;fingerprint=$binding.fingerprint}
             }
@@ -468,11 +481,19 @@ function Start-AgentChatSession($Directory,$EndpointPath,$Client,$Root,$Name=$en
                     return
                 }
                 $nextStart = [datetime]::MinValue
+                $adapterClock = [Diagnostics.Stopwatch]::StartNew()
                 try {
                     while (-not $stop.WaitOne(0)) {
                         if (-not $ctx.Peer -and [datetime]::UtcNow -ge $nextStart) {
                             $nextStart = [datetime]::UtcNow.AddSeconds(15)
                             try { $ctx.Peer = Start-ChatPeerRuntime -Root $root -Client $client -Name $name @peerOptions } catch {}
+                        }
+                        if ($ctx.Peer -and -not $peerOptions.DiscoveryAddress -and $adapterClock.Elapsed.TotalSeconds -ge 60) {
+                            $adapterClock.Restart()
+                            try {
+                                $ids = @(Get-NetAdapter -Physical -ErrorAction Stop | ForEach-Object { [string]$_.InterfaceGuid })
+                                $ctx.Peer.RefreshAdapters([string[]]$ids)
+                            } catch { }
                         }
                         try { Invoke-ChatCycle $root $endpoint $ctx } catch {
                             if ($stop.WaitOne(1000)) { break }

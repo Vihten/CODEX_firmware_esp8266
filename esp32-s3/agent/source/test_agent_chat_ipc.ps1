@@ -29,12 +29,15 @@ try {
     $peerId = 'AABBCCDD'
     $pin = '1' * 64
     $ctx.Peer = @{Pin=('0' * 64)}
+    $ctx.Peer | Add-Member ScriptMethod RestoreRoute { param($id,$pin,$address)
+        $script:restoredRoute = "$id/$pin/$address"
+    }
     $ctx.Name = 'Sender'
     $sent = @{}
     $script:loseReceipt = $false
     function Get-ChatPeerCandidates($runtime) { [pscustomobject]@{id=$peerId;name='Desk';pin=$pin;address='127.0.0.2'} }
     $script:peerOnline = $true
-    function Get-ChatPeerRoster($runtime) { [pscustomobject]@{id=$peerId;name='Desk';online=$script:peerOnline} }
+    function Get-ChatPeerRoster($runtime) { [pscustomobject]@{id=$peerId;name='Desk';online=$script:peerOnline;address='127.0.0.2'} }
     function Set-ChatPeerTrust($runtime,$id,$name,$fingerprint) { Check ($fingerprint -ceq $pin) 'Wrong applied pin' }
     function Remove-ChatPeerTrust($runtime,$id) {}
     function Send-ChatPeerMessage($runtime,$to,$uuid,$text) {
@@ -93,6 +96,7 @@ try {
     $script:loseReceipt = $false
     RetryNow $id
     Cycle
+    Check ($script:restoredRoute -ceq "$peerId/$pin/127.0.0.2") 'Pinned address not restored after transport restart'
     Check ($sent[$id] -eq 2 -and (Journal $id).targets[0].state -ceq 'delivered') 'Restart retry failed'
 
     $legacy = [guid]::NewGuid().ToString()

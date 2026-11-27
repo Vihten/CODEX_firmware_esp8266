@@ -30,6 +30,7 @@ def main():
             shutil.copyfile(HERE / name, root / name)
         (root / "agent_update.ps1").write_text("""
 function Repair-AgentGuiRecoveryTask {}
+function Open-AgentManagementGuard { [IO.MemoryStream]::new() }
 function Test-AgentUpdateReady { $false }
 function Read-AgentActionState {}
 function Invoke-AgentPendingAction {}

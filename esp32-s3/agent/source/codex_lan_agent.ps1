@@ -1766,13 +1766,8 @@ try {
         return
     }
 
-    if ($EnableChat -and [Environment]::UserInteractive -and [Diagnostics.Process]::GetCurrentProcess().SessionId -gt 0) {
-        try {
-            . (Join-Path $PSScriptRoot 'agent_update.ps1')
-            . (Join-Path $PSScriptRoot 'agent_chat_ipc.ps1')
-            $chatSession = Start-AgentChatSession $PSScriptRoot $ControllerStatePath $clientHash (Join-Path $env:LOCALAPPDATA 'CodexLanAgent/chat') $metadata.Name
-        } catch { Write-AgentStatus 'Chat startup failed.' }
-    }
+    $chatEnabled = $EnableChat -and [Environment]::UserInteractive -and [Diagnostics.Process]::GetCurrentProcess().SessionId -gt 0
+    $chatRetry = $null
     Write-AgentStatus 'Codex LAN activity agent started.'
     Write-AgentStatus "Client: $clientId"
     Write-AgentStatus "Optional LED Forge preview: ${CollectorHost}:$Port"
@@ -1802,6 +1797,16 @@ try {
             [IO.File]::WriteAllText("$UpdateControlPath.health", [DateTime]::UtcNow.Ticks.ToString())
         }
         $now = Get-Date
+        if ($chatEnabled -and -not $chatSession -and (-not $chatRetry -or $chatRetry.Elapsed.TotalSeconds -ge 30)) {
+            try {
+                . (Join-Path $PSScriptRoot 'agent_update.ps1')
+                . (Join-Path $PSScriptRoot 'agent_chat_ipc.ps1')
+                $chatSession = Start-AgentChatSession $PSScriptRoot $ControllerStatePath $clientHash (Join-Path $env:LOCALAPPDATA 'CodexLanAgent/chat') $metadata.Name
+            } catch {
+                $chatRetry = [Diagnostics.Stopwatch]::StartNew()
+                Write-AgentStatus 'Chat startup failed; retrying in 30 seconds.'
+            }
+        }
         if ($null -ne $claudePoller) { Update-ClaudeQuotaPoller $claudePoller }
         Update-ClaudeHttpSender $claudeHttpSender
         Update-ClaudeHttpSender $originHttpSender

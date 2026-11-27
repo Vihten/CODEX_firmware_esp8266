@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [ValidatePattern('^[a-zA-Z0-9._:-]+$')]
     [string]$CollectorHost = '255.255.255.255',
@@ -79,10 +79,10 @@ $updateHelper = Join-Path $PSScriptRoot 'agent_update.ps1'
 $updatesEnabled = $false
 $pendingHealth = $false
 $reloadRequired = $false
-$healthDeadline = [DateTime]::MinValue
 $healthySince = $null
 $nextUpdatePoll = [DateTime]::MinValue
 $stopRetrySeconds = 0
+$stallRetrySeconds = 0
 $loadedHelper = ''
 $managementContext = $null
 $control = Join-Path $PSScriptRoot ('.agent-worker-' + [guid]::NewGuid().ToString('N'))
@@ -109,12 +109,15 @@ try {
         "-CollectorHost `"$CollectorHost`" -Port $Port"
         "-DirectHost `"$DirectHost`" -DirectPort $DirectPort -DirectHttpPort $DirectHttpPort"
         "-LogPath `"$LogPath`""
-        $(if (Test-Path -LiteralPath $updateHelper) { "-UpdateControlPath `"$control`"" })
+        "-UpdateControlPath `"$control`""
     ) -join ' '
     while ($true) {
         $startedProvisional = $pendingHealth
         $restartEvent = $null
         $trayRestart = $false
+        $ownsStop = $false
+        $stalled = $false
+        $restartDelay = 10
         try {
             if ($loadedHelper) {
                 $guard = Open-AgentManagementGuard $PSScriptRoot
@@ -134,6 +137,7 @@ try {
                     else { [void](Invoke-AgentPendingAction $PSScriptRoot $null $control) }
                 } finally { $guard.Dispose() }
             }
+            if ([IO.File]::Exists("$control.stop")) { return }
             $previousRestart = $env:LED_FORGE_TRAY_RESTART
             try {
                 $env:LED_FORGE_TRAY_RESTART = $null
@@ -149,21 +153,41 @@ try {
                 }
                 $child = Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $arguments -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $PSScriptRoot 'worker-output.log') -RedirectStandardError (Join-Path $PSScriptRoot 'worker-error.log') -PassThru
             } finally { $env:LED_FORGE_TRAY_RESTART = $previousRestart }
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            $lastCheck = 0
+            $lastProgress = 0
+            $healthyStart = 0
+            $heartbeat = 0
+            if ($pendingHealth) {
+                $lastHealthCheck = [DateTime]::UtcNow
+                $healthDeadline = $lastHealthCheck.AddSeconds(60)
+            }
             while (-not $child.WaitForExit(250)) {
+                if ([IO.File]::Exists("$control.stop")) {
+                    [void]$child.WaitForExit(15000)
+                    return
+                }
                 if ($reloadRequired) { break }
                 if ($pendingHealth) {
-                    $health = "$control.health"
-                    $fresh = (Test-Path -LiteralPath $health) -and ((Get-Item -LiteralPath $health).LastWriteTimeUtc -gt [DateTime]::UtcNow.AddSeconds(-8))
+                    $now = [DateTime]::UtcNow
+                    if ($now -lt $lastHealthCheck -or ($now - $lastHealthCheck).TotalSeconds -ge 8) {
+                        # Missed an entire heartbeat freshness window. Revalidate after resume.
+                        $healthySince = $null
+                        $healthDeadline = $now.AddSeconds(60)
+                    }
+                    $lastHealthCheck = $now
+                    $stamp = [IO.File]::GetLastWriteTimeUtc("$control.health")
+                    $fresh = $stamp -gt $now.AddSeconds(-8) -and $stamp -le $now
                     if ($fresh) {
-                        if ($null -eq $healthySince) { $healthySince = [DateTime]::UtcNow }
-                        if ([DateTime]::UtcNow -ge $healthySince.AddSeconds(15)) {
+                        if ($null -eq $healthySince) { $healthySince = $now }
+                        if ($now -ge $healthySince.AddSeconds(15)) {
                             Complete-AgentUpdate $PSScriptRoot
                             $pendingHealth = $false
                             $reloadRequired = $true
                             break
                         }
                     } else { $healthySince = $null }
-                    if ($pendingHealth -and [DateTime]::UtcNow -ge $healthDeadline) { break }
+                    if ($pendingHealth -and $now -ge $healthDeadline) { break }
                     continue
                 }
                 if ($null -ne $download -and -not $download.HasExited -and [DateTime]::UtcNow -ge $downloadStartedAt.AddSeconds(30)) {
@@ -188,6 +212,7 @@ try {
                             try { $outcome = Invoke-AgentPendingAction $PSScriptRoot $child $control }
                             catch { [IO.File]::Delete("$control.stop"); continue }
                             if ($outcome -eq 'uninstall') { Wait-AgentUninstallAck $PSScriptRoot $managementContext $loadedHelper; return }
+                            if ($child.HasExited) { [IO.File]::Delete("$control.stop") }
                             if ($outcome -eq 'restart') { break }
                         }
                         if ($ready) {
@@ -221,7 +246,6 @@ try {
                             $stopRetrySeconds = 0
                             $pendingHealth = $true
                             $healthySince = $null
-                            $healthDeadline = [DateTime]::UtcNow.AddSeconds(60)
                             break
                           } catch {
                             try { Add-Content -LiteralPath $LogPath -Value "Update rejected: $($_.Exception.Message)" } catch { }
@@ -232,8 +256,37 @@ try {
                 }
                 if ($restartEvent -and $restartEvent.WaitOne(0) -and $null -eq $download) {
                     Write-AgentDurable "$control.stop" ([byte[]]@(1))
+                    $ownsStop = $true
                     [void]$child.WaitForExit(15000)
                     $trayRestart = $true
+                    break
+                }
+                # Sample local progress independently of network traffic and wall-clock changes.
+                $seconds = $watch.Elapsed.TotalSeconds
+                if ($seconds - $lastCheck -ge 5) {
+                    if ($seconds - $lastCheck -gt 15) {
+                        # Resume or a blocked supervisor operation: observe a new full window.
+                        $lastProgress = $healthyStart = $seconds
+                    }
+                    $lastCheck = $seconds
+                    $stamp = [IO.File]::GetLastWriteTimeUtc("$control.health").Ticks
+                    if ([IO.File]::Exists("$control.health") -and $stamp -ne $heartbeat) {
+                        if ($heartbeat -eq 0 -or $seconds - $lastProgress -gt 15) { $healthyStart = $seconds }
+                        $lastProgress = $seconds
+                        $heartbeat = $stamp
+                        if ($seconds - $healthyStart -ge 300) { $stallRetrySeconds = 0 }
+                    }
+                }
+                if ($null -eq $download -and $lastCheck - $lastProgress -ge 300) {
+                    if ([IO.File]::Exists("$control.stop")) { return }
+                    # The existing finally block joins the owned worker before relaunch.
+                    try { [IO.File]::Open("$control.stop", [IO.FileMode]::CreateNew).Dispose() }
+                    catch [IO.IOException] { if ([IO.File]::Exists("$control.stop")) { return }; throw }
+                    $ownsStop = $true
+                    [void]$child.WaitForExit(15000)
+                    $stalled = $true
+                    $stallRetrySeconds = [Math]::Min(120, [Math]::Max(10, 2 * $stallRetrySeconds))
+                    $restartDelay = $stallRetrySeconds
                     break
                 }
                 if ($null -eq $download -and [DateTime]::UtcNow -ge $nextUpdatePoll) {
@@ -250,8 +303,10 @@ try {
                     }
                 }
             }
+            if (-not $ownsStop -and [IO.File]::Exists("$control.stop")) { return }
             if ($reloadRequired) {
                 Write-AgentDurable "$control.stop" ([byte[]]@(1))
+                $ownsStop = $true
                 if (-not $child.WaitForExit(15000)) {
                     $child.Kill()
                     if (-not $child.WaitForExit(5000)) { throw 'Cannot stop worker for supervisor reload' }
@@ -267,6 +322,7 @@ try {
             }
             if ($pendingHealth -and -not $child.HasExited) {
                 Write-AgentDurable "$control.stop" ([byte[]]@(1))
+                $ownsStop = $true
                 if (-not $child.WaitForExit(15000)) { $child.Kill(); $child.WaitForExit() }
                 Restore-AgentUpdate $PSScriptRoot
                 $pendingHealth = $false
@@ -277,7 +333,7 @@ try {
             $child.Refresh()
             $exitCode = $child.ExitCode
             if ($null -eq $exitCode) { $exitCode = 'unknown' }
-            $message = if ($trayRestart) { 'Tray requested a local agent restart.' } else { "worker exited: $exitCode; restarting in 10 seconds" }
+            $message = if ($stalled) { "Worker heartbeat stalled for 300 seconds; restarting in $restartDelay seconds" } elseif ($trayRestart) { 'Tray requested a local agent restart.' } else { "worker exited: $exitCode; restarting in 10 seconds" }
         }
         catch { $message = "worker launch failed: $($_.Exception.Message); retrying in 10 seconds" }
         finally {
@@ -286,7 +342,8 @@ try {
                 if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit() }
                 $child.Dispose(); $child = $null
             }
-            foreach ($suffix in @('.stop', '.health')) { [IO.File]::Delete("$control$suffix") }
+            if ($ownsStop) { [IO.File]::Delete("$control.stop") }
+            [IO.File]::Delete("$control.health")
             if ($startedProvisional -and $pendingHealth) {
                 Restore-AgentUpdate $PSScriptRoot
                 $pendingHealth = $false
@@ -295,7 +352,7 @@ try {
         }
         try { Add-Content -LiteralPath $LogPath -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $message" -Encoding UTF8 }
         catch { }
-        if (-not $trayRestart) { Start-Sleep -Seconds 10 }
+        if (-not $trayRestart) { Start-Sleep -Seconds $restartDelay }
     }
 }
 catch {
@@ -312,6 +369,8 @@ finally {
         if (-not $child.HasExited) { $child.Kill() }
         $child.Dispose()
     }
-    if ($ownsMutex) { $mutex.ReleaseMutex() }
+    if ($ownsMutex) {
+        try { [IO.File]::Delete("$control.stop") } finally { $mutex.ReleaseMutex() }
+    }
     $mutex.Dispose()
 }

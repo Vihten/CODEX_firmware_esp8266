@@ -1,4 +1,4 @@
-﻿param([ValidateSet('Failed', 'Healthy', 'LateEnrollment', 'NoIdentity', 'StopTimeout')][string]$Scenario = 'Failed')
+﻿param([ValidateSet('Failed', 'Healthy', 'Resume', 'LateEnrollment', 'NoIdentity', 'StopTimeout')][string]$Scenario = 'Failed')
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'agent_update.ps1')
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('lfau-supervisor-' + [guid]::NewGuid().ToString('N'))
@@ -13,6 +13,7 @@ try {
     $extra = @'
 function Test-AgentPackage { [pscustomobject]@{ Version = 2 } }
 function Install-AgentStagedUpdate([string]$Root, [string]$Stage) {
+    if ([IO.File]::Exists("$control.stop")) { throw 'Transient OTA stop survived the graceful shutdown' }
     if (-not $child.HasExited) { throw 'Installed while worker was running' }
     Write-AgentDurable (Join-Path $Root '.agent-update-journal.json') ([Text.Encoding]::ASCII.GetBytes('{"pending":true}'))
     [IO.File]::WriteAllText((Join-Path $Root 'installed-test-marker'), 'applied')
@@ -37,7 +38,7 @@ function Restore-AgentUpdate([string]$Root) {
     if ($null -eq $pollHelper) { throw 'Missing background poll entry point' }
     $mockHelper = 'function Start-AgentUpdateDownloader([string]$Root) { Start-Process -FilePath "mock-only" -ArgumentList "agent_update_download.ps1" -WorkingDirectory $Root -WindowStyle Hidden -PassThru }'
     $supervisorSource = $supervisorSource.Replace($pollHelper.Extent.Text, $mockHelper)
-    if ($Scenario -eq 'StopTimeout') { $supervisorSource = $supervisorSource.Replace('[DateTime]::UtcNow', '$mockState.Clock') }
+    if ($Scenario -in @('StopTimeout','Resume')) { $supervisorSource = $supervisorSource.Replace('[DateTime]::UtcNow', '$mockState.Clock') }
     [IO.File]::WriteAllText($supervisorPath, $supervisorSource)
     function Start-Process {
         param($FilePath, $ArgumentList, $WorkingDirectory, $WindowStyle, $RedirectStandardOutput, $RedirectStandardError, [switch]$PassThru)
@@ -59,7 +60,7 @@ function Restore-AgentUpdate([string]$Root) {
         } else {
             $mockState.Launches++
             if ($mockState.Launches -eq 2) {
-                if ($Scenario -ne 'Healthy') { $object.Kind = 'failed-worker'; $object.HasExited = $true }
+                if ($Scenario -notin @('Healthy','Resume')) { $object.Kind = 'failed-worker'; $object.HasExited = $true }
                 else {
                     $object.Kind = 'healthy-worker'
                     if ($ArgumentList -notmatch '-UpdateControlPath "([^"]+)"') { throw 'Missing worker control path' }
@@ -78,7 +79,14 @@ function Restore-AgentUpdate([string]$Root) {
                 if ($Milliseconds -eq 15000) { $this.HasExited = $true; return $true }
                 if (-not (Test-Path -LiteralPath (Join-Path $testRoot '.agent-update-journal.json'))) { $this.HasExited = $true; return $true }
                 [IO.File]::WriteAllText(($this.Control + '.health'), 'mock heartbeat')
-                [Threading.Thread]::Sleep(250)
+                if ($Scenario -eq 'Resume') {
+                    $mockState.Clock = $mockState.Clock.AddSeconds(1)
+                    # First resume with a fresh beat, then resume with the old stale beat.
+                    if ($this.Calls -in @(12,24)) { $mockState.Clock = $mockState.Clock.AddHours(1) }
+                    $stamp = if ($this.Calls -eq 24) { $mockState.Clock.AddHours(-1) } else { $mockState.Clock }
+                    [IO.File]::SetLastWriteTimeUtc(($this.Control + '.health'), $stamp)
+                    $mockState.Slices++
+                } else { [Threading.Thread]::Sleep(250) }
                 if ($this.Calls -gt 100) { throw 'Supervisor failed to commit healthy worker' }
                 return $false
             }
@@ -116,13 +124,14 @@ function Restore-AgentUpdate([string]$Root) {
     $ended = $false
     try { & (Join-Path $testRoot 'start_agent_supervisor.ps1') -InstanceName ('TestUpdate_' + [guid]::NewGuid().ToString('N')) }
     catch { if ($_.Exception.Message -eq 'TEST-END') { $ended = $true } else { throw } }
-    if (($Scenario -ne 'Healthy' -and -not $ended) -or ($Scenario -eq 'Healthy' -and -not $mockState.Reloaded) -or $mockState.Launches -ne 2 -or -not $mockState.Downloaded -or
+    if (($Scenario -notin @('Healthy','Resume') -and -not $ended) -or ($Scenario -in @('Healthy','Resume') -and -not $mockState.Reloaded) -or $mockState.Launches -ne 2 -or -not $mockState.Downloaded -or
         -not (Test-Path -LiteralPath (Join-Path $testRoot 'installed-test-marker')) -or
-        ((Test-Path -LiteralPath (Join-Path $testRoot 'restored-test-marker')) -ne ($Scenario -ne 'Healthy')) -or
+        ((Test-Path -LiteralPath (Join-Path $testRoot 'restored-test-marker')) -ne ($Scenario -notin @('Healthy','Resume'))) -or
         (Test-Path -LiteralPath (Join-Path $testRoot '.agent-update-journal.json'))) {
         $detail = [IO.File]::ReadAllText((Join-Path $testRoot 'agent.log'))
         throw "Supervisor failed-worker rollback failed: ended=$ended state=$($mockState | ConvertTo-Json -Compress); $detail"
     }
+    if ($Scenario -eq 'Resume' -and $mockState.Slices -ne 40) { throw "Premature or late commit after sleep ($($mockState.Slices) observations)" }
     if ($Scenario -eq 'StopTimeout') {
         $expected = @(15,30,60,120,120)
         if ($mockState.PollTimes.Count -ne 6 -or $mockState.Slices -ne 12) { throw 'Unexpected retry or wait count' }

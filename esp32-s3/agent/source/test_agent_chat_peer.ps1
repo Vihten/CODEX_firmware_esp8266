@@ -217,6 +217,21 @@ try {
     $senderPort = $b.TcpPort
     Stop-ChatPeerRuntime $b
     Test-BeaconReplies $a.Pin $senderPort
+    # Both normal announcements go to a sink after restart. Only the saved route can reconnect them.
+    Stop-ChatPeerRuntime $a
+    $a = Start-Fixture 0 $aId 'Fixture A' '127.0.0.4'
+    $b = Start-Fixture 1 $bId 'Fixture B' '127.0.0.4'
+    Set-ChatPeerTrust $a $bId 'Fixture B' $b.Pin
+    Set-ChatPeerTrust $b $aId 'Fixture A' $a.Pin
+    $a.RestoreRoute($bId,$b.Pin,[string]$addresses[1])
+    Check (-not (Get-ChatPeerRoster $a).online) 'Saved IP falsely marked an offline peer online'
+    $clock.Restart()
+    while (-not ((Get-ChatPeerRoster $a).online -and (Get-ChatPeerRoster $b).online)) {
+        Check ($clock.Elapsed.TotalSeconds -lt 22) 'Pinned route did not recover without broadcast'
+        Start-Sleep -Milliseconds 200
+    }
+    $recovered = [guid]::NewGuid().ToString()
+    Check ((Send-ChatPeerMessage $a $bId $recovered 'after restart') -ceq $recovered) 'Reconnected route did not deliver'
     'PASS: one-way discovery kept unpaired candidates and approved peers visible past TTL; delivery required bilateral approval.'
     'PASS: loopback UDP discovery, bilateral TLS pins, sender ID/name checks, validated receipt, durable deduplication, bounded text, reverse delivery and restart.'
 } finally {

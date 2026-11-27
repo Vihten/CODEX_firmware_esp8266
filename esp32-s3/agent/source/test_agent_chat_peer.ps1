@@ -86,11 +86,12 @@ function Test-BeaconReplies($ReceiverPin,$SenderPort) {
     $cert = Get-ChatPeerCertificate $bId
     $key = [Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert)
     try {
-        function Send-Beacon($Marker) {
-            $stamp = $Marker + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds().ToString()
+        function Send-Beacon($Marker, [int]$AgeSeconds=0, [switch]$InvalidSignature) {
+            $stamp = $Marker + [DateTimeOffset]::UtcNow.AddSeconds(-$AgeSeconds).ToUnixTimeMilliseconds().ToString()
             $fields = 'LFPEER1',$bId,[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('Fixture B')),$SenderPort,$stamp,[Convert]::ToBase64String($cert.RawData)
             $data = [Text.Encoding]::UTF8.GetBytes(($fields -join '|'))
             $sig = $key.SignData($data,[Security.Cryptography.HashAlgorithmName]::SHA256,[Security.Cryptography.RSASignaturePadding]::Pkcs1)
+            if ($InvalidSignature) { $sig[0] = $sig[0] -bxor 1 }
             $bytes = [Text.Encoding]::UTF8.GetBytes((($fields + [Convert]::ToBase64String($sig)) -join '|'))
             [void]$send.Send($bytes,$bytes.Length,[Net.IPEndPoint]::new([ipaddress]$addresses[0],$port))
         }
@@ -110,6 +111,15 @@ function Test-BeaconReplies($ReceiverPin,$SenderPort) {
             }
             return $false
         }
+        Set-ChatPeerTrust $a $bId 'Fixture B' ('0'*64)
+        Send-Beacon ''
+        Check (-not (Read-Reply)) 'Conflicting certificate received a discovery reply'
+        Check ((Get-ChatPeerRoster $a).pin -ceq ('0'*64) -and -not (Get-ChatPeerRoster $a).online) 'Discovery replaced a pin'
+        Remove-ChatPeerTrust $a $bId
+        Send-Beacon '' -AgeSeconds 60
+        Check (-not (Read-Reply)) 'Expired candidate beacon received a reply'
+        Send-Beacon '' -InvalidSignature
+        Check (-not (Read-Reply)) 'Invalid candidate signature received a reply'
         Send-Beacon '+'
         Check (-not (Read-Reply)) 'Terminal reply triggered another reply'
         Send-Beacon ''
@@ -172,18 +182,30 @@ try {
     $b = Start-Fixture 1 $bId 'Fixture B' '127.0.0.4'
     Check ($b.Pin -ceq $pin) 'Certificate changed across restart'
     $a = Start-Fixture 0 $aId 'Fixture A'
-    Set-ChatPeerTrust $a $bId 'Fixture B' $b.Pin
     $clock = [Diagnostics.Stopwatch]::StartNew()
-    while (-not (Get-ChatPeerCandidates $b)) {
-        Check ($clock.Elapsed.TotalSeconds -lt 10) 'One-way announcement never reached B'
+    while (-not ((Get-ChatPeerCandidates $a) -and (Get-ChatPeerCandidates $b))) {
+        Check ($clock.Elapsed.TotalSeconds -lt 10) 'Unpaired asymmetric discovery timed out'
         Start-Sleep -Milliseconds 100
     }
-    Check (-not (Get-ChatPeerRoster $a).online) 'Unapproved beacon triggered a reply'
+    $clock.Restart()
+    while ($clock.Elapsed.TotalSeconds -lt 21) {
+        $atA = Get-ChatPeerCandidates $a
+        $atB = Get-ChatPeerCandidates $b
+        Check ($atA.id -ceq $bId -and $atA.pin -ceq $b.Pin -and $atA.address -eq $addresses[1]) 'Unpaired B candidate missing at A'
+        Check ($atB.id -ceq $aId -and $atB.pin -ceq $a.Pin -and $atB.address -eq $addresses[0]) 'Unpaired A candidate missing at B'
+        Start-Sleep -Milliseconds 200
+    }
+    Check (-not ((Get-ChatPeerRoster $a) -or (Get-ChatPeerRoster $b))) 'Discovery granted trust'
+    $probeId = [guid]::NewGuid().ToString()
+    Reject { Send-ChatPeerMessage $a $bId $probeId 'before approval' } 'unpaired A to B'
+    Reject { Send-ChatPeerMessage $b $aId $probeId 'before approval' } 'unpaired B to A'
+    Set-ChatPeerTrust $a $bId 'Fixture B' $b.Pin
+    Reject { Send-ChatPeerMessage $a $bId $probeId 'before approval' } 'missing receiver approval'
+    Reject { Send-ChatPeerMessage $b $aId $probeId 'before approval' } 'missing sender approval'
+    foreach ($id in $aId,$bId) {
+        Check (-not [IO.File]::Exists("$root/$id/inbox/$probeId.json")) 'Unapproved message reached the inbox'
+    }
     Set-ChatPeerTrust $b $aId 'Fixture A' $a.Pin
-    while (-not (Get-ChatPeerRoster $a).online) {
-        Check ($clock.Elapsed.TotalSeconds -lt 14) 'Missing pinned unicast reply'
-        Start-Sleep -Milliseconds 100
-    }
     $clock.Restart()
     while ($clock.Elapsed.TotalSeconds -lt 21) {
         Check ((Get-ChatPeerRoster $a).online -and (Get-ChatPeerRoster $b).online) 'Asymmetric presence expired'
@@ -195,7 +217,7 @@ try {
     $senderPort = $b.TcpPort
     Stop-ChatPeerRuntime $b
     Test-BeaconReplies $a.Pin $senderPort
-    'PASS: pinned one-way discovery maintained both rosters past the 16-second TTL.'
+    'PASS: one-way discovery kept unpaired candidates and approved peers visible past TTL; delivery required bilateral approval.'
     'PASS: loopback UDP discovery, bilateral TLS pins, sender ID/name checks, validated receipt, durable deduplication, bounded text, reverse delivery and restart.'
 } finally {
     if ($sink) { $sink.Close() }

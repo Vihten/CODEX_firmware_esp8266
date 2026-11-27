@@ -134,53 +134,80 @@ function Copy-ChatIdentity([string]$value) {
 
 function Update-PeerVerification {
     $peer = $peerList.SelectedItem.Identity
-    $approvePeer.Enabled = $false
-    $codesMatch.Enabled = $false
-    $pairCode.Text = ''
+    $code = ''
+    $eligible = $false
     if (-not $peer) {
-        $trustStatus.Text = 'Очікуємо на інші ПК у локальній мережі.'
-        return
-    }
-    if (Test-CandidateConflict $trustSnapshot $peer) {
-        $trustStatus.Text = 'Конфлікт ключів для цього ID. Звірте дані з власником ПК.'
-        return
-    }
-    $saved = Test-BindingMatches $peer
-    if ($saved) {
-        $trustStatus.Text = 'Цей ПК уже підтверджено. Інший власник може звірити цей код.'
+        $message = if ($peerList.Items.Count) { "Знайдено ПК: $($peerList.Items.Count). Виберіть співрозмовника зі списку." }
+            else { 'Шукаємо інші ПК у локальній мережі…' }
+    } elseif (Test-CandidateConflict $trustSnapshot $peer) {
+        $message = 'Конфлікт ключів для цього ID. Звірте дані з власником ПК.'
+    } elseif (Test-BindingMatches $peer) {
+        $message = 'Цей ПК уже підтверджено. Інший власник може звірити цей код.'
+        $code = Get-PeerComparisonCode $trustSnapshot.self_fingerprint $peer.fingerprint
     } elseif (Test-CanApprovePeer $trustSnapshot $peer) {
-        $trustStatus.Text = 'Підтвердьте збіг на кожному ПК лише після звірки всіх трьох груп.'
+        $message = 'Підтвердьте збіг на кожному ПК лише після звірки всіх трьох груп.'
+        $code = Get-PeerComparisonCode $trustSnapshot.self_fingerprint $peer.fingerprint
+        $eligible = $code.Length -gt 0
     } elseif (Test-Path -LiteralPath (Get-TrustBindingPath $peer.id)) {
-        $trustStatus.Text = "Збережена прив’язка відрізняється. Заміну заблоковано."
-        return
+        $message = "Збережена прив’язка відрізняється. Заміну заблоковано."
     } else {
-        $trustStatus.Text = 'Перевірка недоступна. Оновіть список ПК.'
-        return
+        $message = 'Перевірка недоступна. Оновіть список ПК.'
     }
-    $pairCode.Text = Get-PeerComparisonCode $trustSnapshot.self_fingerprint $peer.fingerprint
-    $codesMatch.Enabled = -not $saved -and $pairCode.Text.Length -gt 0
-    $approvePeer.Enabled = $codesMatch.Enabled -and $codesMatch.Checked
+    $pairCode.Text = $code
+    $trustStatus.Text = $message
+    $codesMatch.Enabled = $eligible
+    $approvePeer.Enabled = $eligible -and $codesMatch.Checked
 }
 
-function Refresh-PeerTrust {
-    $script:trustSnapshot = Get-TrustRoster
-    $ownFingerprint.Text = 'Очікуємо локальний ключ.'
-    $copyIdentity.Enabled = (Test-PeerFingerprint $trustSnapshot.self_fingerprint) -and $trustSnapshot.self_id -cmatch '\A[0-9A-F]{8}\z'
-    if ($copyIdentity.Enabled) {
-        $ownFingerprint.Text = Format-PeerFingerprint $trustSnapshot.self_fingerprint
-    }
-    $ownLabel.Text = "Відбиток цього ПК (ID $($trustSnapshot.self_id))"
-    $peerList.Items.Clear()
-    $codesMatch.Checked = $false
+function Refresh-PeerTrust([switch]$Automatic) {
+    $previous = $peerList.SelectedItem
+    $snapshot = Get-TrustRoster
+    $sameLocal = $snapshot.self_id -ceq $trustSnapshot.self_id -and
+        $snapshot.self_fingerprint -ceq $trustSnapshot.self_fingerprint
+    $keepCheck = $Automatic -and $sameLocal -and $codesMatch.Checked -and $codesMatch.Enabled
+    $script:trustSnapshot = $snapshot
+    $copyIdentity.Enabled = (Test-PeerFingerprint $snapshot.self_fingerprint) -and $snapshot.self_id -cmatch '\A[0-9A-F]{8}\z'
+    $ownFingerprint.Text = if ($copyIdentity.Enabled) { Format-PeerFingerprint $snapshot.self_fingerprint }
+        else { 'Очікуємо локальний ключ.' }
+    $ownLabel.Text = "Відбиток цього ПК (ID $($snapshot.self_id))"
+
     $listed = @{}
-    foreach ($peer in (@($trustSnapshot.candidates) + @($trustSnapshot.agents))) {
-        if (-not (Test-PeerIdentity $peer) -or $peer.id -ceq $trustSnapshot.self_id) { continue }
+    $items = @(foreach ($peer in (@($snapshot.candidates) + @($snapshot.agents))) {
+        if (-not (Test-PeerIdentity $peer) -or $peer.id -ceq $snapshot.self_id) { continue }
         $key = "$($peer.id)/$($peer.fingerprint)"
         if ($listed.ContainsKey($key)) { continue }
         $listed[$key] = $true
-        [void]$peerList.Items.Add([pscustomobject]@{Label="$($peer.name) ($($peer.id))";Identity=$peer})
+        [pscustomobject]@{Label="$($peer.name) ($($peer.id))";Identity=$peer;Key="$key/$($peer.name)"}
+    })
+    $changed = $items.Count -ne $peerList.Items.Count
+    $index = -1
+    for ($i = 0; $i -lt $items.Count; $i++) {
+        if (-not $changed -and $items[$i].Key -cne $peerList.Items[$i].Key) { $changed = $true }
+        if ($previous -and $items[$i].Key -ceq $previous.Key -and $sameLocal) { $index = $i }
     }
-    if ($peerList.Items.Count) { $peerList.SelectedIndex = 0 }
+    if ($index -ge 0) {
+        $eligible = Test-CanApprovePeer $snapshot $items[$index].Identity
+        $keepCheck = $keepCheck -and $eligible
+        if ($Automatic -and -not $eligible -and
+            ((Test-CandidateConflict $snapshot $items[$index].Identity) -or -not (Test-BindingMatches $items[$index].Identity))) {
+            $index = -1
+        }
+    } else { $keepCheck = $false }
+    if (-not $Automatic -and $index -lt 0 -and $items.Count) { $index = 0 }
+
+    # Only rebuild a changed list. An idle tick must leave an open dropdown and keyboard focus alone.
+    $script:refreshingPeerList = $true
+    try {
+        if ($changed) {
+            $peerList.BeginUpdate()
+            try {
+                $peerList.Items.Clear()
+                foreach ($item in $items) { [void]$peerList.Items.Add($item) }
+            } finally { $peerList.EndUpdate() }
+        }
+        $peerList.SelectedIndex = $index
+        $codesMatch.Checked = $keepCheck
+    } finally { $script:refreshingPeerList = $false }
     Update-PeerVerification
 }
 
@@ -271,10 +298,16 @@ function Show-PeerTrust {
     $refresh.Size = New-Object Drawing.Size(150,30)
     $refresh.Add_Click({ Refresh-PeerTrust })
     $actions.Controls.Add($refresh)
-    $peerList.Add_SelectedIndexChanged({ $codesMatch.Checked = $false; Update-PeerVerification })
-    $codesMatch.Add_CheckedChanged({ Update-PeerVerification })
+    $peerList.Add_SelectedIndexChanged({ if (-not $refreshingPeerList) { $codesMatch.Checked = $false; Update-PeerVerification } })
+    $codesMatch.Add_CheckedChanged({ if (-not $refreshingPeerList) { Update-PeerVerification } })
     Refresh-PeerTrust
+    $timerForDialog = New-Object Windows.Forms.Timer
+    $timerForDialog.Interval = 1500
+    $timerForDialog.Add_Tick({ Refresh-PeerTrust -Automatic })
+    $trustWindow.Tag = $timerForDialog
+    $trustWindow.Add_Disposed({ param($window,$eventArgs) $window.Tag.Dispose() })
     $trustWindow.Show()
+    $timerForDialog.Start()
 }
 
 function Update-Seats {

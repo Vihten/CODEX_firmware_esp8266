@@ -62,6 +62,48 @@ try {
     Check (-not $codesMatch.Checked -and -not $approvePeer.Enabled) 'Refresh retained confirmation'
     $codesMatch.Checked = $true
     Check ($approvePeer.Enabled) 'Compared pair code did not enable approval'
+    $other = @{id='00000006';name='Nestor';fingerprint='E5' * 32}
+    $snapshot.candidates = @($other,$peer)
+    Write-Fixture 'roster.json' $snapshot
+    # Pump the real dialog timer. The map is still hidden.
+    $deadline = [datetime]::UtcNow.AddSeconds(5)
+    while ($peerList.Items.Count -ne 2 -and [datetime]::UtcNow -lt $deadline) {
+        [Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 25
+    }
+    Check ($peerList.Items.Count -eq 2 -and $peerList.SelectedIndex -eq 1 -and $codesMatch.Checked -and $approvePeer.Enabled) 'Live discovery lost the selected peer or its comparison'
+    Check (-not [IO.File]::Exists((Get-TrustBindingPath $peer.id)) -and -not [IO.File]::Exists((Get-TrustBindingPath $other.id))) 'Discovery saved trust'
+    foreach ($change in 'localPin','localId','name','pin','id','conflict','removed','unreadable') {
+        $savedName = $peer.name
+        $savedId = $peer.id
+        switch ($change) {
+            'localPin' { $snapshot.self_fingerprint = '99' * 32 }
+            'localId' { $snapshot.self_id = '12345678' }
+            'name' { $peer.name = 'Another name' }
+            'pin' { $peer.fingerprint = '88' * 32 }
+            'id' { $peer.id = '12345678' }
+            'conflict' { $snapshot.candidates += @{id=$peer.id;name=$peer.name;fingerprint='77' * 32} }
+            'removed' { $snapshot.candidates = @($other) }
+        }
+        Write-Fixture 'roster.json' $snapshot
+        if ($change -eq 'unreadable') { [IO.File]::WriteAllText((Join-Path $testRoot 'roster.json'),'{') }
+        Refresh-PeerTrust -Automatic
+        Check (-not $codesMatch.Checked -and -not $approvePeer.Enabled -and $peerList.SelectedIndex -eq -1) "Stale selection after $change"
+        $snapshot.self_fingerprint = $ownPin
+        $snapshot.self_id = '00000001'
+        $peer.name = $savedName
+        $peer.id = $savedId
+        $peer.fingerprint = $pin
+        $snapshot.candidates = @($other,$peer)
+        Write-Fixture 'roster.json' $snapshot
+        Refresh-PeerTrust -Automatic
+        Check ($peerList.SelectedIndex -eq -1 -and -not $approvePeer.Enabled) "Reappearance restored approval after $change"
+        $peerList.SelectedIndex = 1
+        $codesMatch.Checked = $true
+    }
+    $snapshot.candidates = @($peer)
+    Write-Fixture 'roster.json' $snapshot
+    Refresh-PeerTrust -Automatic
     $bindingPath = Get-TrustBindingPath $peer.id
     $peer.fingerprint = 'B2' * 32
     Write-Fixture 'roster.json' $snapshot
@@ -94,8 +136,11 @@ try {
     Write-Fixture 'roster.json' $snapshot
     $snapshot.candidates = @()
     Write-Fixture 'roster.json' $snapshot
+    $closedTimer = $trustWindow.Tag
     $trustWindow.Close()
+    Check (-not $closedTimer.Enabled) 'Closed dialog kept polling'
     Show-PeerTrust
+    Refresh-PeerTrust -Automatic
     Check ($peerList.SelectedItem.Identity.id -ceq $peer.id -and $pairCode.Text -ceq $expectedCode -and -not $codesMatch.Enabled -and -not $approvePeer.Enabled) 'Previously approved peer must still display the comparison code'
     $reverse = @{self_id=$peer.id;self_fingerprint=$pin;candidates=@(@{id=$snapshot.self_id;name='Oleksii';fingerprint=$ownPin});agents=@()}
     Write-Fixture 'roster.json' $reverse

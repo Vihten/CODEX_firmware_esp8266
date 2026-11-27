@@ -183,10 +183,7 @@ public sealed class PeerWireV1 : IDisposable {
             bool terminal = p[4][0] == '+';
             lock (gate) {
                 Location old;
-                Binding b;
                 if (locations.TryGetValue(pin,out old) && stamp <= old.Stamp) return;
-                if (trust.Any(x=>x.Value.Pin == pin && x.Key != p[1])) return;
-                if (trust.TryGetValue(p[1],out b) && (b.Pin != pin || b.Name != displayName)) return;
             }
             using (var key = remote.GetRSAPublicKey()) {
                 if (key == null || key.KeySize != 2048 || !key.VerifyData(
@@ -196,8 +193,9 @@ public sealed class PeerWireV1 : IDisposable {
             bool reply;
             lock (gate) {
                 Binding b;
-                bool pinned = trust.TryGetValue(p[1],out b) && b.Pin == pin && b.Name == displayName;
-                if (terminal && !pinned) return;
+                // Check the current bindings when committing discovery, including terminal replies.
+                if (trust.Any(x=>x.Value.Pin == pin && x.Key != p[1])) return;
+                if (trust.TryGetValue(p[1],out b) && (b.Pin != pin || b.Name != displayName)) return;
                 foreach (var k in locations.Where(x=>!Fresh(x.Value)).Select(x=>x.Key).ToArray()) locations.Remove(k);
                 if (!locations.ContainsKey(pin) && locations.Count >= MaxPeers) {
                     if (!trust.Values.Any(x=>x.Pin == pin)) return;
@@ -207,7 +205,7 @@ public sealed class PeerWireV1 : IDisposable {
                 }
                 locations[pin] = new Location {Id=p[1],Name=displayName,Pin=pin,
                     Endpoint=new IPEndPoint(source.Address,port),Stamp=stamp};
-                reply = !terminal && pinned && ReserveReply(pin);
+                reply = !terminal && ReserveReply(pin);
             }
             if (reply) Announce(Beacon(true),source.Address);
         }

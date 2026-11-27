@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidatePattern('^[a-zA-Z0-9._:-]+$')]
     [string]$CollectorHost = '255.255.255.255',
@@ -116,21 +116,22 @@ try {
         $trayRestart = $false
         try {
             if ($loadedHelper) {
-                $state = Read-AgentActionState $PSScriptRoot
-                if ($null -ne $state) {
-                    $currentEndpoint = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'controller-endpoint.json')) | ConvertFrom-Json
-                    if ($state.device -ine $currentEndpoint.Device) { $state = $null }
-                }
-                if ($null -ne $state -and $state.action -eq 'uninstall' -and -not $state.confirmed) {
-                    $endpoint = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'controller-endpoint.json')) | ConvertFrom-Json
-                    $identity = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'agent-update-identity.json')) | ConvertFrom-Json
-                    $installedVersion = if ($state.PSObject.Properties['version']) { $state.version } else { Get-AgentInstalledVersion $PSScriptRoot }
-                    $managementContext = [pscustomobject]@{ Version = $installedVersion; Endpoint = $endpoint; Identity = $identity }
-                    if (-not $state.PSObject.Properties['version']) { $state | Add-Member NoteProperty version $installedVersion; Write-AgentActionState $PSScriptRoot $state }
-                    $outcome = Invoke-AgentPendingAction $PSScriptRoot $null $control
-                    if ($outcome -eq 'uninstall') { Wait-AgentUninstallAck $PSScriptRoot $managementContext $loadedHelper; return }
-                } elseif ($null -ne $state -and $state.action -eq 'uninstall' -and $state.result -eq 'ok') { return }
-                else { [void](Invoke-AgentPendingAction $PSScriptRoot $null $control) }
+                $guard = Open-AgentManagementGuard $PSScriptRoot
+                try {
+                    $state = Read-AgentActionState $PSScriptRoot
+                    if ($null -ne $state) {
+                        $currentEndpoint = Get-AgentManagementEndpoint $PSScriptRoot
+                        if ($state.device -ine $currentEndpoint.Device -or "$($state.scope)" -cne "$($currentEndpoint.Scope)") { $state = $null }
+                    }
+                    if ($null -ne $state -and $state.action -eq 'uninstall' -and -not $state.confirmed) {
+                        $managementContext = Get-AgentRemovalContext $PSScriptRoot $state
+                        $installedVersion = $managementContext.Version
+                        if (-not $state.PSObject.Properties['version']) { $state | Add-Member NoteProperty version $installedVersion; Write-AgentActionState $PSScriptRoot $state }
+                        $outcome = Invoke-AgentPendingAction $PSScriptRoot $null $control
+                        if ($outcome -eq 'uninstall') { Wait-AgentUninstallAck $PSScriptRoot $managementContext $loadedHelper; return }
+                    } elseif ($null -ne $state -and $state.action -eq 'uninstall' -and $state.result -eq 'ok') { return }
+                    else { [void](Invoke-AgentPendingAction $PSScriptRoot $null $control) }
+                } finally { $guard.Dispose() }
             }
             $previousRestart = $env:LED_FORGE_TRAY_RESTART
             try {
@@ -173,43 +174,49 @@ try {
                     $download.WaitForExit()
                     $ready = $download.ExitCode -eq 42
                     $download.Dispose(); $download = $null
-                    $state = Read-AgentActionState $PSScriptRoot
-                    if ($null -ne $state -and $state.result -eq 'pending') {
-                        if ($state.action -eq 'uninstall') {
-                            $endpoint = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'controller-endpoint.json')) | ConvertFrom-Json
-                            $identity = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'agent-update-identity.json')) | ConvertFrom-Json
-                            $installedVersion = Get-AgentInstalledVersion $PSScriptRoot
-                            $managementContext = [pscustomobject]@{ Version = $installedVersion; Endpoint = $endpoint; Identity = $identity }
-                            $state | Add-Member NoteProperty version $installedVersion -Force
-                            Write-AgentActionState $PSScriptRoot $state
+                    $guard = Open-AgentManagementGuard $PSScriptRoot
+                    try {
+                        $state = Read-AgentActionState $PSScriptRoot
+                        if ($null -ne $state -and $state.result -eq 'pending') {
+                            if ($state.action -eq 'uninstall') {
+                                $managementContext = Get-AgentRemovalContext $PSScriptRoot $state
+                                $installedVersion = $managementContext.Version
+                                $state | Add-Member NoteProperty version $installedVersion -Force
+                                Write-AgentActionState $PSScriptRoot $state
+                            }
+                            try { $outcome = Invoke-AgentPendingAction $PSScriptRoot $child $control }
+                            catch { [IO.File]::Delete("$control.stop"); continue }
+                            if ($outcome -eq 'uninstall') { Wait-AgentUninstallAck $PSScriptRoot $managementContext $loadedHelper; return }
+                            if ($outcome -eq 'restart') { break }
                         }
-                        try { $outcome = Invoke-AgentPendingAction $PSScriptRoot $child $control }
-                        catch { [IO.File]::Delete("$control.stop"); continue }
-                        if ($outcome -eq 'uninstall') { Wait-AgentUninstallAck $PSScriptRoot $managementContext $loadedHelper; return }
-                        if ($outcome -eq 'restart') { break }
-                    }
-                    if ($ready) {
-                      try {
-                        $stage = Join-Path $PSScriptRoot '.agent-update-stage'
-                        $candidate = Test-AgentPackage $PSScriptRoot $stage (Get-AgentInstalledVersion $PSScriptRoot)
-                        Write-AgentDurable "$control.stop" ([byte[]]@(1))
-                        if (-not $child.WaitForExit(15000)) {
-                            # Never install after a forced stop: a scanner may be committing state.
+                        if ($ready) {
+                          try {
+                            $stage = Join-Path $PSScriptRoot '.agent-update-stage'
+                            $hub = Get-AgentHubBinding $PSScriptRoot
+                            $scopePath = Join-Path $stage '.management-scope'
+                            Assert-AgentPlainPath $scopePath
+                            $scope = if ([IO.File]::Exists($scopePath)) { [IO.File]::ReadAllText($scopePath) }
+                            if ("$($hub.Scope)" -cne "$($scope)") { throw 'Staged update belongs to a different binding' }
+                            $candidate = Test-AgentPackage $PSScriptRoot $stage (Get-AgentInstalledVersion $PSScriptRoot)
+                            Write-AgentDurable "$control.stop" ([byte[]]@(1))
+                            if (-not $child.WaitForExit(15000)) {
+                                # Never install after a forced stop: a scanner may be committing state.
+                                Write-AgentDurable (Join-Path $PSScriptRoot '.agent-update-failed-version.txt') ([Text.Encoding]::ASCII.GetBytes([string]$candidate.Version))
+                                [IO.File]::Delete("$control.stop")
+                                continue
+                            }
                             Write-AgentDurable (Join-Path $PSScriptRoot '.agent-update-failed-version.txt') ([Text.Encoding]::ASCII.GetBytes([string]$candidate.Version))
-                            [IO.File]::Delete("$control.stop")
-                            continue
+                            Install-AgentStagedUpdate $PSScriptRoot $stage
+                            $pendingHealth = $true
+                            $healthySince = $null
+                            $healthDeadline = [DateTime]::UtcNow.AddSeconds(60)
+                            break
+                          } catch {
+                            try { Add-Content -LiteralPath $LogPath -Value "Update rejected: $($_.Exception.Message)" } catch { }
+                            if ($child.HasExited) { break }
+                          }
                         }
-                        Write-AgentDurable (Join-Path $PSScriptRoot '.agent-update-failed-version.txt') ([Text.Encoding]::ASCII.GetBytes([string]$candidate.Version))
-                        Install-AgentStagedUpdate $PSScriptRoot $stage
-                        $pendingHealth = $true
-                        $healthySince = $null
-                        $healthDeadline = [DateTime]::UtcNow.AddSeconds(60)
-                        break
-                      } catch {
-                        try { Add-Content -LiteralPath $LogPath -Value "Update rejected: $($_.Exception.Message)" } catch { }
-                        if ($child.HasExited) { break }
-                      }
-                    }
+                    } finally { $guard.Dispose() }
                 }
                 if ($restartEvent -and $restartEvent.WaitOne(0) -and $null -eq $download) {
                     Write-AgentDurable "$control.stop" ([byte[]]@(1))

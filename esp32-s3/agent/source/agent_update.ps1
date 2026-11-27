@@ -6,7 +6,9 @@ function Get-AgentCodeFiles {
 }
 
 function Test-AgentUpdateReady([string]$Root) {
-    foreach ($name in @('agent_update.ps1', 'agent_update_download.ps1', 'agent_update_restart.ps1', 'agent-update-public.xml', 'agent-version.txt', 'controller-endpoint.json')) {
+    try { $hub = Get-AgentHubBinding $Root } catch { return $false }
+    $endpointFile = if ($hub) { 'hub-management.json' } else { 'controller-endpoint.json' }
+    foreach ($name in @('agent_update.ps1', 'agent_update_download.ps1', 'agent_update_restart.ps1', 'agent-update-public.xml', 'agent-version.txt', $endpointFile)) {
         $path = Join-Path $Root $name
         Assert-AgentPlainPath $path
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
@@ -230,25 +232,100 @@ function Get-AgentUpdateIdentity([string]$Root, [string]$Base, [string]$Device, 
     $identity
 }
 
+function Get-AgentManagementClient {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$env:COMPUTERNAME-$env:USERNAME")),0,4).Replace('-','') }
+    finally { $sha.Dispose() }
+}
+
+function Get-AgentHubBinding([string]$Root) {
+    $path = Join-Path $Root 'hub-management.json'
+    Assert-AgentPlainPath $path
+    if (-not (Test-Path -LiteralPath $path)) {
+        if (Test-Path -LiteralPath (Join-Path $Root '.hub-management-required')) { throw 'Pinned hub binding is missing. Import the invitation again.' }
+        return
+    }
+    try {
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $acl = [IO.File]::GetAccessControl($path)
+        if (-not $acl.AreAccessRulesProtected -or -not $acl.GetOwner([Security.Principal.SecurityIdentifier]).Equals($sid) -or
+            @($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object { -not $_.IdentityReference.Equals($sid) }).Count) { throw 'ACL' }
+        if ((Get-Item -LiteralPath $path).Length -gt 4096) { throw 'Size' }
+        $b = [IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop
+        $ip = $null
+        if (($b.PSObject.Properties.Name | Sort-Object) -join ',' -cne 'Account,client,Device,Host,HttpPort,secret' -or
+            $b.Host -isnot [string] -or -not [Net.IPAddress]::TryParse($b.Host,[ref]$ip) -or $ip.AddressFamily -ne 'InterNetwork' -or
+            $ip.ToString() -cne $b.Host -or $b.Host -notmatch '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|127\.)' -or
+            ($b.HttpPort -isnot [int] -and $b.HttpPort -isnot [long]) -or $b.HttpPort -lt 1 -or $b.HttpPort -gt 65535 -or
+            $b.Device -isnot [string] -or $b.Device -cnotmatch '\A[0-9A-Fa-f]{6}\z' -or
+            $b.Account -isnot [string] -or $b.Account -cne '53197668' -or $b.secret -isnot [string] -or $b.secret -cnotmatch '\A[0-9a-f]{64}\z' -or
+            $b.client -isnot [string] -or $b.client -cne (Get-AgentManagementClient)) { throw 'Fields' }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $scope = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::ASCII.GetBytes(
+            "$($b.Host):$($b.HttpPort)/$($b.Device.ToUpperInvariant())/$($b.client)/$($b.secret)"))).Replace('-','') }
+        finally { $sha.Dispose() }
+        $b | Add-Member NoteProperty Scope $scope
+        return $b
+    } catch { throw 'Invalid private hub-management.json binding.' }
+}
+
+function Open-AgentManagementGuard([string]$Root) {
+    $path = Join-Path $Root '.management-binding.lock'
+    Assert-AgentPlainPath $path
+    [IO.File]::Open($path,'OpenOrCreate','ReadWrite','ReadWrite')
+}
+
+function Open-AgentPollLock([string]$Root) {
+    $path = Join-Path $Root '.management-poll.lock'
+    Assert-AgentPlainPath $path
+    [IO.File]::Open($path,'OpenOrCreate','ReadWrite','None')
+}
+
+function Get-AgentManagementEndpoint([string]$Root) {
+    $binding = Get-AgentHubBinding $Root
+    if ($binding) { return $binding }
+    $path = Join-Path $Root 'controller-endpoint.json'
+    Assert-AgentPlainPath $path
+    [IO.File]::ReadAllText($path) | ConvertFrom-Json
+}
+
+function Get-AgentRemovalContext([string]$Root,$State) {
+    $endpoint = Get-AgentManagementEndpoint $Root
+    if ($State.device -ine $endpoint.Device -or "$($State.scope)" -cne "$($endpoint.Scope)") { throw 'Management binding changed' }
+    $identity = if ($endpoint.Scope) { $endpoint } else {
+        $path = Join-Path $Root 'agent-update-identity.json'
+        Assert-AgentPlainPath $path
+        [IO.File]::ReadAllText($path) | ConvertFrom-Json
+    }
+    $version = if ($State.PSObject.Properties['version']) { $State.version } else { Get-AgentInstalledVersion $Root }
+    [pscustomobject]@{Version=$version;Endpoint=$endpoint;Identity=$identity}
+}
+
 function Save-AgentRemoteUpdate([string]$Root, [string]$Stage, $Context = $null) {
+    $guard = Open-AgentManagementGuard $Root
+    try {
+        $pollLock = Open-AgentPollLock $Root
+        try { Invoke-AgentBoundPoll $Root $Stage $Context } finally { $pollLock.Dispose() }
+    } finally { $guard.Dispose() }
+}
+
+function Invoke-AgentBoundPoll([string]$Root, [string]$Stage, $Context) {
     $random = [byte[]]::new(16)
     $rng = [Security.Cryptography.RNGCryptoServiceProvider]::new()
     try { $rng.GetBytes($random) } finally { $rng.Dispose() }
     $clientNonce = -join ($random | ForEach-Object { $_.ToString('x2') })
     $version = if ($null -ne $Context) { $Context.Version } else { Get-AgentInstalledVersion $Root }
-    $endpointPath = Join-Path $Root 'controller-endpoint.json'
-    Assert-AgentPlainPath $endpointPath
-    $endpoint = if ($null -ne $Context) { $Context.Endpoint } else { [IO.File]::ReadAllText($endpointPath) | ConvertFrom-Json }
+    $hub = Get-AgentHubBinding $Root
+    if ($null -ne $Context -and "$($Context.Endpoint.Scope)" -cne "$($hub.Scope)") { throw 'Stale management context' }
+    $endpoint = if ($hub) { $hub } elseif ($null -ne $Context) { $Context.Endpoint } else { Get-AgentManagementEndpoint $Root }
     $ip = $null
     if ($endpoint.Device -cnotmatch '\A[0-9A-Fa-f]{6}\z' -or $endpoint.Account -cne '53197668' -or
         -not [Net.IPAddress]::TryParse([string]$endpoint.Host, [ref]$ip) -or
         $ip.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or
         [string]$endpoint.HttpPort -notmatch '\A[0-9]+\z' -or $endpoint.HttpPort -lt 1 -or $endpoint.HttpPort -gt 65535) { throw 'Pinned endpoint required' }
     $base = "http://$($ip.ToString()):$($endpoint.HttpPort)"
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try { $hash = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$env:COMPUTERNAME-$env:USERNAME")) } finally { $sha.Dispose() }
-    $client = -join ($hash[0..3] | ForEach-Object { $_.ToString('X2') })
-    $identity = if ($null -ne $Context) { $Context.Identity } else { Get-AgentUpdateIdentity $Root $base $endpoint.Device $client }
+    $client = Get-AgentManagementClient
+    $identity = if ($hub) { $hub } elseif ($null -ne $Context) { $Context.Identity } else { Get-AgentUpdateIdentity $Root $base $endpoint.Device $client }
     for ($attempt = 0; $attempt -lt 2; $attempt++) {
         try {
             $challengeBytes = Invoke-AgentUpdateRequest "$base/agent-update-challenge" "client=$client&account=53197668" 4096
@@ -269,7 +346,8 @@ function Save-AgentRemoteUpdate([string]$Root, [string]$Stage, $Context = $null)
             $failureField = if ($failed -gt 0) { "&failed=$failed" } else { '' }
             $actionState = Read-AgentActionState $Root
             $ack = $null
-            if ($null -ne $actionState -and -not $actionState.confirmed -and $actionState.device -ieq $endpoint.Device -and $actionState.result -in @('ok', 'failed')) { $ack = $actionState }
+            if ($null -ne $actionState -and -not $actionState.confirmed -and $actionState.device -ieq $endpoint.Device -and
+                "$($actionState.scope)" -ceq "$($hub.Scope)" -and $actionState.result -in @('ok', 'failed')) { $ack = $actionState }
             $managementMessage = "MANAGE`n1`n"
             $managementFields = '&manage=1'
             if ($null -ne $ack) {
@@ -282,18 +360,26 @@ function Save-AgentRemoteUpdate([string]$Root, [string]$Stage, $Context = $null)
             $poll = Invoke-AgentUpdateRequest "$base/agent-update-poll" "client=$client&version=$version&account=53197668&nonce=$nonce&mac=$requestMac$failureField$managementFields" 4096
             $reply = [Text.Encoding]::UTF8.GetString($poll) | ConvertFrom-Json
             Test-AgentPollAuthentication $reply $endpoint.Device $client $nonce $identity.secret
+            $active = Get-AgentHubBinding $Root
+            if ("$($active.Scope)" -cne "$($hub.Scope)") { throw 'Management binding changed during poll' }
             if ($null -ne $ack) {
+                $current = Read-AgentActionState $Root
+                if ($null -eq $current -or $current.action_id -ne $ack.action_id -or $current.result -cne $ack.result) {
+                    throw 'Management acknowledgment superseded'
+                }
                 $ack.confirmed = $true
                 Write-AgentActionState $Root $ack
             }
+            if ($null -ne $Context) { return $false }
             Save-AgentPollAction $Root $reply $endpoint.Device
             break
         } catch {
-            if ($null -ne $Context -or $attempt -ne 0 -or $_.Exception.Data['AgentUpdateHttpStatus'] -ne 403) { throw }
+            if ($hub -or $null -ne $Context -or $attempt -ne 0 -or $_.Exception.Data['AgentUpdateHttpStatus'] -ne 403) { throw }
             $identity = Get-AgentUpdateIdentity $Root $base $endpoint.Device $client -Refresh
         }
     }
-    if ($null -ne $Context -or $null -ne (Read-AgentActionState $Root) -and -not (Read-AgentActionState $Root).confirmed) { return $false }
+    $pendingAction = Read-AgentActionState $Root
+    if ($null -ne $pendingAction -and -not $pendingAction.confirmed) { return $false }
     if ($reply.version -eq 0) { return $false }
     $target = ConvertTo-AgentVersion $reply.version
     if ($target -le $version) { return $false }
@@ -304,6 +390,7 @@ function Save-AgentRemoteUpdate([string]$Root, [string]$Stage, $Context = $null)
     Write-AgentDurable (Join-Path $Stage 'package.zip') (Invoke-AgentUpdateRequest "$base/agent-update/package.zip" '' 524288)
     $package = Test-AgentPackage $Root $Stage $version
     if ($package.Version -ne $target) { throw 'Target version mismatch' }
+    Write-AgentDurable (Join-Path $Stage '.management-scope') ([Text.Encoding]::ASCII.GetBytes([string]$hub.Scope))
     $true
 }
 
@@ -344,8 +431,13 @@ function Get-AgentActionMessage($Reply) {
     "ACTION`n$id`n$($Reply.action)`n$($Reply.name_hex)`n"
 }
 
+function Get-AgentActionPath([string]$Root) {
+    $b = Get-AgentHubBinding $Root
+    if ($b) { return (Join-Path $Root ('.hub-action-' + $b.Scope + '.json')) }
+    Join-Path $Root '.agent-action.json'
+}
 function Read-AgentActionState([string]$Root) {
-    $path = Join-Path $Root '.agent-action.json'
+    try { $path = Get-AgentActionPath $Root } catch { return }
     Assert-AgentPlainPath $path
     if (-not [IO.File]::Exists($path)) { return $null }
     if ((Get-Item -LiteralPath $path).Length -gt 4096) { throw 'Action state too large' }
@@ -356,13 +448,15 @@ function Read-AgentActionState([string]$Root) {
 }
 
 function Write-AgentActionState([string]$Root, $State) {
-    Write-AgentDurable (Join-Path $Root '.agent-action.json') ([Text.Encoding]::UTF8.GetBytes(($State | ConvertTo-Json -Compress)))
+    $active = Get-AgentHubBinding $Root
+    if ("$($State.scope)" -cne "$($active.Scope)") { throw 'Stale management action' }
+    Write-AgentDurable (Get-AgentActionPath $Root) ([Text.Encoding]::UTF8.GetBytes(($State | ConvertTo-Json -Compress)))
 }
 
 function Reset-AgentActionForReinstall([string]$Root) {
     $state = Read-AgentActionState $Root
     if ($null -eq $state -or $state.action -ne 'uninstall' -or $state.result -ne 'ok') { return }
-    $path = Join-Path $Root '.agent-action.json'
+    $path = Get-AgentActionPath $Root
     Assert-AgentPlainPath "$path.new"
     [IO.File]::Delete($path)
     [IO.File]::Delete("$path.new")
@@ -381,7 +475,8 @@ function Save-AgentPollAction([string]$Root, $Reply, [string]$Device) {
         if (-not $previous.confirmed -or ($previous.action -eq 'uninstall' -and $previous.result -eq 'ok')) { return }
     }
     $received = [DateTime]::UtcNow
-    Write-AgentActionState $Root ([pscustomobject]@{ device = $Device; action_id = $Reply.action_id; action = $Reply.action; name_hex = $Reply.name_hex; result = 'pending'; confirmed = $false; received_utc = $received.ToString('o'); expires_utc = $received.AddMinutes(10).ToString('o') })
+    $binding = Get-AgentHubBinding $Root
+    Write-AgentActionState $Root ([pscustomobject]@{ scope = [string]$binding.Scope; device = $Device; action_id = $Reply.action_id; action = $Reply.action; name_hex = $Reply.name_hex; result = 'pending'; confirmed = $false; received_utc = $received.ToString('o'); expires_utc = $received.AddMinutes(10).ToString('o') })
 }
 
 function Rename-AgentMetadata([string]$Root, $Action) {
@@ -623,12 +718,18 @@ function Stop-AgentManagedWorker($Worker, [string]$Control) {
 }
 
 function Invoke-AgentPendingAction([string]$Root, $Worker, [string]$Control) {
+    $guard = Open-AgentManagementGuard $Root
+    try {
+        $pollLock = Open-AgentPollLock $Root
+        try { Invoke-AgentBoundAction $Root $Worker $Control } finally { $pollLock.Dispose() }
+    } finally { $guard.Dispose() }
+}
+
+function Invoke-AgentBoundAction([string]$Root, $Worker, [string]$Control) {
     $state = Read-AgentActionState $Root
     if ($null -eq $state) { return '' }
-    $endpointPath = Join-Path $Root 'controller-endpoint.json'
-    Assert-AgentPlainPath $endpointPath
-    $endpoint = [IO.File]::ReadAllText($endpointPath) | ConvertFrom-Json
-    if ($state.device -ine $endpoint.Device) { return '' }
+    $endpoint = Get-AgentManagementEndpoint $Root
+    if ($state.device -ine $endpoint.Device -or "$($state.scope)" -cne "$($endpoint.Scope)") { return '' }
     if ($state.action -eq 'uninstall' -and ($state.result -eq 'ok' -or ($state.result -eq 'failed' -and $state.removal_started))) { return 'uninstall' }
     if ($state.result -ne 'pending') { return '' }
     try {
@@ -644,6 +745,11 @@ function Invoke-AgentPendingAction([string]$Root, $Worker, [string]$Control) {
     }
     # A timed-out stop remains pending: never modify code or metadata while the worker writes state.
     Stop-AgentManagedWorker $Worker $Control
+    if ([DateTime]::UtcNow -ge $expires) {
+        $state.result = 'failed'
+        Write-AgentActionState $Root $state
+        return ''
+    }
     try {
         if ($state.action -eq 'rename') { Rename-AgentMetadata $Root $state }
         else {

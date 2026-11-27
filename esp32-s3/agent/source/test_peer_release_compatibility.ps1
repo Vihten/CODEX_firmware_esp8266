@@ -25,7 +25,7 @@ try {
         'update_codex_lan_agent.cmd','controller_rebind.ps1','rebind_to_s3.ps1','rebind_to_s3.cmd',
         'start_codex_lan_agent.cmd','uninstall_codex_lan_agent.ps1','uninstall_codex_lan_agent.cmd',
         'configure_collector_firewall.ps1','configure_collector_firewall.cmd','configure_peer_firewall.ps1',
-        'configure_peer_firewall.cmd','DIRECT_PEER_INSTALL.md','OFFICE_CHAT.md','README.txt','TOKEN_ACCOUNTING_V2.md','CHAT_MAILBOX.md')) {
+        'configure_peer_firewall.cmd','import_agent_hub.ps1','import_agent_hub.cmd','DIRECT_PEER_INSTALL.md','OFFICE_CHAT.md','README.txt','TOKEN_ACCOUNTING_V2.md','CHAT_MAILBOX.md')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $source
     }
     foreach ($name in @('agent_chat_ipc.ps1','agent_chat_peer.ps1')) {

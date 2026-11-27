@@ -79,6 +79,7 @@ try {
     Write-AgentDurable (Join-Path $OutputDirectory 'agent_release.hpp') ([Text.Encoding]::ASCII.GetBytes("#pragma once`n#include <stdint.h>`nnamespace agent_release { constexpr uint64_t version = $Version; }`n"))
     $verified = Test-AgentPackage $OutputDirectory $OutputDirectory 0
     $manualFiles = @('install_codex_lan_agent.ps1', 'install_codex_lan_agent.cmd',
+        'import_agent_hub.ps1', 'import_agent_hub.cmd',
         'update_codex_lan_agent.ps1', 'update_codex_lan_agent.cmd',
         'controller_rebind.ps1', 'agent_chat_package.ps1', 'configure_peer_firewall.ps1', 'configure_peer_firewall.cmd', 'DIRECT_PEER_INSTALL.md', 'OFFICE_CHAT.md',
         'rebind_to_s3.ps1', 'rebind_to_s3.cmd', 'start_codex_lan_agent.cmd',
